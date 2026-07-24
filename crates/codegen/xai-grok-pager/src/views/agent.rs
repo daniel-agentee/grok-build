@@ -965,7 +965,10 @@ pub(crate) fn build_hints(
                     registry.key_for(ActionId::NextTurn),
                 )
             {
-                hints.push(HintItem::paired(l, h, "turn").pinned());
+                // Local keymap: bare h/l are turns (not Shift); keep display as h/l.
+                let mut hint = HintItem::paired(l, h, "turn").pinned();
+                hint.custom_display = Some("h/l");
+                hints.push(hint);
             }
             if !selected_is_user_prompt
                 && let Some(key) = registry.key_for(ActionId::ExpandAllThinking)
@@ -1350,11 +1353,11 @@ mod tests {
         let labels: Vec<&str> = hints.iter().map(|h| h.label.as_ref()).collect();
         assert!(
             labels.contains(&"nav"),
-            "vim mode should show j/k nav hint; got {labels:?}"
+            "vim mode should show J/K nav hint; got {labels:?}"
         );
         assert!(
             labels.contains(&"turn"),
-            "vim mode should show Shift+l/h turn hint; got {labels:?}"
+            "vim mode should show h/l turn hint; got {labels:?}"
         );
         assert!(
             labels.contains(&"top/btm"),
@@ -1369,11 +1372,11 @@ mod tests {
         let labels: Vec<&str> = hints.iter().map(|h| h.label.as_ref()).collect();
         assert!(
             !labels.contains(&"nav"),
-            "vim-off must hide j/k nav hint; got {labels:?}"
+            "vim-off must hide J/K nav hint; got {labels:?}"
         );
         assert!(
             !labels.contains(&"turn"),
-            "vim-off must hide Shift+l/h turn hint; got {labels:?}"
+            "vim-off must hide h/l turn hint; got {labels:?}"
         );
         assert!(
             !labels.contains(&"top/btm"),

@@ -143,7 +143,7 @@ Toggle compact display — less padding and tighter spacing for denser output.
 
 ### `/vim-mode`
 
-Toggle vim-style scrollback keys (`j`/`k`, `h`/`l`, `g`/`G`, `y`/`Y`, and so on). With it off (the default), a bare letter or `Shift+letter` in the scrollback just focuses the prompt and types the character. The setting persists to `[ui] vim_mode`.
+Toggle vim-style scrollback keys (`j`/`k` scroll, `J`/`K` select, `h`/`l` turns, `u`/`d` half-page, `g`/`G`, `y`/`Y`, and so on). With it off (the default), a bare letter or `Shift+letter` in the scrollback just focuses the prompt and types the character. The setting persists to `[ui] vim_mode`.
 
 ### `/edit-prompt`
 

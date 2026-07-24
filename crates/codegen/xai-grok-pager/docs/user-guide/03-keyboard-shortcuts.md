@@ -9,18 +9,18 @@ Reference for key bindings in the Grok Build TUI. Bindings are built in and cann
 Grok has two input modes that control how you navigate the scrollback:
 
 - **Simple mode** (default): Arrow keys for navigation, `Shift+Arrow` for turn navigation, `Space` to focus the prompt, and any letter key auto-focuses the prompt.
-- **Vim mode** (opt-in): `j`/`k` for navigation, `H`/`L` for selected-turn navigation, `J`/`K` for viewport-top turn jumps (same as the timeline arrows), `h`/`l` for fold, `e`/`E` for expand/collapse, and `i`/`Tab`/`Space` to focus the prompt.
+- **Vim mode** (opt-in): `j`/`k` scroll (~6 lines), `J`/`K` select entries, `h`/`l` for turns, `u`/`d` half-page, `Ctrl+h`/`Ctrl+l` for fold, `e`/`E` expand/collapse, and `i`/`Tab`/`Space` to focus the prompt.
 
 Simple mode is active by default. To switch to Vim mode, set `vim_mode = true` under `[ui]` in `~/.grok/config.toml`, or toggle it at runtime with `/vim-mode`. See [Configuration](05-configuration.md) for details.
 
 The tables below document bindings for both modes. The "Key" column shows the Vim-mode binding, and the "Alt Key" column shows the equivalent in simple mode (arrow keys, etc.).
 
 > **Vim-mode required**: Single-letter and `Shift+letter` bindings in the
-> **Scrollback** context (`j/k`, `h/l`, `g/G`, `L/H`, `y/Y`, `o/O`, `r`,
-> `x`, `e/E`, and the `i` insert-mode alt) require `[ui].vim_mode = true`
-> in `~/.grok/config.toml` (or `/vim-mode` to toggle). Arrow keys, `Tab`,
-> `Esc`, `Space`, `PageUp/Down`, and every `Ctrl+letter` shortcut work in
-> both modes.
+> **Scrollback** context (`j/k` scroll, `J/K` select, `h/l` turns, `u/d`
+> half-page, `g/G`, `y/Y`, `o/O`, `r`, `x`, `e/E`, and the `i` insert-mode
+> alt) require `[ui].vim_mode = true` in `~/.grok/config.toml` (or
+> `/vim-mode` to toggle). Arrow keys, `Tab`, `Esc`, `Space`, `PageUp/Down`,
+> and every `Ctrl+letter` shortcut work in both modes.
 
 ---
 
@@ -30,20 +30,20 @@ Move through conversation entries in the scrollback pane.
 
 | Key | Alt Key | Action |
 |-----|---------|--------|
-| `j` | `Down` | Select next entry |
-| `k` | `Up` | Select previous entry |
-| `⇧L` | `Shift+Right` | Jump to next turn (user prompt) |
-| `⇧H` | `Shift+Left` | Jump to previous turn (user prompt) |
-| `⇧J` | | Jump to next turn at viewport top |
-| `⇧K` | | Jump to previous turn at viewport top |
+| `⇧J` | `Down` | Select next entry |
+| `⇧K` | `Up` | Select previous entry |
+| `l` | `Shift+Right` | Jump to next turn (user prompt) |
+| `h` | `Shift+Left` | Jump to previous turn (user prompt) |
+| `Ctrl+J` | | Jump to next assistant response |
+| `Ctrl+K` | | Jump to previous assistant response |
 | `g` | | Go to top of scrollback |
 | `⇧G` | | Go to bottom of scrollback |
-| `Ctrl+K` | | Scroll up one line (without changing selection) |
-| `Ctrl+J` | | Scroll down one line (without changing selection) |
+| `k` | | Scroll up six lines (without changing selection) |
+| `j` | | Scroll down six lines (without changing selection) |
 | `PageUp` | | Scroll up one page (selection moves to the top of the viewport) |
 | `PageDown` | | Scroll down one page (selection moves to the bottom of the viewport) |
-| `Ctrl+U` | | Scroll up half page |
-| `Ctrl+D` (`Shift+D` in VSCode) | | Scroll down half page |
+| `u` | `Ctrl+U` | Scroll up half page |
+| `d` | `Ctrl+D` (`⇧D` also in VSCode) | Scroll down half page |
 
 `PageUp` and `PageDown` also scroll the conversation while the ordinary prompt
 is focused, without moving focus or changing the draft. An active prompt
@@ -58,8 +58,8 @@ Control how entries are displayed in the scrollback.
 
 | Key | Alt Key | Action |
 |-----|---------|--------|
-| `h` | `Left` | Collapse selected entry |
-| `l` | `Right` | Expand selected entry |
+| `Ctrl+H` | `Left` | Collapse selected entry |
+| `Ctrl+L` | `Right` | Expand selected entry |
 | `e` | | Toggle fold on selected entry |
 | `⇧E` | | Expand all / collapse all entries |
 | `Ctrl+E` | | Expand/collapse all thinking blocks |
@@ -71,7 +71,7 @@ Setting `respect_manual_folds = true` under `[scrollback.scroll]` in
 streaming updates and finish events (for example a thinking block ending)
 leave it alone instead of resetting it, and expanding a block while
 auto-scroll is following the tail stops following so you can read; resume
-with `⇧G`, `j` at the last entry, scrolling past the bottom, or sending a new
+with `⇧G`, `J` at the last entry, scrolling past the bottom, or sending a new
 prompt. `⇧E` clears all pins, and `Ctrl+E` clears pins on thinking blocks.
 
 ### Block Content
@@ -342,7 +342,7 @@ Actions available from any screen.
 | `Ctrl+\` | | Open or toggle the [Agent Dashboard](23-dashboard.md) | No |
 | `Ctrl+Q` | `Ctrl+D` | Quit the application | Yes (double-press within 1000ms) |
 
-**VS Code family terminal** (VS Code, Cursor, Windsurf, Zed integrated terminals): `Ctrl+Q` is captured by the host, so Grok makes **`Ctrl+D` the sole quit key** (`Ctrl+Q` is not bound). Half-page-down is rebound to bare **`Shift+D`**. Mid-turn interject uses **`Ctrl+L`** (no alternates) because `Ctrl+Enter` / `Ctrl+I` do not reliably reach the PTY; extensions are opened via `/plugins` instead of `Ctrl+L`.
+**VS Code family terminal** (VS Code, Cursor, Windsurf, Zed integrated terminals): `Ctrl+Q` is captured by the host, so Grok makes **`Ctrl+D` the sole quit key** (`Ctrl+Q` is not bound). Half-page-down uses bare **`d`** (with `Ctrl+D` / `Shift+D` as alts when scrollback-focused). Mid-turn interject uses **`Ctrl+L`** (no alternates) because `Ctrl+Enter` / `Ctrl+I` do not reliably reach the PTY; extensions are opened via `/plugins` instead of `Ctrl+L`.
 
 > **Returning to the welcome screen has no key binding** — use the `/home` slash command (alias `/welcome`) from inside a session. See [Slash Commands](04-slash-commands.md).
 
@@ -427,16 +427,16 @@ The TUI supports mouse interaction:
 
 ```
 Navigation:       Up/Down (prev/next entry)  Shift+Left/Right (prev/next turn)
-Scrolling:        Ctrl+J/K (line)  PgUp/PgDn (page)  Ctrl+U/D (half page)
+Scrolling:        PgUp/PgDn (page)  Ctrl+U/D (half page alt)
 Focus prompt:     Space or any letter key (auto-focuses and types)
 ```
 
 ### When scrollback is focused (Vim mode)
 
 ```
-Navigation:       j/k (up/down)  H/L (prev/next turn)  K/J (viewport-top turn)  g/G (top/bottom)
-Scrolling:        Ctrl+J/K (line)  Ctrl+U/D (half page; D=Shift+D in VSCode)  PgUp/PgDn (page)
-Folding:          h/l (collapse/expand)  e (toggle)  E (all)
+Navigation:       J/K (select up/down)  h/l (prev/next turn)  Ctrl+K/J (prev/next response)  g/G (top/bottom)
+Scrolling:        j/k (~6 lines)  u/d (half page; Ctrl+U/D alts)  PgUp/PgDn (page)
+Folding:          Ctrl+H/L (collapse/expand)  e (toggle)  E (all)
 Content:          y (copy)  Y (copy cmd)  Enter (fullscreen)
 View:             r (raw markdown)  Ctrl+E (thinking)
 Focus prompt:     i, Tab, or Space

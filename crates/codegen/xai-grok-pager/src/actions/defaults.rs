@@ -74,16 +74,19 @@ pub(super) fn default_actions(
 
     let mut actions = vec![
         // ── Navigation (scrollback) ─────────────────────────────────
+        // AGENT-DECISION(local-keymap): personal scrollback remap — j/k scroll
+        // (~6 lines), J/K select, h/l turns, u/d half-page, Ctrl+h/l fold;
+        // Next/PrevResponse on Ctrl+j/k. Local fork only.
         ActionDef {
             id: ActionId::SelectNext,
             label: "nav",
             description: "Select next entry",
-            default_key: key!('j'),
+            default_key: key!('J'),
             alt_keys: vec![key!(Down)],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
             hint_priority: Some(0),
-            hint_key_display: Some("j/k"),
+            hint_key_display: Some("J/K"),
             requires_confirmation: false,
             long_help: None,
         },
@@ -91,7 +94,7 @@ pub(super) fn default_actions(
             id: ActionId::SelectPrev,
             label: "nav",
             description: "Select previous entry",
-            default_key: key!('k'),
+            default_key: key!('K'),
             alt_keys: vec![key!(Up)],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -104,7 +107,7 @@ pub(super) fn default_actions(
             id: ActionId::NextTurn,
             label: "turn",
             description: "Next turn",
-            default_key: key!('L'),
+            default_key: key!('l'),
             alt_keys: vec![key!(Right, SHIFT)],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -117,7 +120,7 @@ pub(super) fn default_actions(
             id: ActionId::PrevTurn,
             label: "turn",
             description: "Previous turn",
-            default_key: key!('H'),
+            default_key: key!('h'),
             alt_keys: vec![key!(Left, SHIFT)],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -128,9 +131,9 @@ pub(super) fn default_actions(
         },
         ActionDef {
             id: ActionId::NextResponse,
-            label: "turn",
-            description: "Jump to next turn at viewport top",
-            default_key: key!('J'),
+            label: "response",
+            description: "Next response",
+            default_key: key!('j', CONTROL),
             alt_keys: vec![],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -141,9 +144,9 @@ pub(super) fn default_actions(
         },
         ActionDef {
             id: ActionId::PrevResponse,
-            label: "turn",
-            description: "Jump to previous turn at viewport top",
-            default_key: key!('K'),
+            label: "response",
+            description: "Previous response",
+            default_key: key!('k', CONTROL),
             alt_keys: vec![],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -181,8 +184,8 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::ScrollUp,
             label: "scroll up",
-            description: "Scroll up one line",
-            default_key: key!('k', CONTROL),
+            description: "Scroll up six lines",
+            default_key: key!('k'),
             alt_keys: vec![],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -194,8 +197,8 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::ScrollDown,
             label: "scroll down",
-            description: "Scroll down one line",
-            default_key: key!('j', CONTROL),
+            description: "Scroll down six lines",
+            default_key: key!('j'),
             alt_keys: vec![],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
@@ -208,8 +211,8 @@ pub(super) fn default_actions(
             id: ActionId::HalfPageUp,
             label: "half page up",
             description: "Scroll up half page",
-            default_key: key!('u', CONTROL),
-            alt_keys: vec![],
+            default_key: key!('u'),
+            alt_keys: vec![key!('u', CONTROL)],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
             hint_priority: None,
@@ -221,12 +224,14 @@ pub(super) fn default_actions(
             id: ActionId::HalfPageDown,
             label: "half page down",
             description: "Scroll down half page",
-            default_key: if in_vscode {
-                key!('D')
+            // Bare `d` for everyone; Ctrl+d muscle-memory alt. Keep `D` as
+            // alt for VS Code family (was primary when Ctrl+D was quit-only).
+            default_key: key!('d'),
+            alt_keys: if in_vscode {
+                vec![key!('d', CONTROL), key!('D')]
             } else {
-                key!('d', CONTROL)
+                vec![key!('d', CONTROL)]
             },
-            alt_keys: vec![],
             category: Category::ConversationNav,
             context: When::ScrollbackFocused,
             hint_priority: None,
@@ -265,7 +270,7 @@ pub(super) fn default_actions(
             id: ActionId::Collapse,
             label: "fold",
             description: "Collapse selected entry",
-            default_key: key!('h'),
+            default_key: key!('h', CONTROL),
             alt_keys: vec![key!(Left)],
             category: Category::ConversationAction,
             context: When::ScrollbackFocused,
@@ -278,7 +283,7 @@ pub(super) fn default_actions(
             id: ActionId::Expand,
             label: "fold",
             description: "Expand selected entry",
-            default_key: key!('l'),
+            default_key: key!('l', CONTROL),
             alt_keys: vec![key!(Right)],
             category: Category::ConversationAction,
             context: When::ScrollbackFocused,
