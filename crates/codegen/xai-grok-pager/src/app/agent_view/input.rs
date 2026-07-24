@@ -144,9 +144,59 @@ impl AgentView {
     pub(crate) fn is_minimal_mode(&self) -> bool {
         self.prompt.slash_controller.screen_mode().is_minimal()
     }
-    /// It only applies to an empty, Normal-mode composer with no per-pane Esc consumer pending.
-    /// Used only in the overlay cascade; the full-screen Esc policy (clear / rewind while idle; mid-turn cancel or swallow) is untouched.
-    /// While one is in flight, Esc must fall through to [`Self::try_handle_esc_policy`], not detach to the dashboard.
+    /// Whether a bare Esc pressed right now would reach [`Self::try_handle_esc_policy`]'s mid-turn cancel (callers gate on a turn actually running).
+    /// This is the hint-bar predicate deciding when to advertise `Esc` instead of `Ctrl+C` for CancelTurn.
+    /// Composed from the same predicates input routing uses, so the hint cannot claim Esc while a higher-priority consumer would steal the press
+    /// (dropdown, search, viewer/modal, agents/persona modal, needs-input overlay, queued-prompt or inline edit, subagent-view close,
+    /// selection/link/goal/rewind/btw/jump, latent composer mode).
+    /// Conservative on purpose: when false, the registry `Ctrl+C` is shown, which always cancels.
+    /// `esc_owned_before_agent` is the app-level ownership snapshot, passed down by the draw path.
+    /// `AppView::esc_owned_before_agent` covers voice dictation listening or pending cold-start, a focused dev tracing pane, the top-level cloud
+    /// and import-Claude modals, and the dashboard's attached-agent popup; all consume Esc before any agent routing.
+    pub(crate) fn esc_would_cancel_turn(&self, esc_owned_before_agent: bool) -> bool {
+        if esc_owned_before_agent
+            || !crate::app::esc_cancels_turn(self.is_minimal_mode(), self.vim_mode)
+        {
+            return false;
+        }
+        let pane_clear = match self.active_pane {
+            AgentPane::Prompt => {
+                !self.modal_owns_input()
+                    && self.block_viewer.is_none()
+                    && self.line_viewer.is_none()
+                    && !self.prompt.any_dropdown_open()
+                    && !self.prompt.prompt_suggestion_visible()
+                    && self.prompt_input_mode == PromptInputMode::Normal
+            }
+            AgentPane::Scrollback => self.is_bare_scrollback(),
+            _ => false,
+        };
+        pane_clear
+            && matches!(self.prompt_mode, crate::app::queue_edit::PromptMode::Normal)
+            && self.inline_edit.is_none()
+            && !self.is_subagent_view
+            && self.agents_modal.is_none()
+            && self.persona_detail.is_none()
+            && self.no_esc_consumer_pending()
+            && self.no_input_overlay_pending()
+    }
+        /// Esc on the prompt pane in a dashboard overlay backs out to the dashboard
+    /// list (the prompt-focus mirror of the Left-arrow back-out), but only for an
+    /// empty, Normal-mode composer with no per-pane Esc consumer pending. Beyond
+    /// [`Self::is_empty_focused_prompt`] it also requires `PromptInputMode::Normal`
+    /// (so a Bash/Remember/Feedback empty prompt keeps Esc as its mode-exit,
+    /// matching the full-screen view) and [`Self::no_esc_consumer_pending`] (so
+    /// Esc still clears or dismisses a pending text selection / link highlight /
+    /// goal detail / rewind first — Esc, unlike Left, is their consumer). A
+    /// non-empty draft fails the guard so Esc still arms "press again to clear".
+    /// Used only in the overlay cascade; the full-screen Esc policy (clear /
+    /// rewind while idle; mid-turn cancel) is untouched.
+    ///
+    /// Also gated to an idle agent (`!is_turn_running() && !is_cancelling()`):
+    /// while a turn is running or cancelling, Esc must fall through to
+    /// [`Self::try_handle_esc_policy`] (running → cancel; cancelling → retry
+    /// CancelTurn), not detach to the dashboard. Detach mid-turn stays on
+    /// Ctrl+\ / Left.
     pub(crate) fn overlay_esc_backs_out_from_prompt(&self) -> bool {
         self.is_empty_focused_prompt()
             && self.prompt_input_mode == PromptInputMode::Normal
@@ -1228,18 +1278,17 @@ impl AgentView {
         }
         match action_id {
             ActionId::CancelTurn => {
-                if self.stoppable_activity_running() {
-                    self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::CtrlC);
+                // Keyboard cancel is Esc via `try_handle_esc_policy`. This
+                // branch covers palette / mouse / rebind entry points.
+                // Never quit from CancelTurn — quit stays on Ctrl+Q.
+                if self.stoppable_activity_running() || self.any_cancel_pending() {
+                    // Trigger may already be set by Esc policy / mouse; keep
+                    // a non-Esc default only when still unset.
+                    if self.cancel_trigger_hint.is_none() {
+                        self.cancel_trigger_hint =
+                            Some(crate::app::actions::CancelTrigger::CtrlC);
+                    }
                     return InputOutcome::Action(Action::CancelTurn);
-                }
-                if self.any_cancel_pending() {
-                    return InputOutcome::Action(Action::Quit);
-                }
-                if crate::app::minimal_mode_active()
-                    && self.session.state.is_idle()
-                    && self.prompt.text().is_empty()
-                {
-                    return InputOutcome::Action(Action::Quit);
                 }
                 InputOutcome::Unchanged
             }

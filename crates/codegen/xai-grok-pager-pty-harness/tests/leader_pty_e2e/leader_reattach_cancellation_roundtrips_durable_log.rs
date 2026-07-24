@@ -2,9 +2,19 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// The leader must persist a `turn_completed` terminal with `stop_reason == cancelled`. A fresh client must replay
-/// the cancelled transcript through the same leader and land clean. It must still hold that transcript after A, the
-/// original driver, exits. C attaches *before* A is dropped, because `PtyHarness` Drop SIGKILLs the child.
+/// 25. **Leader reattach — cancellation round-trips through the durable log.**
+/// A turn driven on leader client A is Esc-cancelled mid-stream; the leader
+/// must persist a `turn_completed` terminal with `stop_reason == cancelled`
+/// (the producer fail-before). A FRESH client must replay the cancelled
+/// transcript through the same leader and land clean — running, no panic, and
+/// not stranded on the "Waiting"/"Cancelling" spinners — and must still hold
+/// that transcript after A (the original driver) exits. A keep-alive viewer
+/// holds the leader up across A's exit (the leader stops with its last client).
+///
+/// C attaches *before* A is dropped, because `PtyHarness` Drop SIGKILLs the child.
+/// Under full-suite contention, a cold `--resume` handshake racing that teardown flakes with an empty screen for the whole `LEADER_TIMEOUT`.
+/// That flake showed up as the "C replayed the cancelled transcript" timeout.
+/// Replaying while A is still up, then proving C survives A's exit, covers the durable-log replay and the multi-client survival without that race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "PTY e2e; run with cargo test -p xai-grok-pager-pty-harness --test leader_pty_e2e -- --ignored --test-threads=1"]
 async fn leader_reattach_cancellation_roundtrips_durable_log() {
@@ -31,8 +41,8 @@ async fn leader_reattach_cancellation_roundtrips_durable_log() {
     a.wait_for_text(&turn_sentinel(1), STREAM_TIMEOUT)
         .expect("A turn streaming");
 
-    // Ctrl+C on an empty prompt cancels while streaming.
-    a.inject_keys(keys::CTRL_C).expect("A press ctrl+c");
+    // Esc cancels while streaming.
+    a.inject_keys(keys::ESC).expect("A press esc");
     a.update(Duration::from_millis(200));
     // Generous budget: the heavy multi-client leader cluster drains the paced cancel slower than the single-client path
     // Match the test's other waits (LEADER/STREAM_TIMEOUT) rather than the single-client 15s

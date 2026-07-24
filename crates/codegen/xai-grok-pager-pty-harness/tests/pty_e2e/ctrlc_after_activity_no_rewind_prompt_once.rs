@@ -32,7 +32,7 @@ async fn ctrlc_after_activity_no_rewind_prompt_once() {
         .wait_for_text("CANCELME", Duration::from_secs(30))
         .expect("turn streaming");
 
-    harness.inject_keys(keys::CTRL_C).expect("Ctrl+C cancel");
+    harness.inject_keys(keys::ESC).expect("Esc cancel");
     harness
         .wait_for_text("Turn cancelled by user", Duration::from_secs(10))
         .expect("standard cancel marker");

@@ -18,17 +18,14 @@
 //!         Space/i → FocusPrompt
 //!         registry.lookup(key, ScrollbackFocused) → navigation, view, etc.
 //!   → 2. agent level (if pane returned Unchanged):
-//!       registry.lookup(key, AgentScreen) → CancelTurn (Ctrl+C), ToggleYolo, NextModel
-//!       CancelTurn has runtime guards (Running→cancel, Cancelling→quit on Ctrl+C).
-//!       From the prompt pane, Ctrl+C CancelTurn is a two-step gesture:
-//!       a non-empty prompt skips the AgentScreen promotion so the key
-//!       falls through to the widget's clear path; the next Ctrl+C (now
-//!       on an empty prompt) re-enters this level and runs CancelTurn.
+//!       registry.lookup(key, AgentScreen) → ToggleYolo, NextModel, …
+//!       CancelTurn has no default key (palette / mouse / rebind only).
+//!       Ctrl+C is unbound from cancel and from quit on the agent screen;
+//!       with a draft it still clears the prompt via the widget.
 //!   → 3. Esc policy (try_handle_esc_policy) on Prompt or Scrollback only,
 //!       after overlays/dropdowns/selection returned Changed / stole Esc:
-//!       turn running (every mode) → Changed (never cancels; shows a toast
-//!         naming the registry CancelTurn key, Ctrl+C by default)
-//!       turn cancelling → Changed (swallow)
+//!       turn running → CancelTurn (primary stop gesture)
+//!       turn cancelling → CancelTurn (retry lost ack)
 //!       idle + non-empty prompt, prompt pane only → ArmPending ClearPrompt (2× within 800ms, hint)
 //!       idle + empty + messages, either pane (Normal composer mode, no
 //!         needs-input overlay pending, no open history search, and not

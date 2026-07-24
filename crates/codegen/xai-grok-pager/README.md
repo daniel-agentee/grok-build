@@ -42,7 +42,7 @@ src/
 | `Ctrl+P` or `?` | Agent screen | Open command palette |
 | `Ctrl+L` | Any (non–VS Code family) | Open plugins/hooks modal; on VS Code / Cursor / Windsurf / Zed use `/plugins` or `/hooks` (`Ctrl+L` is mid-turn interject) |
 | `Tab` | Prompt | Switch to scrollback |
-| `Esc` | Turn running | Cancel — in minimal mode or with vim scrollback mode off (the default). Fullscreen vim mode: no-op (use `Ctrl+C`) |
+| `Esc` | Turn running | Cancel running turn (primary stop; does not quit) |
 | `Esc` `Esc` | Idle, non-empty prompt | Clear prompt (within 800ms; first press shows hint) |
 | `Esc` `Esc` | Idle, empty prompt + messages | Open rewind picker (silent first press) |
 | `Ctrl+M` | Prompt | Toggle multiline mode |
@@ -50,8 +50,7 @@ src/
 | `/` | Prompt | Start slash command |
 | `@` | Prompt | Start file search |
 | `!` | Prompt (empty) | Enter bash mode |
-| `Ctrl+C` | Prompt (with text) | Clear prompt (even while turn running) |
-| `Ctrl+C` | Prompt (empty) + turn running | Cancel running turn |
+| `Ctrl+C` | Prompt (with text) | Clear prompt only (never cancels turn or quits) |
 | `Ctrl+B` | Agent screen + foreground command running | Send the command to the background |
 | `Ctrl+G` | Agent screen (full TUI) | Toggle the tasks pane |
 | `Ctrl+G` | Ordinary composer (minimal mode) | Edit the draft externally; use the command-palette entry if the chord is reserved |

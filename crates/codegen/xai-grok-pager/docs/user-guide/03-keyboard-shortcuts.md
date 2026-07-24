@@ -97,7 +97,7 @@ Switch between the prompt input and scrollback pane.
 | `Tab` | `Space` (and `i` in vim mode) | Scrollback focused with a card parked | Hand the keyboard back to the card (the bar's focus hint names it) |
 | `Enter` | | Prompt focused | Send the current prompt |
 
-**Esc is not a focus key.** It follows the clear / rewind semantics below, and it never cancels a running turn (`Ctrl+C` does). Nothing about Esc depends on `[ui].vim_mode` (scrollback nav) or `[ui].simple_mode` (prompt editor). Overlays, modals, slash/file dropdowns, voice, search, and selection still steal Esc first.
+**Esc is not a focus key.** It follows cancel / clear / rewind semantics below, independent of `[ui].simple_mode` (prompt editor) and `[ui].vim_mode` (scrollback nav). Overlays, modals, slash/file dropdowns, voice, search, and selection still steal Esc first.
 
 ## Blocking cards
 
@@ -224,17 +224,17 @@ sends it and `Esc` returns to the options.
 
 | State | Gesture | Effect |
 |--------|---------|--------|
-| Turn running (every mode and pane) | `Esc` | Does **not** cancel. Shows a "Press Ctrl+c to cancel the turn" toast; the draft is untouched. Use `Ctrl+C` (or palette / other cancel entry points). |
-| Turn cancelling | `Esc` | Swallowed no-op. `Ctrl+C` in this state escalates toward quit. |
-| Idle + non-empty prompt (text or image chips), **prompt focused** | **2× `Esc` within 800ms** | Clear the prompt; the cleared draft is stashed (`Ctrl+S` or `Alt+S` restores it, images included) and its text ranks first in the `↑` history browse. First press shows “press again to clear”. |
+| Turn running | `Esc` | **Cancel the turn** (primary stop). Does not quit the app. |
+| Turn cancelling | `Esc` | Re-sends cancel (retry if the first ack was lost). |
+| Idle + non-empty prompt (text or image chips), **prompt focused** | **2× `Esc` within 800ms** | Clear the prompt; non-empty text is saved to prompt history. First press shows “press again to clear”. |
 | Idle + empty prompt + conversation messages, **prompt or scrollback focused** | **2× `Esc` within 800ms** | Open the rewind picker (same as `/rewind`). First press is silent (no toast). |
 | Idle + empty + no messages, **or scrollback focused with a draft / moded (`!` `#`) composer / pending needs-input overlay / open history search** | `Esc` | Swallowed no-op (does not focus scrollback). Clear is prompt-pane only; rewind requires an empty Normal-mode composer, no pending overlay, and no open history search. Reading the scrollback never mutates your draft, your composer mode, a question awaiting an answer, or an in-progress search. |
 
 **Mid-turn Esc grace:** for about a second after a mid-turn Esc, the idle rewind arm stays suppressed — mashing Esc at a turn that then ends cannot silently open the rewind picker. Only the rewind arm is held; every other Esc behavior is unaffected.
 
-**Steal-Esc (runs before the mid-turn hint and clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember mode exit** when the prompt is empty (Esc leaves `!` / `#` mode and returns to the normal prompt, even while a turn is running). Bare `/feedback` opens the feedback form; Esc closes it.
+**Steal-Esc (runs before mid-turn cancel / clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember / Feedback mode exit** when the prompt is empty (Esc leaves `!` / `#` / feedback mode and returns to the normal prompt — even while a turn is running).
 
-**Ctrl+C vs Esc:** with a non-empty draft while a turn is running, Ctrl+C clears the draft and keeps the turn; a second Ctrl+C on an empty prompt cancels. Esc never cancels: mid-turn it only points you at Ctrl+C and leaves the draft alone. Idle non-empty Ctrl+C clears in one press; Esc requires two presses within 800ms. The two clears differ in what they leave behind: `Esc Esc` stashes the draft, so `Ctrl+S` brings it back, while `Ctrl+C` discards it (its text is still in the `↑` history).
+**Ctrl+C vs Esc:** `Esc` is the stop gesture while a turn is running. `Ctrl+C` does **not** cancel the turn and does **not** quit the session on the agent screen (so accidental Ctrl+C is safe). With a non-empty draft, Ctrl+C still clears the prompt in one press; idle Esc clear still needs two presses within 800ms. Quit remains `Ctrl+Q` (or `Ctrl+D` in VS Code).
 
 ---
 
@@ -248,7 +248,8 @@ Actions that affect the agent session, available from the agent screen.
 | `?` (Shift+/) | Agent screen | Open the command palette (alt binding) |
 | `Ctrl+M` | Agent screen | Open the model picker / switch model |
 | `Ctrl+M` | Prompt focused | Toggle multiline input mode |
-| `Ctrl+C` | Agent screen | Cancel the current turn (or clear non-empty draft first; see Escape table) |
+| `Ctrl+C` | Prompt focused | Clear a non-empty draft only (does **not** cancel the turn or quit) |
+| `Esc` | Turn running | Cancel the current turn (see Escape table) |
 | `Ctrl+O` | Agent screen | Toggle always-approve (YOLO) mode |
 | `Ctrl+R` | Agent screen | Open the session picker (resume a previous session, same as `/resume`) |
 | `Ctrl+;` (alt: `Ctrl+'`) | Agent screen | Toggle the prompt queue pane (when non-empty). **Local macOS** VS Code family only: primary **`Ctrl+4`** (`;` / `'` still alts). SSH and non-Mac keep **`Ctrl+;`** / **`Ctrl+'`**. |
@@ -457,7 +458,8 @@ Select text:      Shift+←/→ (char) · Alt+Shift+←/→ (word) ·
                   Shift+↑/↓ (row)
 Copy / Cut:       Cmd+C / Cmd+X (with a selection; Kitty-protocol terminals)
 Leave:            Tab (back to scrollback)
-Cancel (running): Ctrl+C (empty prompt; non-empty draft clears first)
+Cancel (running): Esc
+Clear draft:      Ctrl+C (non-empty prompt only; never cancels/quits)
 Clear (idle):     Esc Esc within 800ms (non-empty prompt)
 Rewind (idle):    Esc Esc within 800ms (empty prompt + messages)
 ```
@@ -516,7 +518,7 @@ focused the same chords jump between turns (see Navigation above).
 ```
 Command palette:  Ctrl+P or ?
 Model picker:     Ctrl+M (from scrollback)
-Cancel:           Ctrl+C (see Escape table)
+Cancel:           Esc while turn running (see Escape table)
 Always-approve:   Ctrl+O (toggle YOLO)
 New session:      Ctrl+N (press again, then choose normal/worktree)
 Quit:             Ctrl+Q (or Ctrl+D in VSCode)

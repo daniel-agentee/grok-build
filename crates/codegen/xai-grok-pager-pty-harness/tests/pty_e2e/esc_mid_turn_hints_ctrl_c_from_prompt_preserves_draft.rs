@@ -61,17 +61,6 @@ async fn esc_mid_turn_hints_ctrl_c_from_prompt_preserves_draft() {
         "running-turn Esc must not arm the idle clear\nscreen:\n{screen}"
     );
 
-    // Ctrl+C is the real cancel: the first press clears the draft, the second (empty prompt) cancels
-    harness
-        .inject_keys(keys::CTRL_C)
-        .expect("ctrl+c clears draft");
-    harness
-        .wait_for_text_absent(draft, Duration::from_secs(10))
-        .expect("first Ctrl+C clears the draft");
-    harness.inject_keys(keys::CTRL_C).expect("ctrl+c cancels");
-    harness
-        .wait_for_text("Turn cancelled by user", Duration::from_secs(15))
-        .expect("turn cancelled marker");
     assert!(
         !harness.contains_text("panicked"),
         "pager panicked\nscreen:\n{}",

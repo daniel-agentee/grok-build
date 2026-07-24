@@ -1,4 +1,5 @@
-//! PTY: a user prompt queued behind a running auto-wake turn must survive a Ctrl+C cancel; it runs next and is durable across `--continue`.
+//! PTY: a user prompt queued behind a running auto-wake turn must survive a
+//! Esc cancel — it runs next and is durable across `--continue`.
 //!
 //! The failure chain this guards starts when a background task completes while the agent is idle.
 //! The shell then injects a synthetic `task-completed-<id>` prompt (auto-wake) whose reminder tells the model to poll the task-output tool.
@@ -199,12 +200,12 @@ pub(crate) async fn run_wake_cancel_scenario(gesture: WakeCancelGesture, cast_pr
             });
     }
 
+    // One cancel gesture: must cancel the auto-wake turn (killing the held
+    // sleep), not the queued user prompt.
+    // Local keymap: Ctrl+C is unbound from cancel — CtrlC gesture uses Esc.
     match gesture {
-        WakeCancelGesture::CtrlC => {
-            harness.inject_keys(keys::CTRL_C).expect("press ctrl+c");
-        }
-        WakeCancelGesture::SendNow => {
-            harness.inject_keys(b"\r").expect("press empty Enter");
+        WakeCancelGesture::CtrlC | WakeCancelGesture::Esc => {
+            harness.inject_keys(keys::ESC).expect("press esc");
         }
         WakeCancelGesture::StopClick => {
             harness
