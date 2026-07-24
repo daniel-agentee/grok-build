@@ -1936,6 +1936,10 @@ pub(crate) async fn run(
         ) {
             break;
         }
+
+        // Lazy voice pipeline: only after `/voice` or Space/Ctrl+Space/F8 while
+        // gates allow. Consume the queued cold-start, carrying its hold-ownership
+        // and bound target forward into the live recording it spawns.
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
                 let stt_routes = crate::voice::build_stt_routes(voice_auth_factory.clone());
@@ -1951,7 +1955,11 @@ pub(crate) async fn run(
                 ));
                 app.voice_cmd_tx = Some(cmd_tx);
                 voice_rx = Some(event_rx);
-                tracing::info!("voice pipeline started (/voice or Ctrl+Space)");
+                tracing::info!("voice pipeline started (/voice or Space/Ctrl+Space/F8)");
+                // The spawn is async, so begin capture now the pipeline is live
+                // But only if the user is still somewhere that can receive dictation (an agent prompt or the dashboard dispatch input)
+                // This runs at loop-top before any new input, so that normally can't have changed since the keypress
+                // The else-arm is defensive cleanup so voice mode can't stay on without capture ever starting
                 if matches!(
                     app.active_view,
                     ActiveView::Agent(_) | ActiveView::AgentDashboard
@@ -3310,44 +3318,56 @@ async fn drain_and_process(
             }
             _ => {}
         }
-        if let Event::Key(ke) = ev
-            && is_voice_chord(ke)
-            && !app.voice_hold_owned()
-            && !app.voice_listening()
-            && !app.voice_state.is_pending_cold_start()
-            && active_feedback_modal_open(app)
-        {
-            return false;
-        }
+        // Voice capture chord (Space / Ctrl+Space / F8), handled here before
+        // normal routing so the release reaches us and the key never lands as
+        // text. Hold-to-talk where releases are reported (press records, release
+        // stops), else tap toggle. A release is only ours when a hold session
+        // owns it, so a bare Space release (Ctrl lifted first, or bare-Space
+        // PTT) stops hold-to-talk without eating every Space release during
+        // normal typing.
+        //
+        // Bare Space is PTT only in hold+releases when the surface is eligible
+        // (scrollback / empty prompt / empty dashboard box) or a hold session
+        // already owns the key — so non-empty prompt typing still inserts
+        // spaces, and FocusPrompt still gets Space under toggle / no-releases.
+        // `[ui].voice_keybind_enabled` (read live, like `voice_capture_mode`)
+        // silences chord presses without touching `/voice` — see
+        // `voice_chord_claims_event` for the exact press/release/hold gating.
         if let Event::Key(ke) = ev
             && app.voice_mode_enabled
             && xai_grok_voice::AUDIO_SUPPORTED
-            && is_voice_chord(ke)
-            && voice_chord_claims_event(
-                ke.kind,
-                app.current_ui.voice_keybind_enabled.unwrap_or(true),
-                app.voice_hold_owned(),
-            )
         {
             let hold_mode = crate::settings::canonical_voice_capture_mode(
                 app.current_ui.voice_capture_mode.as_deref(),
             ) == "hold";
-            let action = voice_chord_action(
-                hold_mode,
-                crate::app::kitty_releases_reported(),
-                ke.kind,
-                app.voice_listening(),
-                app.voice_hold_owned(),
-            );
-            if let Some(action) = action {
-                let effs = dispatch::dispatch(action, app);
-                if process_effects(effs, tasks, app, progress_tx) {
-                    return true;
+            let releases = crate::app::kitty_releases_reported();
+            let allow_bare_space = hold_mode
+                && releases
+                && (app.voice_hold_owned() || app.bare_space_voice_eligible());
+            if is_voice_chord(ke, allow_bare_space)
+                && voice_chord_claims_event(
+                    ke.kind,
+                    app.current_ui.voice_keybind_enabled.unwrap_or(true),
+                    app.voice_hold_owned(),
+                )
+            {
+                let action = voice_chord_action(
+                    hold_mode,
+                    releases,
+                    ke.kind,
+                    app.voice_listening(),
+                    app.voice_hold_owned(),
+                );
+                if let Some(action) = action {
+                    let effs = dispatch::dispatch(action, app);
+                    if process_effects(effs, tasks, app, progress_tx) {
+                        return true;
+                    }
+                    needs_draw = true;
+                    had_non_resize_change = true;
                 }
-                needs_draw = true;
-                had_non_resize_change = true;
+                return false;
             }
-            return false;
         }
         let is_resize = matches!(ev, Event::Resize(_, _));
         let _rescue_guard = routed
@@ -3572,15 +3592,26 @@ fn voice_chord_claims_event(kind: KeyEventKind, keybind_enabled: bool, hold_owne
     }
     kind != KeyEventKind::Release && keybind_enabled
 }
-/// The voice-capture chord: **Ctrl+Space** or **F8**.
-/// A press needs the exact chord (matching the registry, so Shift+F8 / Ctrl+Alt+Space don't fire).
-/// Callers gate release handling on an owning hold session, so a stray bare release is a no-op.
-fn is_voice_chord(ke: &KeyEvent) -> bool {
+
+/// The voice-capture chord: **Space** (hold-to-talk only, gated by
+/// `allow_bare_space`), **Ctrl+Space**, or **F8**.
+///
+/// A press needs the exact chord (matching the registry, so Shift+F8 /
+/// Ctrl+Alt+Space don't fire). Bare Space is opt-in via `allow_bare_space` so
+/// typing spaces in a non-empty prompt and FocusPrompt under toggle mode stay
+/// intact. A release matches the key alone (Space/F8), since on Kitty the Ctrl
+/// release can precede Space and drop the CONTROL bit — and bare-Space PTT also
+/// stops on a bare release. Callers gate release handling on an owning hold
+/// session, so a stray bare release is a no-op.
+fn is_voice_chord(ke: &KeyEvent, allow_bare_space: bool) -> bool {
     match ke.kind {
         KeyEventKind::Release => matches!(ke.code, KeyCode::Char(' ') | KeyCode::F(8)),
         _ => {
+            let bare_space =
+                ke.code == KeyCode::Char(' ') && ke.modifiers == KeyModifiers::NONE;
             (ke.code == KeyCode::Char(' ') && ke.modifiers == KeyModifiers::CONTROL)
                 || (ke.code == KeyCode::F(8) && ke.modifiers.is_empty())
+                || (allow_bare_space && bare_space)
         }
     }
 }
@@ -3623,11 +3654,15 @@ fn coalesce_live_keys(events: Vec<TimedInputEvent>) -> Vec<TimedInputEvent> {
             events
         };
     }
+
+    // Remove Release events — handlers ignore them and they'd break run
+    // detection. Exception: voice-chord releases (needed for hold-to-talk).
+    // `allow_bare_space` is unused on Release (Space/F8 key alone always match).
     let events: Vec<TimedInputEvent> = events
         .into_iter()
         .filter(|ev| {
             !matches!(&ev.event, Event::Key(ke)
-                if ke.kind == KeyEventKind::Release && !is_voice_chord(ke))
+                if ke.kind == KeyEventKind::Release && !is_voice_chord(ke, false))
         })
         .collect();
     let mut result = Vec::with_capacity(events.len());
@@ -4634,13 +4669,16 @@ mod tests {
     #[test]
     fn is_voice_chord_press_exact_release_keycode() {
         use KeyEventKind::{Press, Release};
-        let hit = |code, mods, kind| {
-            is_voice_chord(&KeyEvent {
-                code,
-                modifiers: mods,
-                kind,
-                state: KeyEventState::NONE,
-            })
+        let hit = |code, mods, kind, bare| {
+            is_voice_chord(
+                &KeyEvent {
+                    code,
+                    modifiers: mods,
+                    kind,
+                    state: KeyEventState::NONE,
+                },
+                bare,
+            )
         };
         let (sp, f8, ctrl, none) = (
             KeyCode::Char(' '),
@@ -4648,11 +4686,21 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyModifiers::NONE,
         );
-        assert!(hit(sp, ctrl, Press) && hit(f8, none, Press));
-        assert!(!hit(sp, ctrl | KeyModifiers::ALT, Press));
-        assert!(!hit(f8, KeyModifiers::SHIFT, Press) && !hit(sp, none, Press));
-        assert!(hit(sp, none, Release) && hit(f8, none, Release));
-        assert!(!hit(KeyCode::Char('a'), none, Release));
+        // Press: exact chord only — stray mods / bare Space don't fire unless
+        // the hold+Kitty eligibility gate opts bare Space in.
+        assert!(hit(sp, ctrl, Press, false) && hit(f8, none, Press, false));
+        assert!(!hit(sp, ctrl | KeyModifiers::ALT, Press, false));
+        assert!(!hit(f8, KeyModifiers::SHIFT, Press, false));
+        assert!(!hit(sp, none, Press, false));
+        assert!(hit(sp, none, Press, true), "bare Space allowed when gated in");
+        assert!(
+            !hit(sp, KeyModifiers::SHIFT, Press, true),
+            "Shift+Space is not bare Space PTT"
+        );
+        // Release: key alone — a bare Space release (Ctrl lifted first, or bare
+        // Space PTT) matches so hold-to-talk can still stop; non-chord keys don't.
+        assert!(hit(sp, none, Release, false) && hit(f8, none, Release, false));
+        assert!(!hit(KeyCode::Char('a'), none, Release, false));
     }
     #[test]
     fn feedback_modal_blocks_voice_chord_targeting() {

@@ -278,7 +278,7 @@ const VOICE_CAPTURE_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "hold",
         display: "Hold to talk",
-        description: "Hold Ctrl+Space / F8 to record, release to stop. Needs a Kitty-protocol terminal.",
+        description: "Hold Space (empty prompt / scrollback), Ctrl+Space, or F8 to record; release to stop. Needs a Kitty-protocol terminal.",
     },
 ];
 
@@ -1409,9 +1409,10 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Editor,
             owner: SettingOwner::Shell,
             label: "Voice capture",
-            description: "How the voice chord (Ctrl+Space / F8) behaves: Toggle \
+            description: "How the voice chord (Space / Ctrl+Space / F8) behaves: Toggle \
                           (press to start/stop) or Hold to talk (hold to record, \
-                          release to stop; needs a Kitty-protocol terminal).",
+                          release to stop; needs a Kitty-protocol terminal). Hold \
+                          mode also binds bare Space on an empty prompt or scrollback.",
             keywords: &[
                 "voice",
                 "dictation",
@@ -1422,6 +1423,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "stt",
                 "toggle",
                 "hold",
+                "space",
                 "ctrl+space",
                 "f8",
                 "push-to-talk",
