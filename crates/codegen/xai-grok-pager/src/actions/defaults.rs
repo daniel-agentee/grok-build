@@ -660,8 +660,9 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::EnableVoiceMode,
             label: "voice mode",
-            description: "Start voice dictation (Ctrl+Space / F8)",
-            // No key binding (`KeyCode::Null`): dispatched directly by the voice chord's hold-to-talk press in the event loop, not via the registry
+            description: "Start voice dictation (Space / Ctrl+Space / F8)",
+            // No key binding (`KeyCode::Null`): dispatched directly by the voice
+            // chord's hold-to-talk press in the event loop, not via the registry.
             default_key: key!(Null),
             alt_keys: vec![],
             category: Category::Input,
@@ -672,21 +673,29 @@ pub(super) fn default_actions(
             long_help: None,
         },
         ActionDef {
-            // Voice capture chord (the same capture as `/voice`; Esc/Enter stop). Ctrl+Space decodes on every terminal
-            // (without the Kitty protocol it collapses to NUL, reported as `Char(' ')`+CONTROL).
+            // Voice capture chord (same surface as `/voice`; Esc/Enter stop).
+            // Registry binds Ctrl+Space + F8 (always). Bare Space is PTT only in
+            // hold mode under Kitty, gated in the event loop so a non-empty
+            // prompt still types spaces (and FocusPrompt keeps Space under
+            // toggle / non-Kitty). Ctrl+Space decodes on every terminal
+            // (without Kitty it collapses to NUL, reported as `Char(' ')`+
+            // CONTROL); F8 is a fallback where Ctrl+Space is taken (e.g. macOS
+            // input-source switching; use Fn+F8 on a laptop). The event loop
+            // maps a press to hold-to-talk or tap-toggle per
+            // `[ui].voice_capture_mode` before normal routing.
             id: ActionId::VoiceToggle,
             label: "mic",
-            description: "Voice dictation (Ctrl+Space / F8)",
+            description: "Voice dictation (Space / Ctrl+Space / F8)",
             default_key: key!(' ', CONTROL),
             alt_keys: vec![key!(F(8))],
             category: Category::Input,
             // `Always` so the toggle key works on the agent screen and the session-less dashboard (resolved via the global fallthrough)
             context: When::Always,
             hint_priority: Some(11),
-            hint_key_display: Some("Ctrl+Space / F8"),
+            hint_key_display: Some("Space / Ctrl+Space / F8"),
             requires_confirmation: false,
             long_help: Some(
-                "Microphone capture for dictation, bound to Ctrl+Space (or F8: handy where Ctrl+Space is taken, e.g. macOS input-source switching; use Fn+F8 on a laptop).\nBehavior follows the Voice capture setting: toggle (press to start, press again to stop) or hold-to-talk (hold to record, release to stop), where hold needs a Kitty-protocol terminal and falls back to toggle elsewhere. `/voice` toggles everywhere.\nSpeech is transcribed straight into the prompt.",
+                "Microphone capture for dictation. Hold Space (hold-to-talk on a Kitty-protocol terminal; primary when the prompt is empty or scrollback is focused), Ctrl+Space, or F8 (handy where Ctrl+Space is taken, e.g. macOS input-source switching; use Fn+F8 on a laptop).\nBehavior follows the Voice capture setting: toggle (press to start, press again to stop) or hold-to-talk (hold to record, release to stop), where hold needs a Kitty-protocol terminal and falls back to toggle elsewhere. While typing in a non-empty prompt, Space still inserts a space — use Ctrl+Space / F8 for PTT. `/voice` toggles everywhere.\nSpeech is transcribed straight into the prompt.",
             ),
         },
         // Prompt history has no key chord of its own:

@@ -1752,6 +1752,48 @@ impl AppView {
     pub fn voice_hold_owned(&self) -> bool {
         self.voice_state.hold()
     }
+    /// Surfaces where bare **Space** may start hold-to-talk without stealing
+    /// typed spaces from a non-empty prompt (or Space-to-toggle in modals).
+    ///
+    /// Eligible:
+    /// - agent **scrollback** (bare — no modal/viewer/search)
+    /// - agent **empty focused prompt** (no draft yet)
+    /// - dashboard **empty** dispatch / peek-reply box
+    /// - welcome (Ctrl+Space already cold-starts a session here)
+    ///
+    /// Non-empty prompt/dispatch keeps Space as a normal character; use
+    /// Ctrl+Space or F8 for PTT while typing. Toggle mode / non-Kitty never
+    /// consults this (event loop only opts bare Space in under hold+Kitty).
+    pub fn bare_space_voice_eligible(&self) -> bool {
+        use crate::app::agent_view::AgentPane;
+        match self.active_view {
+            ActiveView::Agent(id) => {
+                let Some(agent) = self.agents.get(&id) else {
+                    return false;
+                };
+                match agent.active_pane {
+                    AgentPane::Scrollback => agent.is_bare_scrollback(),
+                    AgentPane::Prompt => agent.is_empty_focused_prompt(),
+                    _ => false,
+                }
+            }
+            ActiveView::AgentDashboard => {
+                let Some(dashboard) = self.dashboard.as_ref() else {
+                    return false;
+                };
+                // Attached-agent popup hides dispatch/peek — no box to dictate into.
+                if dashboard.attached_agent.is_some() {
+                    return false;
+                }
+                if dashboard.peek.is_some() {
+                    dashboard.peek_reply.text().is_empty()
+                } else {
+                    dashboard.dispatch.text().is_empty()
+                }
+            }
+            ActiveView::Welcome => true,
+        }
+    }
     /// The prompt box that owns in-flight dictation, if any.
     pub fn voice_recording_target(&self) -> Option<VoiceTarget> {
         self.voice_state.target()
