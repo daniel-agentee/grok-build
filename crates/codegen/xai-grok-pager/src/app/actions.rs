@@ -1161,7 +1161,11 @@ impl PlanModeKind {
 /// The shell's deny-list treats every gesture value as a stop, so new variants need no shell change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelTrigger {
-    /// `Ctrl+C` pressed (the default cancel keybinding). A bare Esc never cancels; it only hints at this key.
+    /// Wire value `"esc"` — bare Esc while a turn is running (primary stop
+    /// gesture) or while cancelling (retry if the first ack was lost).
+    Esc,
+    /// Legacy / palette / rebind path that still labels itself Ctrl+C on the
+    /// wire. Default CancelTurn key is unbound; Esc owns keyboard cancel.
     CtrlC,
     /// The on-screen cancel button was clicked.
     Mouse,

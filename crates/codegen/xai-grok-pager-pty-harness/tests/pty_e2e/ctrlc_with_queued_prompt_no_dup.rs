@@ -44,7 +44,7 @@ async fn ctrlc_with_queued_prompt_no_dup() {
         .wait_for_text(PROMPT_B, Duration::from_secs(20))
         .expect("B visible as a queued row");
 
-    harness.inject_keys(keys::CTRL_C).expect("Ctrl+C cancel A");
+    harness.inject_keys(keys::ESC).expect("Esc cancel A");
     turn_a.release();
 
     // Standard cancel (queued prompts skip the rewind): A is cancelled and B promotes as the next turn

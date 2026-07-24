@@ -53,9 +53,10 @@ async fn cancel_discards_buffered_interjection() {
         harness.screen_contents()
     );
 
-    // Explicit Ctrl+C on the steer turn (still streaming): a REAL cancel, whose marker must render
-    // The earlier send-now expectation was consumed and must not silence it
-    harness.inject_keys(keys::CTRL_C).expect("cancel turn");
+    // Explicit Ctrl+C on the steer turn (still streaming): a REAL cancel,
+    // whose marker must render — the earlier send-now expectation was
+    // consumed and must not silence it.
+    harness.inject_keys(keys::ESC).expect("cancel turn");
     harness
         .wait_for_text("Turn cancelled by user", Duration::from_secs(10))
         .expect("explicit cancel marker");

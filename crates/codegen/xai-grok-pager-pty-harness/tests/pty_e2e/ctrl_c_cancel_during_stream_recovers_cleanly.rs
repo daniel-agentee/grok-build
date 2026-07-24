@@ -2,14 +2,21 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Cancelling a streaming turn must show the "Turn cancelled" marker exactly once. The pane must
-/// stay usable afterwards: no `TurnCancelling` latch, the next typed prompt runs.
+/// 17. **Esc-cancel mid-stream recovers cleanly.**
+///
+/// Cancelling a streaming turn must (a) surface the "Turn cancelled" marker
+/// exactly once — the turn end now arrives via BOTH the PromptResponse RPC
+/// and the `prompt_complete` broadcast (which arms the lost-response
+/// reconcile), and a double-finish would render two markers — and (b) leave
+/// the pane usable: no `TurnCancelling` latch, the next typed prompt runs.
+/// Cancel is via Esc (Ctrl+C is unbound from cancel).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn ctrl_c_cancel_during_stream_recovers_cleanly() {
+async fn esc_cancel_during_stream_recovers_cleanly() {
     let content = ContentController::start().await.expect("start content");
-    // A long, paced response keeps the turn visibly streaming while Ctrl+C is pressed
-    // The mock otherwise dumps all SSE events instantly and the turn completes before the cancel lands
+    // A long, paced response keeps the turn visibly streaming while Esc is
+    // pressed (the mock otherwise dumps all SSE events instantly and the
+    // turn completes before the cancel lands).
     let long_response = format!(
         "{MOCK_RESPONSE_SENTINEL} {}",
         "streaming filler words for the cancellation window. ".repeat(120)
@@ -33,8 +40,8 @@ async fn ctrl_c_cancel_during_stream_recovers_cleanly() {
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("stream started");
 
-    // Ctrl+C on an empty prompt cancels while streaming.
-    harness.inject_keys(keys::CTRL_C).expect("press ctrl+c");
+    // Esc cancels while streaming.
+    harness.inject_keys(keys::ESC).expect("press esc");
     harness.update(Duration::from_millis(200));
 
     harness

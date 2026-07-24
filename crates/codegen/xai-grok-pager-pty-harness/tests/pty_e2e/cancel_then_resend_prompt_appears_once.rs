@@ -54,8 +54,13 @@ async fn cancel_then_resend_prompt_appears_once() {
             )
         });
 
-    harness.inject_keys(keys::CTRL_C).expect("Ctrl+C rewind");
-    // Yank, then send right away without waiting for the UI to settle
+    harness.inject_keys(keys::ESC).expect("Esc cancel-rewind");
+    // Require the rewound state to *settle*, not just flash true: the pager
+    // clears the scrollback block optimistically, but the shell's trim of the
+    // rewound copy from session history is a separate round-trip. On a slow,
+    // contended runner, resending during that gap pairs the stale copy with
+    // the resend in one wire request (the 2x this test guards). Holding the
+    // rewound state continuously lets the trim land first.
     harness
         .wait_until(
             "OLD yanked back into the composer",

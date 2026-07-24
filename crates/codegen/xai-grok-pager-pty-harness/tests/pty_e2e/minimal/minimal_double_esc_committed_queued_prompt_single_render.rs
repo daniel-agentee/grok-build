@@ -2,9 +2,13 @@
 #[allow(unused_imports)]
 use crate::common::*;
 
-/// Minimal mode guards against rendering a committed queued prompt twice (the `in_flight_committed`
-/// case). Cancelling its turn before the first token arrives (via. CtrlCtrl+C here) must therefore SKIP
-/// the composer rewind.
+/// Minimal mode guards the documented `in_flight_committed` dogfood
+/// double-show: a promoted queued prompt's "❯ " block commits (prints) into
+/// native scrollback immediately, so cancelling its turn pre-first-token
+/// (cancel gesture is Esc) must SKIP the
+/// composer rewind — a rewind would leave the printed block on screen AND
+/// refill the composer, showing the prompt twice. Standard cancel instead:
+/// the block renders exactly once and the cancel marker is visible.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn minimal_double_esc_committed_queued_prompt_single_render() {
@@ -60,9 +64,10 @@ async fn minimal_double_esc_committed_queued_prompt_single_render() {
         harness.full_text()
     );
 
-    // Cancel the promoted turn before its first token arrives
-    // The committed block forces the standard cancel path (rewind skipped): marker renders, composer stays empty, and the prompt count does NOT grow
-    harness.inject_keys(keys::CTRL_C).expect("Ctrl+C cancel");
+    // Cancel the promoted turn pre-first-token. The committed block forces
+    // the standard cancel path (rewind skipped): marker renders, composer
+    // stays empty, and the prompt count does NOT grow.
+    harness.inject_keys(keys::ESC).expect("Esc cancel");
     harness
         .wait_for_full_text("Turn cancelled by user", Duration::from_secs(15))
         .expect("standard cancel marker (not a silent rewind)");

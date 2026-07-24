@@ -502,15 +502,19 @@ pub(super) fn default_actions(
             id: ActionId::CancelTurn,
             label: "cancel",
             description: "Cancel turn",
-            default_key: key!('c', CONTROL),
+            // No default key chord: cancel is owned by the Esc policy
+            // (`try_handle_esc_policy`) so idle Esc clear/rewind stays
+            // separate from mid-turn stop. Palette / mouse / slash still
+            // reach this action by id. Hint shows Esc as the gesture.
+            default_key: key!(Null),
             alt_keys: vec![],
             category: Category::GettingStarted,
             context: When::AgentScreen,
             hint_priority: None,
-            hint_key_display: None,
+            hint_key_display: Some("Esc"),
             requires_confirmation: false,
             long_help: Some(
-                "Interrupts the agent's current turn and stops generation, keeping the session open.\nCtrl+C cancels when the prompt is empty; with a non-empty draft it clears the prompt first and leaves the turn running.\nEsc never cancels a turn; pressed mid-turn it shows a reminder to use Ctrl+C.\nIt stops the turn, not the app; use the quit shortcut to exit.",
+                "Interrupts the agent's current turn and stops generation, keeping the session open.\nPress Esc while a turn is running to cancel (overlays and dropdowns still steal Esc first).\nEsc while cancelling re-sends cancel; it stops the turn, not the app — use the quit shortcut (Ctrl+Q) to exit.\nCtrl+C is unbound from cancel so accidental Ctrl+C does not stop the turn or the session.",
             ),
         },
         ActionDef {

@@ -104,7 +104,7 @@ Once authenticated, Grok presents a full-screen TUI with two main areas:
 
 Type a message and press `Enter` to send it. Grok reads files, runs commands, and edits code as needed. Each tool run streams into the scrollback in real time.
 
-Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Esc` cancels it (the exception is fullscreen vim scrollback mode, where mid-turn `Esc` is a no-op; minimal mode cancels even with vim on); `Ctrl+C` cancels once the composer is empty — with a draft, the first press only clears it. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To scroll with `j`/`k`, select with `J`/`K`, jump turns with `h`/`l`, and fold with `Ctrl+H`/`Ctrl+L` instead, enable Vim mode.
+Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, press `Esc` to cancel it (`Ctrl+C` does not cancel or quit — it only clears a non-empty draft). Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To scroll with `j`/`k`, select with `J`/`K`, jump turns with `h`/`l`, and fold with `Ctrl+H`/`Ctrl+L` instead, enable Vim mode.
 
 ### File References
 

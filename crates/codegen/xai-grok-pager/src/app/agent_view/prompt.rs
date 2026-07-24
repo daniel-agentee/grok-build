@@ -453,8 +453,10 @@ impl AgentView {
             return InputOutcome::Changed;
         }
 
-        // 0e. Exit special input mode on empty prompt using per-mode exit keys (Bash/Remember: Backspace/Esc/Ctrl+W/U/C).
-        //     With non-empty text, Esc falls through to Esc policy (cancel / mid-turn swallow / clear / rewind). Mode is preserved for re-focus.
+        // 0e. Exit special input mode on empty prompt using per-mode exit keys
+        //     (Bash/Remember: Backspace/Esc/Ctrl+W/U/C; Feedback: Backspace/Esc only).
+        //     With non-empty text, Esc falls through to Esc policy
+        //     (mid-turn cancel / clear / rewind). Mode is preserved for re-focus.
         if self.prompt_input_mode.is_exit_key(key) && self.prompt.text().is_empty() {
             self.prompt_input_mode = PromptInputMode::Normal;
             return InputOutcome::Changed;
@@ -635,24 +637,32 @@ impl AgentView {
         }
 
         // Otherwise keys like Ctrl+\ / Ctrl+/ (or, historically, Alt-Left / Alt-Right as word-jump cursor moves) would be eaten by the textarea
-        // The promotion is for non-text bindings only (Ctrl/Alt arrows, Ctrl+P, function keys, etc.)
-        // We must explicitly skip `KeyCode::Char(_)` events whose modifiers are NONE or SHIFT-only
+        // The When::AgentScreen bindings (NavBack, NavForward, ExitSession, ...) would then silently no-op when the prompt is focused
+        // PromptFocused-bound actions still win above (see `When::PromptFocused` lookup)
+        //
+        // The promotion is for non-text bindings only (Ctrl/Alt
+        // arrows, Ctrl+P, function keys, etc.). We must explicitly
+        // skip `KeyCode::Char(_)` events whose modifiers are NONE or
+        // SHIFT-only -- those are user text input under the Kitty
+        // enhanced keyboard protocol (e.g. `?+SHIFT` for `?`,
+        // `1+SHIFT` for `!`), and the `When::AgentScreen` registry
+        // currently binds `?+SHIFT` as the alt key for CommandPalette.
+        // See the parallel guard at the top-of-file `?` handler in
+        // `handle_input` (`active_pane != Prompt`).
+        //
+        // CancelTurn has no default key (Esc cancel is owned by
+        // `try_handle_esc_policy`); Ctrl+C only clears draft via the
+        // widget path below and never cancels or quits the session.
         let is_text_char = crate::input::key::is_text_input_key(key);
         // Ctrl+R is consumed here for the session picker, so the textarea never sees it.
         if !is_text_char && let Some(action_id) = registry.lookup(key, When::AgentScreen) {
-            // Ctrl+C is a two-step "clear, then cancel" gesture when the prompt has a draft
-            // The first press clears the textarea; the second (now on an empty prompt) cancels the running turn
-            // Skipping the agent-screen promotion here lets Ctrl+C fall through to the widget's clear path
-            let cancel_with_draft =
-                matches!(action_id, ActionId::CancelTurn) && !self.prompt.text().is_empty();
-            if !cancel_with_draft {
-                let outcome = self.handle_agent_action_with_registry(action_id, registry);
-                // Only consume the key if the agent action actually did something
-                // When idle, runtime-guarded actions like CancelTurn return Unchanged so the key can fall through to the prompt widget
-                // Ctrl+C, for example, then clears prompt text when no turn is running
-                if !matches!(outcome, InputOutcome::Unchanged) {
-                    return outcome;
-                }
+            let outcome = self.handle_agent_action_with_registry(action_id, registry);
+            // Only consume the key if the agent action actually did
+            // something. When idle, runtime-guarded actions like
+            // CancelTurn return Unchanged so the key can fall through
+            // to the prompt widget (e.g. clear / text editing).
+            if !matches!(outcome, InputOutcome::Unchanged) {
+                return outcome;
             }
         }
 
@@ -765,9 +775,12 @@ impl AgentView {
             return None;
         }
 
-        // This bare Esc is now owned by the policy
-        // Every path below consumes the event (mid-turn hint / arm-clear / arm-rewind / idle swallow)
-        // Cancel the Esc-then-d flight-recorder combo here, uniformly
+        // This bare Esc is now owned by the policy: every path below consumes the
+        // event (mid-turn cancel / arm-clear / arm-rewind / idle
+        // swallow). Disarm the Esc→d flight-recorder combo here, uniformly — the
+        // `0-esc-d` block set `esc_pressed_at` on this same press, but since the
+        // policy is handling the Esc, a following `d` is the user's text, not a
+        // dump.
         self.esc_pressed_at = None;
 
         // A blocking card is still pending, parked behind the scrollback (the only way its Esc reaches this policy)
@@ -776,23 +789,26 @@ impl AgentView {
             return Some(InputOutcome::Changed);
         }
 
-        // Mid-turn (running or already cancelling), every mode: Esc never cancels; point at the registry cancel binding instead
-        // A streaming wake turn follows the same policy as a running turn (the pane state is Idle only because wake turns are not adopted)
-        // Push the grace deadline out so an Esc mash past the turn's end cannot silently arm the rewind picker below
-        if self.stoppable_activity_running() || self.any_cancel_pending() {
-            if self.stoppable_activity_running()
-                && let Some(cancel_key) = registry.key_for(ActionId::CancelTurn)
-            {
-                let cancel_key = cancel_key.display();
-                self.show_cancel_key_hint(&format!("Press {cancel_key} to cancel the turn"));
-            }
+        // Mid-turn: always cancel (local keymap — Esc is primary stop even in
+        // fullscreen vim). Also while already cancelling / wake-turn so a lost
+        // ack is re-sent. Push the grace deadline so an Esc mash past cancel
+        // cannot silently arm the rewind picker below.
+        if self.session.state.is_turn_running()
+            || self.wake_turn_active()
+            || self.any_cancel_pending()
+        {
+            self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::Esc);
             self.suppress_rewind_arm(std::time::Instant::now());
             return Some(InputOutcome::Changed);
         }
 
-        // CLEAR mutates the composer (drops text/image chips), so it fires only while the PROMPT pane owns keys
-        // Clearing a draft the reader has scrolled past would be a surprising cross-pane side effect
-        // REWIND requires an EMPTY prompt (checked below), so there is no draft to clobber or silently stash and it may arm from EITHER pane
+        // The two idle arms split on pane ownership. CLEAR mutates the composer
+        // (drops text/image chips), so it fires only while the PROMPT pane owns
+        // keys — clearing a draft the reader has scrolled past would be a
+        // surprising cross-pane side effect. REWIND requires an EMPTY prompt
+        // (checked below), so there is no draft to clobber or silently stash and
+        // it may arm from EITHER pane. The mid-turn cancel / cancel-retry
+        // (above) stays cross-pane; any other idle Esc swallows (below).
         let has_content = !self.prompt.text().is_empty() || !self.prompt.images.is_empty();
 
         // Idle, non-empty (text and/or image chips), prompt pane: arm clear (double Esc)

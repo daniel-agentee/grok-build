@@ -791,16 +791,18 @@ mod tests {
     }
 
     #[test]
-    fn cancel_at_agent_level() {
+    fn cancel_unbound_from_ctrl_c() {
         let registry = ActionRegistry::defaults();
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(
-            registry.lookup(&ctrl_c, When::AgentScreen),
-            Some(ActionId::CancelTurn)
-        );
-        // Not at scrollback or global level
+        // Accidental Ctrl+C must not cancel; Esc policy owns stop.
+        assert_eq!(registry.lookup(&ctrl_c, When::AgentScreen), None);
         assert_eq!(registry.lookup(&ctrl_c, When::ScrollbackFocused), None);
         assert_eq!(registry.lookup(&ctrl_c, When::Always), None);
+        let def = registry.find(ActionId::CancelTurn).unwrap();
+        assert_eq!(def.hint_key_display, Some("Esc"));
+        // Esc is not registry-bound either (idle clear/rewind stay on policy).
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(registry.lookup(&esc, When::AgentScreen), None);
     }
 
     #[test]

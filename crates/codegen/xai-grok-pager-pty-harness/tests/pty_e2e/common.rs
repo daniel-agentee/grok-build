@@ -517,7 +517,8 @@ pub(crate) async fn drive_to_scrollback_with_turn(
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("turn rendered");
     // Leave the prompt so scrollback-only Ctrl+R can fire (unbound on the prompt).
-    // Tab is the leave-prompt / focus-scrollback key (Esc is reserved for the cancel / clear / rewind policy)
+    // Tab is the leave-prompt / focus-scrollback key (Esc is cancel mid-turn /
+    // clear-rewind idle).
     harness.inject_keys(b"\t").expect("focus scrollback (tab)");
     harness.update(Duration::from_millis(500));
     // Footer shows "Space:prompt" when scrollback owns keys (prompt is not focused).
