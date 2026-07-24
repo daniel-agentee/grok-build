@@ -668,7 +668,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Vim scrollback navigation",
-            description: "Enable vim keys (h/j/k/l, gg/G, /) for navigating the scrollback. Does not affect the input prompt.",
+            description: "Enable vim keys (j/k scroll, J/K select, h/l turns, u/d half-page, gg/G, /) for navigating the scrollback. Does not affect the input prompt.",
             keywords: &[
                 "vim",
                 "scrollback",

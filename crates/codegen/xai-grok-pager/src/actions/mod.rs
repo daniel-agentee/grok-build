@@ -381,9 +381,18 @@ impl ActionRegistry {
         Self::new(actions)
     }
 
-    /// The scrollback `j`/`k` scroll and the dashboard `j`/`k` row-nav only resolve when vim-mode is on. With vim-mode
-    /// off the letters fall through so the caller can type them into its prompt. Arrow, Tab, Esc, Space, PgUp, PgDn,
-    /// `?`, and all `Ctrl+letter` shortcuts always resolve. Only the bare-letter primary or alt is gated.
+    /// Look up an action like [`Self::lookup`] but optionally suppress bare-letter (or `Shift+letter`) bindings when `vim_mode == false`.
+    /// The suppression is for contexts where those letters double as text-input keys.
+    ///
+    /// Applies to [`When::ScrollbackFocused`] and [`When::DashboardFocused`]:
+    /// the scrollback `j`/`k` (and other letter) bindings and the dashboard
+    /// `j`/`k` row-nav only resolve when vim-mode is on. With vim-mode off
+    /// the letters fall through so the caller can type them into its prompt
+    /// — the dashboard dispatch input and the agent prompt both rely on this.
+    ///
+    /// Arrow, Tab, Esc, Space, PgUp, PgDn, `?`, and all `Ctrl+letter` shortcuts always resolve.
+    /// They come in as either the action's `default_key` (e.g. `PageUp`, `Esc`) or `alt_keys` (arrows on `SelectNext`, `Collapse`, etc.).
+    /// Only the bare-letter primary or alt is gated; arrow `alt_keys` on the same `ActionDef` still match.
     pub fn lookup_with_mode(
         &self,
         event: &KeyEvent,
@@ -800,7 +809,7 @@ mod tests {
         let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(
             registry.lookup(&j, When::ScrollbackFocused),
-            Some(ActionId::SelectNext)
+            Some(ActionId::ScrollDown)
         );
         assert_eq!(registry.lookup(&j, When::AgentScreen), None);
         assert_eq!(registry.lookup(&j, When::Always), None);
