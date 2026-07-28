@@ -35,6 +35,9 @@ const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
 /// "Prompt suggestions" is the ghost text Tab autocompletes.
 const PROMPT_SUGGESTIONS_DEFAULT: bool = true;
+/// Default first-enter chat focus is prompt (product default). `true` only when
+/// `[ui].default_chat_focus = "scrollback"`.
+const DEFAULT_CHAT_FOCUS_SCROLLBACK_DEFAULT: bool = false;
 const KEEP_TEXT_SELECTION_DEFAULT: TextSelection = TextSelection::Flash;
 /// This matches the legacy `[ui].scroll_speed` default.
 const SCROLL_SPEED_DEFAULT: u8 = 50;
@@ -376,6 +379,38 @@ pub fn set_prompt_suggestions(enabled: bool) {
     PROMPT_SUGGESTIONS_LOADED.with(|l| l.set(true));
 }
 
+// -- Default chat focus (prompt | scrollback) --------------------------------
+
+thread_local! {
+    static DEFAULT_CHAT_FOCUS_SCROLLBACK_CURRENT: Cell<bool> =
+        const { Cell::new(DEFAULT_CHAT_FOCUS_SCROLLBACK_DEFAULT) };
+    static DEFAULT_CHAT_FOCUS_SCROLLBACK_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `[ui].default_chat_focus == "scrollback"`, seeding from disk on
+/// first call. Unset / `"prompt"` / unrecognized → `false` (product default:
+/// prompt-focused on first enter).
+pub fn load_default_chat_focus_scrollback() -> bool {
+    DEFAULT_CHAT_FOCUS_SCROLLBACK_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_str_from_effective_config("default_chat_focus")
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("scrollback"));
+            DEFAULT_CHAT_FOCUS_SCROLLBACK_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    DEFAULT_CHAT_FOCUS_SCROLLBACK_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached default-chat-focus scrollback flag (tests / optimistic update).
+pub fn set_default_chat_focus_scrollback(scrollback: bool) {
+    DEFAULT_CHAT_FOCUS_SCROLLBACK_CURRENT.with(|c| c.set(scrollback));
+    DEFAULT_CHAT_FOCUS_SCROLLBACK_LOADED.with(|l| l.set(true));
+}
+
+// -- keep_text_selection (`flash` | `hold`) ----------------------------------
+
 thread_local! {
     static KEEP_TEXT_SELECTION_CURRENT: Cell<TextSelection> =
         const { Cell::new(KEEP_TEXT_SELECTION_DEFAULT) };
@@ -611,6 +646,7 @@ pub fn prime(ui: &UiConfig) {
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
     let _ = load_prompt_suggestions();
+    set_default_chat_focus_scrollback(ui.default_chat_focus_is_scrollback());
     // `default_selected_permission` owns its own cache in `permission_cursor`.
     crate::appearance::permission_cursor::prime();
 }
@@ -732,6 +768,10 @@ mod tests {
         assert_eq!(
             PROMPT_SUGGESTIONS_DEFAULT,
             ui.prompt_suggestions.unwrap_or(PROMPT_SUGGESTIONS_DEFAULT)
+        );
+        assert_eq!(
+            DEFAULT_CHAT_FOCUS_SCROLLBACK_DEFAULT,
+            ui.default_chat_focus_is_scrollback()
         );
         assert_eq!(KEEP_TEXT_SELECTION_DEFAULT, text_selection_from_ui(&ui));
         assert_eq!(

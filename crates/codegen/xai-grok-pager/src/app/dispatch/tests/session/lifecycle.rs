@@ -1129,11 +1129,23 @@ fn new_session_falls_back_to_app_cwd_on_welcome_screen() {
 }
 #[test]
 fn new_session_starts_with_prompt_focused() {
+    crate::appearance::cache::set_default_chat_focus_scrollback(false);
     let mut app = test_app();
     assert!(matches!(app.active_view, ActiveView::Welcome));
     dispatch(Action::NewSession, &mut app);
     let id = AgentId(0);
     assert_eq!(expect_agent(&app, id).active_pane, ActivePane::Prompt);
+}
+
+#[test]
+fn new_session_starts_with_scrollback_when_configured() {
+    crate::appearance::cache::set_default_chat_focus_scrollback(true);
+    let mut app = test_app();
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    dispatch(Action::NewSession, &mut app);
+    let id = AgentId(0);
+    assert_eq!(app.agents[&id].active_pane, ActivePane::Scrollback);
+    crate::appearance::cache::set_default_chat_focus_scrollback(false);
 }
 #[test]
 fn switch_model_deferred_when_no_session_id() {

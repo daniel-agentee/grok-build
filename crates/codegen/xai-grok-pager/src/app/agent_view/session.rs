@@ -459,6 +459,10 @@ impl AgentView {
             InputMode::Vim
         };
         view.set_input_mode(mode);
+        // First-enter focus: `[ui].default_chat_focus` (unset → prompt product
+        // default). Applied after `set_input_mode` so the config wins over the
+        // vim empty-prompt → scrollback seed when simple mode is off.
+        view.active_pane = crate::views::agent::default_chat_pane();
         view
     }
     /// Register a child view; the sole path that turns a view into a child, so the role is stamped exactly once.
