@@ -148,9 +148,16 @@ pub struct UiConfig {
     /// `"fullscreen"` | `"minimal"`; unset uses the product default, fullscreen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
-    /// Retired hidden opt-in for terminal-like double/triple-click word/line selection. Superseded by `keep_text_selection =
-    /// "word_select"`. Still read only when `keep_text_selection` is unset; Settings clears this on write. `"word_select"` |
-    /// unset.
+    /// Default pane focus when first opening/entering a chat window.
+    /// `"scrollback"` | `"prompt"`. Unset → product default `"prompt"`.
+    /// Config-file-only knob (no /settings row). Does not affect intentional
+    /// mid-session focus switches (send, FocusPrompt, typing into prompt, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_chat_focus: Option<String>,
+    /// Retired hidden opt-in for terminal-like double/triple-click word/line
+    /// selection. Superseded by `keep_text_selection = "word_select"`. Still
+    /// read only when `keep_text_selection` is unset; Settings clears this on
+    /// write. `"word_select"` | unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub double_click_action: Option<String>,
     /// Per-tip contextual-hint opt-outs (`[ui.contextual_hints]`).
@@ -286,6 +293,7 @@ impl Default for UiConfig {
             prompt_suggestions: None,
             cursor_blink: None,
             screen_mode: None,
+            default_chat_focus: None,
             double_click_action: None,
             contextual_hints: ContextualHints::default(),
             combine_queued_prompts: None,
@@ -351,6 +359,15 @@ impl UiConfig {
             return s == "hold" || s == "word_select";
         }
         matches!(self.selection_highlight_duration_ms, Some(0))
+    }
+
+    /// Product default for first-enter chat focus is prompt. Only an explicit
+    /// `"scrollback"` value opts into scrollback-first open.
+    pub fn default_chat_focus_is_scrollback(&self) -> bool {
+        matches!(
+            self.default_chat_focus.as_deref(),
+            Some(s) if s.eq_ignore_ascii_case("scrollback")
+        )
     }
 }
 
@@ -491,5 +508,24 @@ mod tests {
         assert!(DisplayRefreshSettings::default().is_default());
         let ui = UiConfig::default();
         assert!(ui.display_refresh.is_default());
+    }
+
+    #[test]
+    fn default_chat_focus_is_scrollback_only_when_explicit() {
+        let mut ui = UiConfig::default();
+        assert!(!ui.default_chat_focus_is_scrollback());
+
+        ui.default_chat_focus = Some("prompt".into());
+        assert!(!ui.default_chat_focus_is_scrollback());
+
+        ui.default_chat_focus = Some("scrollback".into());
+        assert!(ui.default_chat_focus_is_scrollback());
+
+        ui.default_chat_focus = Some("Scrollback".into());
+        assert!(ui.default_chat_focus_is_scrollback());
+
+        let from_json: UiConfig =
+            serde_json::from_str(r#"{"default_chat_focus":"scrollback"}"#).expect("parse");
+        assert!(from_json.default_chat_focus_is_scrollback());
     }
 }

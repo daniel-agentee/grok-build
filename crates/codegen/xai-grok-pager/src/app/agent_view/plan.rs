@@ -1252,13 +1252,27 @@ mod plan_chip_tests {
     #[test]
     fn new_agent_respects_persisted_simple_mode_for_mode_and_pane() {
         crate::appearance::cache::set_simple_mode(true);
+        crate::appearance::cache::set_default_chat_focus_scrollback(false);
         let a1 = make_agent();
         assert!(a1.is_simple_mode());
         assert_eq!(a1.active_pane, ActivePane::Prompt);
         crate::appearance::cache::set_simple_mode(false);
         let a2 = make_agent();
         assert!(!a2.is_simple_mode());
-        assert_eq!(a2.active_pane, ActivePane::Scrollback);
+        // `[ui].default_chat_focus` unset → product default Prompt, even when
+        // simple mode is off (vim empty-prompt seed is overridden on create).
+        assert_eq!(a2.active_pane, ActivePane::Prompt);
+    }
+
+    #[test]
+    fn new_agent_respects_default_chat_focus_scrollback() {
+        crate::appearance::cache::set_simple_mode(true);
+        crate::appearance::cache::set_default_chat_focus_scrollback(true);
+        let agent = make_agent();
+        assert_eq!(agent.active_pane, ActivePane::Scrollback);
+        crate::appearance::cache::set_default_chat_focus_scrollback(false);
+        let agent2 = make_agent();
+        assert_eq!(agent2.active_pane, ActivePane::Prompt);
     }
     #[test]
     fn set_input_mode_reconciles_pane_orthogonal_to_active_modal_field() {

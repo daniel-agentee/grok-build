@@ -8,7 +8,7 @@ use crate::app::actions::{
     Action, AfterSessionDelete, Effect, PermissionModePersist, SwitchModelError,
 };
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState, DeferredModelSwitch};
-use crate::app::agent_view::{ActivePane, AgentView};
+use crate::app::agent_view::{AgentView, McpInitProgress};
 use crate::app::app_view::{ActiveView, AppView, TrustState};
 use crate::app::cancel_latency::TurnEnd;
 use crate::app::consent::ConsentState;
@@ -424,7 +424,13 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
     {
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        agent.active_pane = ActivePane::Prompt;
+        agent
+            .prompt
+            .slash_controller
+            .registry_mut()
+            .set_plugins_visible(!app.appearance.disable_plugins);
+        // First-enter focus from `[ui].default_chat_focus` (unset → prompt).
+        agent.active_pane = crate::views::agent::default_chat_pane();
     }
     if stay_on_welcome {
         app.home_session_agent = Some(agent_id);

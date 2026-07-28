@@ -39,6 +39,19 @@ pub enum ActivePane {
     /// Consolidated panel dock above the prompt (remote `dock_enabled`).
     Dock,
 }
+
+/// Default pane when first opening/entering a chat (`[ui].default_chat_focus`).
+///
+/// Unset / `"prompt"` → [`ActivePane::Prompt`] (product default). Explicit
+/// `"scrollback"` → [`ActivePane::Scrollback`]. Single mapping used by session
+/// create/load paths so stock stays prompt-first without the config key.
+pub fn default_chat_pane() -> ActivePane {
+    if crate::appearance::cache::load_default_chat_focus_scrollback() {
+        ActivePane::Scrollback
+    } else {
+        ActivePane::Prompt
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InputMode {
     #[default]
