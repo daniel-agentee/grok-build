@@ -1742,7 +1742,8 @@ impl AppView {
     /// Eligible:
     /// - agent **scrollback** (bare — no modal/viewer/search)
     /// - agent **empty focused prompt** (no draft yet)
-    /// - dashboard **empty** dispatch / peek-reply box
+    /// - dashboard **empty** dispatch / peek-reply box (not rename / location
+    ///   picker / worktree dialog — those own the keyboard exclusively)
     /// - welcome (Ctrl+Space already cold-starts a session here)
     ///
     /// Non-empty prompt/dispatch keeps Space as a normal character; use
@@ -1765,6 +1766,16 @@ impl AppView {
                 let Some(dashboard) = self.dashboard.as_ref() else {
                     return false;
                 };
+                // Exclusive text modes own the keyboard (rename types Space as a
+                // char; location picker / worktree dialog have query fields).
+                // Without this, hold+Kitty bare-Space PTT steals Space before
+                // dashboard handle_input can route it.
+                if dashboard.rename.is_some()
+                    || dashboard.location_picker.is_some()
+                    || dashboard.worktree_dialog.is_some()
+                {
+                    return false;
+                }
                 // Attached-agent popup hides dispatch/peek — no box to dictate into.
                 if dashboard.attached_agent.is_some() {
                     return false;
@@ -10720,6 +10731,29 @@ pub(crate) mod tests {
         assert!(
             app.voice_listening(),
             "entering a session from the dashboard must not auto-stop the mic"
+        );
+    }
+    /// Bare Space is PTT on empty dashboard dispatch, but not while a session
+    /// rename draft owns the keyboard (Ctrl+R) — Space must insert into the title.
+    #[test]
+    fn bare_space_voice_ineligible_during_dashboard_rename() {
+        let mut app = test_app();
+        app.active_view = ActiveView::AgentDashboard;
+        app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+        assert!(
+            app.bare_space_voice_eligible(),
+            "empty dispatch on dashboard is bare-Space PTT eligible"
+        );
+        app.dashboard.as_mut().unwrap().rename =
+            Some(crate::views::dashboard::state::RenameDraft {
+                row: crate::views::dashboard::DashboardRowId::TopLevel(
+                    super::super::agent::AgentId(0),
+                ),
+                draft: "hello".into(),
+            });
+        assert!(
+            !app.bare_space_voice_eligible(),
+            "rename draft owns Space so bare-Space PTT must stay off"
         );
     }
     /// Attach a popup overlay onto a freshly-built `test_app_with_agent`
