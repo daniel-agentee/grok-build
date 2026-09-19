@@ -1933,6 +1933,32 @@ impl AppView {
             None
         }
     }
+    /// App-level Esc owners that consume the key BEFORE any agent input routing.
+    /// This is the render-boundary decision handed to the agent hint path (`AgentView::draw`, then `esc_would_cancel_turn`).
+    /// A hint bar rendered beneath one of these thus never advertises `Esc cancel`.
+    ///
+    /// Mirrors `handle_input`'s intercepts, in their order:
+    /// - the focused dev tracing pane (step 1a consumes all non-global keys)
+    /// - the cloud modal (step 1d)
+    /// - the import-Claude modal (agent-arm intercept)
+    /// - [`Self::voice_esc_outcome`]: listening OR pending cold-start, the handler's actual condition, not the render-only recording flag
+    /// - the dashboard's attached-agent popup (dashboard-arm intercept)
+    ///
+    /// Keep this list in lockstep with those intercepts when adding a top-level Esc owner.
+    pub(crate) fn esc_owned_before_agent(&self) -> bool {
+        if matches!(self.active_view, ActiveView::AgentDashboard)
+            && self.dashboard.as_ref().and_then(|d| d.attached_agent).is_some_and(|id| {
+                self.agents.get(&id).is_some_and(|agent| {
+                    !agent.stoppable_activity_running() && !agent.any_cancel_pending()
+                })
+            })
+        {
+            return true;
+        }
+        self.import_claude_modal.is_some()
+            || self.voice_listening()
+            || self.voice_state.pending_cold_start()
+    }
     /// Commit interim on real send keys only (not multiline bare Enter).
     fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {
         if self.registry.matches_id(ActionId::InterjectPrompt, key) {
@@ -2354,8 +2380,12 @@ impl AppView {
 }
 impl AppView {
     /// Handle a terminal event. Routes through the input layer stack:
-    /// Pending action check (double-press confirmation)
-    /// Quit always goes through double-press confirmation, even when escalated from agent-level (e.g., Ctrl-C while cancelling).
+    ///
+    /// 1. Pending action check (double-press confirmation)
+    /// 2. Active view (Welcome or Agent; agent does pane and agent-level)
+    /// 3. Global actions (quit with confirmation)
+    ///
+    /// Quit always goes through double-press confirmation.
     pub fn handle_input(&mut self, ev: &Event) -> InputOutcome {
         self.handle_input_at_with_paste_provenance(ev, Instant::now(), PasteProvenance::Terminal)
     }
@@ -2793,7 +2823,11 @@ impl AppView {
                     if let Event::Key(key) = ev
                         && key.kind != KeyEventKind::Release
                     {
-                        let close_via_esc = key.code == KeyCode::Esc;
+                        let close_via_esc = key.code == KeyCode::Esc
+                            && key.modifiers.is_empty()
+                            && self.agents.get(&agent_id).is_some_and(|agent| {
+                                !agent.stoppable_activity_running() && !agent.any_cancel_pending()
+                            });
                         let close_via_action = self
                             .registry
                             .lookup(key, crate::actions::When::Always)
@@ -4397,6 +4431,7 @@ impl AppView {
         let voice_interim = voice_on_surface
             .then(|| self.voice_interim().map(str::to_owned))
             .flatten();
+        let esc_owned_before_agent = self.esc_owned_before_agent();
         let scroll_debug_panel = self.scroll_debug_panel();
         let dev_fps_rows = self.dev_fps_rows();
         let fps_overlay = self.fps_hud.overlay(dev_fps_rows);
@@ -4839,6 +4874,7 @@ impl AppView {
                                         voice_available,
                                         voice_listening,
                                         voice_interim: voice_interim.as_deref(),
+                                        esc_owned_before_agent,
                                         status_line: status_line_frame.clone(),
                                         workspace_dashboard_enabled: self
                                             .workspace_dashboard_enabled,
@@ -4975,6 +5011,7 @@ impl AppView {
                                                         false,
                                                         link_spans,
                                                         AppRenderParams {
+                                                            esc_owned_before_agent,
                                                             workspace_dashboard_enabled: self
                                                                 .workspace_dashboard_enabled,
                                                             ..Default::default()
@@ -10560,25 +10597,21 @@ pub(crate) mod tests {
             "wheel must not reach the background scroll path while the cheatsheet is open",
         );
     }
-    /// Ctrl+C on the session-less dashboard arms the quit confirmation
-    /// (like the agent view) and a second press confirms. Regression for
-    /// "Ctrl+C/D/Q do nothing on the dashboard prompt".
+    /// Ctrl+C on the session-less dashboard is inert; quit is Ctrl+Q.
     #[test]
-    fn ctrl_c_on_dashboard_arms_then_confirms_quit() {
+    fn ctrl_c_on_dashboard_does_not_arm_or_quit() {
         let mut app = test_app();
         app.active_view = ActiveView::AgentDashboard;
         app.dashboard = Some(crate::views::dashboard::DashboardState::new());
         let outcome = app.handle_input(&key_event(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(matches!(outcome, InputOutcome::Changed));
-        assert!(
-            app.pending_action.is_some(),
-            "Ctrl+C on the dashboard must arm a pending quit confirmation"
-        );
+        assert!(!matches!(outcome, InputOutcome::Action(Action::Quit)));
+        assert!(app.pending_action.is_none());
         let outcome = app.handle_input(&key_event(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(
-            matches!(outcome, InputOutcome::Action(Action::Quit)),
-            "second Ctrl+C must quit, got {outcome:?}"
+            !matches!(outcome, InputOutcome::Action(Action::Quit)),
+            "second Ctrl+C must remain inert, got {outcome:?}"
         );
+        assert!(app.pending_action.is_none());
     }
     /// Ctrl+Q on the dashboard arms quit via the global `When::Always`
     /// lookup (it's not bound to `When::DashboardFocused`).
@@ -11948,7 +11981,7 @@ pub(crate) mod tests {
     /// the `handle_input` filter must clear `attached_agent`
     /// immediately rather than waiting for the next draw frame.
     #[test]
-    fn minimal_double_ctrl_c_arms_then_quits() {
+    fn minimal_double_ctrl_c_does_not_arm_or_quit() {
         let prev = crate::app::minimal_mode_active();
         crate::app::set_minimal_mode_active_for_test(true);
         let mut app = test_app_with_agent();
@@ -11959,10 +11992,10 @@ pub(crate) mod tests {
         let armed = app.pending_action.is_some();
         let o2 = app.handle_input(&key_event(KeyCode::Char('c'), KeyModifiers::CONTROL));
         crate::app::set_minimal_mode_active_for_test(prev);
-        assert!(armed, "first Ctrl+C should arm quit (o1={o1:?})");
+        assert!(!armed, "first Ctrl+C must not arm quit (o1={o1:?})");
         assert!(
-            matches!(o2, InputOutcome::Action(crate::app::actions::Action::Quit)),
-            "second Ctrl+C should quit (o2={o2:?})"
+            !matches!(o2, InputOutcome::Action(crate::app::actions::Action::Quit)),
+            "second Ctrl+C must not quit (o2={o2:?})"
         );
     }
     #[test]

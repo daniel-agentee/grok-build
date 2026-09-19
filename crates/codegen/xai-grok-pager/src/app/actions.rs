@@ -1176,6 +1176,7 @@ impl CancelTrigger {
     /// Snake_case wire string sent as `_meta.cancelTrigger`.
     pub fn as_wire_str(self) -> &'static str {
         match self {
+            Self::Esc => "esc",
             Self::CtrlC => "ctrl_c",
             Self::Mouse => "mouse",
             Self::DashboardStop => "dashboard_stop",

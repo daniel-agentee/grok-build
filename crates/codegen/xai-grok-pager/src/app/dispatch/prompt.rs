@@ -637,6 +637,17 @@ pub(super) fn dispatch_send_prompt_inner(
     literal: bool,
     is_follow_up: bool,
 ) -> Vec<Effect> {
+    dispatch_send_prompt_submission(app, text, None, consume_input, literal, is_follow_up)
+}
+
+pub(super) fn dispatch_send_prompt_submission(
+    app: &mut AppView,
+    text: String,
+    submission: Option<crate::views::prompt_widget::StashedPrompt>,
+    consume_input: bool,
+    literal: bool,
+    is_follow_up: bool,
+) -> Vec<Effect> {
     // Submitting is a fresh intent that retires any armed double-press. The
     // AppView pending-action check only resets on KEY events, so a submit with
     // no intervening key (mouse send, follow-up chip click `SubmitFollowUp`,

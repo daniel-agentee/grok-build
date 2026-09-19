@@ -785,23 +785,15 @@ pub(super) fn default_actions(
             id: ActionId::Quit,
             label: "quit",
             description: "Quit",
-            default_key: if in_vscode {
-                key!('d', CONTROL)
-            } else {
-                key!('q', CONTROL)
-            },
-            alt_keys: if in_vscode {
-                vec![]
-            } else {
-                vec![key!('d', CONTROL)]
-            },
+            default_key: key!('q', CONTROL),
+            alt_keys: vec![key!('d', CONTROL)],
             category: Category::GettingStarted,
             context: When::Always,
             hint_priority: Some(10),
             hint_key_display: None,
             requires_confirmation: true,
             long_help: Some(
-                "Exits the app. Requires confirmation: press twice in quick succession;\na lone press is treated as a stray key and ignored.\nBound to Ctrl+Q, with Ctrl+D as an alias (Ctrl+D is primary in VS Code's terminal).",
+                "Exits the app. Requires confirmation: press twice in quick succession;\na lone press is treated as a stray key and ignored.\nBound to Ctrl+Q, with Ctrl+D as an alias.",
             ),
         },
         ActionDef {
