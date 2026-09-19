@@ -1311,7 +1311,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
     if from_welcome {
         take_welcome_composer_onto_agent(app, agent_id);
         if let Some(agent) = app.agents.get_mut(&agent_id) {
-            agent.active_pane = ActivePane::Prompt;
+            agent.active_pane = crate::views::agent::ActivePane::Prompt;
         }
     }
     let minted_session_id = if load_session_id.is_none() {

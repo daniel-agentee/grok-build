@@ -449,9 +449,13 @@ impl AgentView {
 
         // 0e. Exit special input mode on empty prompt using per-mode exit keys
         //     (Bash/Remember: Backspace/Esc/Ctrl+W/U/C; Feedback: Backspace/Esc only).
-        //     With non-empty text, Esc falls through to Esc policy
-        //     (mid-turn cancel / clear / rewind). Mode is preserved for re-focus.
-        if self.prompt_input_mode.is_exit_key(key) && self.prompt.text().is_empty() {
+        //     While activity is running, bare Esc belongs to the stop policy;
+        //     other exit keys still leave the mode as prompt-editing actions.
+        if self.prompt_input_mode.is_exit_key(key)
+            && self.prompt.text().is_empty()
+            && !(key.code == KeyCode::Esc
+                && (self.stoppable_activity_running() || self.any_cancel_pending()))
+        {
             self.prompt_input_mode = PromptInputMode::Normal;
             return InputOutcome::Changed;
         }
@@ -784,10 +788,7 @@ impl AgentView {
         // fullscreen vim). Also while already cancelling / wake-turn so a lost
         // ack is re-sent. Push the grace deadline so an Esc mash past cancel
         // cannot silently arm the rewind picker below.
-        if self.session.state.is_turn_running()
-            || self.wake_turn_active()
-            || self.any_cancel_pending()
-        {
+        if self.stoppable_activity_running() || self.any_cancel_pending() {
             self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::Esc);
             self.suppress_rewind_arm(std::time::Instant::now());
             return Some(InputOutcome::Changed);

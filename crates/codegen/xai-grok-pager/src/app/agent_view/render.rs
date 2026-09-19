@@ -43,6 +43,9 @@ pub struct AppRenderParams<'a> {
     pub voice_listening: bool,
     /// Interim transcript for the prompt overlay while dictating.
     pub voice_interim: Option<&'a str>,
+    /// App-level Esc ownership snapshot; the single producer is `AppView::esc_owned_before_agent`.
+    /// Feeds the hint path so the bar never advertises `Esc cancel` while an app-level owner would consume it.
+    pub esc_owned_before_agent: bool,
     /// The status row this frame paints, or `Off` when this frame has none.
     pub status_line: crate::views::status_line::StatusLineFrame,
     pub workspace_dashboard_enabled: bool,
@@ -257,7 +260,7 @@ impl AgentView {
     /// Single source of truth for context-sensitive shortcuts (pane, overlays, sub-modes, selection state, turn running, plan/queue).
     /// Both the bar renderer and the Ctrl+. cheatsheet Current section delegate here, so the two stay identical in the active context.
     pub fn current_shortcut_hints(&self, registry: &ActionRegistry) -> Vec<HintItem> {
-        match self.shortcuts_bar_content(registry) {
+        match self.shortcuts_bar_content(registry, false) {
             ShortcutsBarContent::Surface(hints) | ShortcutsBarContent::Pane(hints) => hints,
             ShortcutsBarContent::Hidden => vec![],
         }
@@ -274,7 +277,11 @@ impl AgentView {
         }
     }
     /// The bar names the surface the keys actually reach, so it asks [`AgentView::key_owner`] rather than keeping an order of its own.
-    fn shortcuts_bar_content(&self, registry: &ActionRegistry) -> ShortcutsBarContent {
+    fn shortcuts_bar_content(
+        &self,
+        registry: &ActionRegistry,
+        esc_owned_before_agent: bool,
+    ) -> ShortcutsBarContent {
         use crate::views::shortcuts_bar::HintItem;
         match self.key_owner() {
             KeyOwner::LineViewer => self.line_viewer_bar(),
@@ -313,7 +320,9 @@ impl AgentView {
                 HintItem::new(key!(Tab), "next field"),
                 self.card_esc_hint(),
             ]),
-            KeyOwner::Pane => ShortcutsBarContent::Pane(self.normal_pane_hints(registry)),
+            KeyOwner::Pane => {
+                ShortcutsBarContent::Pane(self.normal_pane_hints(registry, esc_owned_before_agent))
+            }
         }
     }
     /// An open line viewer paints its own hints over this row further down `draw`, so the bar is silent.
@@ -337,7 +346,11 @@ impl AgentView {
     }
     /// Shared "normal pane" hints: the flag computation, `build_hints`, and the queue hint.
     /// Single source of truth for the two former duplicated blocks in `current_shortcut_hints` and `draw`.
-    fn normal_pane_hints(&self, registry: &ActionRegistry) -> Vec<HintItem> {
+    fn normal_pane_hints(
+        &self,
+        registry: &ActionRegistry,
+        esc_owned_before_agent: bool,
+    ) -> Vec<HintItem> {
         let fold_label = self.selected_fold_label();
         let is_editing = matches!(self.prompt_mode, PromptMode::EditingQueued { .. });
         let selected_entry = self
@@ -480,6 +493,7 @@ impl AgentView {
             self.surface(),
             (self.session.state.is_turn_running() || self.wake_turn_active())
                 && !self.renders_parked(),
+            self.esc_would_cancel_turn(esc_owned_before_agent),
             !self.visible_queue_is_empty(),
             self.queue.mutation(),
             selected_is_user_prompt,
@@ -584,6 +598,7 @@ impl AgentView {
             voice_available,
             voice_listening,
             voice_interim,
+            esc_owned_before_agent,
             status_line,
             workspace_dashboard_enabled,
             overlay_header,
@@ -3213,7 +3228,7 @@ impl AgentView {
             self.pane_areas = layout.pane_areas();
             return (None, crate::terminal::overlay::clear().map(Into::into));
         }
-        match self.shortcuts_bar_content(registry) {
+        match self.shortcuts_bar_content(registry, esc_owned_before_agent) {
             ShortcutsBarContent::Hidden => {}
             ShortcutsBarContent::Surface(hints) => {
                 ShortcutsBar::new(&hints)

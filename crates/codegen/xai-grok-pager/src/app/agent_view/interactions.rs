@@ -24,9 +24,10 @@ enum QuestionSwitch {
     Prev,
 }
 impl AgentView {
-    /// Handle key input for the permission card.
-    /// Like the question card it has an option-row mode and text modes (a followup message to the agent, and a hand-written always-allow pattern).
-    /// `Esc` steps back down through them ([`AgentView::card_esc`]) and `Ctrl+C` is the only cancel.
+    /// Handle key input for the permission card. Like the question card it has
+    /// an option-row mode and text modes (a followup message to the agent, and
+    /// a hand-written always-allow pattern); `Esc` is the ladder back down
+    /// through them ([`AgentView::card_esc`]); Esc remains the turn-stop key.
     pub(super) fn handle_permission_key(&mut self, key: &KeyEvent) -> InputOutcome {
         use crate::views::permission_view::PermissionFocus;
         if key.code == KeyCode::Esc {
@@ -224,9 +225,9 @@ impl AgentView {
         let Some(ctv) = self.cancel_turn_view.as_mut() else {
             return InputOutcome::Unchanged;
         };
+        // Ctrl+C is prompt/draft editing input, never a turn cancel or quit.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::CtrlC);
-            return InputOutcome::Action(Action::CancelTurn);
+            return InputOutcome::Changed;
         }
         if let Some(walk) = RowWalk::from_key(key) {
             ctv.active_idx = walk.step(ctv.active_idx, CancelTurnChoice::ALL.len());

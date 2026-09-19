@@ -375,10 +375,11 @@ impl AgentView {
         {
             return Some(InputOutcome::Changed);
         }
-        let child_in_scrollback = self
-            .subagent_views
-            .get(&child_sid)
-            .is_some_and(|c| c.is_bare_scrollback());
+        let child_in_scrollback = self.subagent_views.get(&child_sid).is_some_and(|c| {
+            c.is_bare_scrollback()
+                && !c.stoppable_activity_running()
+                && !c.any_cancel_pending()
+        });
         if child_in_scrollback
             && key.is_some_and(|key| key!('q').matches(key) || key.code == KeyCode::Esc)
         {

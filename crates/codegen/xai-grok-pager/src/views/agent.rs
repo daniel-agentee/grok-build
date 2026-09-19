@@ -721,6 +721,7 @@ pub(crate) fn build_hints(
     vim_mode: bool,
     surface: ViewSurface,
     is_turn_running: bool,
+    esc_would_cancel_turn: bool,
     has_queued_follow_up: bool,
     queue_mutation: QueueMutation,
     selected_is_user_prompt: bool,
@@ -1015,7 +1016,13 @@ pub(crate) fn build_hints(
             hints
         }
     };
-    if is_turn_running && let Some(def) = registry.find(ActionId::CancelTurn) {
+    // Esc is the only keyboard stop gesture. If a higher-priority surface
+    // currently owns Esc, do not advertise a stale Ctrl+C fallback that does
+    // not actually cancel the turn.
+    if is_turn_running
+        && esc_would_cancel_turn
+        && let Some(def) = registry.find(ActionId::CancelTurn)
+    {
         hints.push(def.hint());
     }
     let has_composer_payload = !prompt.text().trim().is_empty() || is_editing_queued;
@@ -1088,6 +1095,7 @@ mod tests {
             ViewSurface::Root,
             false,
             false,
+            false,
             QueueMutation::PerRowKind,
             selected_is_user_prompt,
             selected_is_agent_message,
@@ -1120,6 +1128,7 @@ mod tests {
             false,
             true,
             ViewSurface::Root,
+            false,
             false,
             false,
             QueueMutation::PerRowKind,
@@ -1155,6 +1164,7 @@ mod tests {
             false,
             false,
             ViewSurface::Root,
+            is_turn_running,
             is_turn_running,
             true,
             queue_mutation,
@@ -1224,6 +1234,7 @@ mod tests {
             surface,
             false,
             false,
+            false,
             QueueMutation::PerRowKind,
             false,
             false,
@@ -1285,6 +1296,7 @@ mod tests {
             false,
             true,
             ViewSurface::Root,
+            false,
             false,
             false,
             QueueMutation::PerRowKind,
@@ -1456,6 +1468,7 @@ mod tests {
             ViewSurface::Root,
             false,
             false,
+            false,
             QueueMutation::PerRowKind,
             false,
             false,
@@ -1561,6 +1574,7 @@ mod tests {
             ViewSurface::Root,
             false,
             false,
+            false,
             QueueMutation::PerRowKind,
             false,
             false,
@@ -1607,6 +1621,7 @@ mod tests {
             true,
             ViewSurface::Root,
             is_turn_running,
+            false,
             false,
             QueueMutation::PerRowKind,
             false,
@@ -1668,6 +1683,7 @@ mod tests {
                 true,
                 ViewSurface::Root,
                 true,
+                false,
                 true,
                 QueueMutation::PerRowKind,
                 false,
@@ -1683,18 +1699,15 @@ mod tests {
             );
         }
     }
-    /// The running-turn cancel hint always names the registry Ctrl+C binding: Esc never cancels a turn (it only hints at this key), in every mode and pane.
+    /// Running-turn cancel is advertised only when bare Esc reaches the
+    /// policy. There is no Ctrl+C fallback when another surface owns Esc.
     #[test]
-    fn running_turn_cancel_hint_is_always_ctrl_c() {
+    fn running_turn_cancel_hint_key_tracks_esc_predicate() {
         let prompt = PromptWidget::default();
         let registry = ActionRegistry::defaults();
-        for (vim_mode, pane) in [
-            (false, ActivePane::Prompt),
-            (true, ActivePane::Prompt),
-            (false, ActivePane::Scrollback),
-        ] {
+        for esc_would_cancel_turn in [true, false] {
             let hints = build_hints(
-                pane,
+                ActivePane::Prompt,
                 prompt_focus_hint(),
                 &prompt,
                 &registry,
@@ -1710,9 +1723,10 @@ mod tests {
                 false,
                 false,
                 false,
-                vim_mode,
+                false,
                 ViewSurface::Root,
                 true,
+                esc_would_cancel_turn,
                 false,
                 QueueMutation::PerRowKind,
                 false,
@@ -1720,26 +1734,23 @@ mod tests {
                 false,
                 None,
             );
-            let cancel = hints
-                .iter()
-                .find(|h| h.label == "cancel")
-                .expect("running turn must surface the cancel hint");
-            assert_eq!(
-                vec![crate::key!('c', CONTROL)],
-                cancel.keys,
-                "cancel hint key for vim_mode={vim_mode} pane={pane:?}"
-            );
-            assert!(
-                !hints
-                    .iter()
-                    .any(|h| h.label == "cancel" && h.keys == vec![crate::key!(Esc)]),
-                "no hint may advertise Esc as the turn cancel (vim_mode={vim_mode} pane={pane:?})"
-            );
+            let cancel = hints.iter().find(|h| h.label == "cancel");
+            if esc_would_cancel_turn {
+                assert_eq!(
+                    cancel.map(|h| h.keys.clone()),
+                    Some(vec![crate::key!(Esc)]),
+                    "running turn must advertise Esc when it owns Esc"
+                );
+            } else {
+                assert!(
+                    cancel.is_none(),
+                    "must not advertise a Ctrl+C fallback while another surface owns Esc"
+                );
+            }
         }
     }
-    /// Running turn with an open scrollback search: the search's own `Esc cancel` hint stays the only Esc hint.
-    /// The CancelTurn hint keeps Ctrl+C.
-    /// The bar therefore never shows two different `Esc cancel` meanings at once.
+    /// Running turn + open scrollback search: the search's own `Esc cancel`
+    /// hint stays the only cancel hint; no Ctrl+C fallback is advertised.
     #[test]
     fn running_turn_with_scrollback_search_keeps_ctrl_c_cancel_hint() {
         let registry = ActionRegistry::defaults();
@@ -1765,6 +1776,7 @@ mod tests {
             ViewSurface::Root,
             true,
             false,
+            false,
             QueueMutation::PerRowKind,
             false,
             false,
@@ -1781,15 +1793,14 @@ mod tests {
             "exactly one Esc:cancel hint (the search's own dismiss)"
         );
         assert!(
-            hints
+            !hints
                 .iter()
                 .any(|h| h.label == "cancel" && h.keys == vec![crate::key!('c', CONTROL)]),
-            "CancelTurn hint must stay on Ctrl+C while the search owns Esc"
+            "CancelTurn must not advertise Ctrl+C while the search owns Esc"
         );
     }
-    /// Running turn while editing a queued prompt: the edit's own `Esc cancel` (discard) hint is the only Esc-keyed row.
-    /// The CancelTurn hint keeps Ctrl+C.
-    /// The bar therefore never shows two contradictory `Esc cancel` rows.
+    /// Running turn + editing a queued prompt: the edit's own `Esc cancel`
+    /// (discard) hint is the only Esc-keyed row, with no Ctrl+C fallback.
     #[test]
     fn running_turn_editing_queued_keeps_ctrl_c_cancel_hint() {
         let registry = ActionRegistry::defaults();
@@ -1816,6 +1827,7 @@ mod tests {
             ViewSurface::Root,
             true,
             false,
+            false,
             QueueMutation::PerRowKind,
             false,
             false,
@@ -1837,10 +1849,10 @@ mod tests {
         };
         assert_eq!(esc_row.label, "cancel");
         assert!(
-            hints
+            !hints
                 .iter()
                 .any(|h| h.label == "cancel" && h.keys == vec![crate::key!('c', CONTROL)]),
-            "CancelTurn hint must stay on Ctrl+C while the edit owns Esc"
+            "CancelTurn must not advertise Ctrl+C while the edit owns Esc"
         );
     }
     #[test]

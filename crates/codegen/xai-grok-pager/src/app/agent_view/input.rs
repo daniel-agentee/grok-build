@@ -144,15 +144,22 @@ impl AgentView {
     pub(crate) fn is_minimal_mode(&self) -> bool {
         self.prompt.slash_controller.screen_mode().is_minimal()
     }
-    /// Whether a bare Esc pressed right now would reach [`Self::try_handle_esc_policy`]'s mid-turn cancel (callers gate on a turn actually running).
-    /// This is the hint-bar predicate deciding when to advertise `Esc` instead of `Ctrl+C` for CancelTurn.
-    /// Composed from the same predicates input routing uses, so the hint cannot claim Esc while a higher-priority consumer would steal the press
-    /// (dropdown, search, viewer/modal, agents/persona modal, needs-input overlay, queued-prompt or inline edit, subagent-view close,
-    /// selection/link/goal/rewind/btw/jump, latent composer mode).
-    /// Conservative on purpose: when false, the registry `Ctrl+C` is shown, which always cancels.
-    /// `esc_owned_before_agent` is the app-level ownership snapshot, passed down by the draw path.
-    /// `AppView::esc_owned_before_agent` covers voice dictation listening or pending cold-start, a focused dev tracing pane, the top-level cloud
-    /// and import-Claude modals, and the dashboard's attached-agent popup; all consume Esc before any agent routing.
+    /// Whether a bare Esc pressed right now would reach
+    /// [`Self::try_handle_esc_policy`]'s mid-turn cancel (assuming a turn is
+    /// running — callers gate on that): the hint-bar predicate deciding when
+    /// to advertise `Esc` instead of `Ctrl+C` for CancelTurn. Composed from
+    /// the same predicates input routing uses, so the hint cannot claim Esc
+    /// while a higher-priority consumer (dropdown, search, viewer/modal,
+    /// agents/persona modal, needs-input overlay, queued-prompt or inline
+    /// edit, subagent-view close, selection/link/goal/rewind/btw/jump,
+    /// latent composer mode) would steal the press. Conservative on purpose:
+    /// when false, the cancel hint still names Esc because there is no
+    /// alternate keyboard cancel gesture.
+    /// `esc_owned_before_agent` is the app-level ownership snapshot
+    /// (`AppView::esc_owned_before_agent`: voice dictation listening or
+    /// pending cold-start, a focused dev tracing pane, the top-level cloud /
+    /// import-Claude modals, and the dashboard's attached-agent popup — all
+    /// consume Esc before any agent routing), passed down by the draw path.
     pub(crate) fn esc_would_cancel_turn(&self, esc_owned_before_agent: bool) -> bool {
         if esc_owned_before_agent
             || !crate::app::esc_cancels_turn(self.is_minimal_mode(), self.vim_mode)
@@ -174,7 +181,7 @@ impl AgentView {
         pane_clear
             && matches!(self.prompt_mode, crate::app::queue_edit::PromptMode::Normal)
             && self.inline_edit.is_none()
-            && !self.is_subagent_view
+            && self.surface() == ViewSurface::Root
             && self.agents_modal.is_none()
             && self.persona_detail.is_none()
             && self.no_esc_consumer_pending()
@@ -985,9 +992,14 @@ impl AgentView {
                     if key!('q', CONTROL).matches(key) {
                         return InputOutcome::Unchanged;
                     }
-                    if registry.matches_id(ActionId::CancelTurn, key)
+                    let bare_esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+                    if (bare_esc || registry.matches_id(ActionId::CancelTurn, key))
                         && (self.stoppable_activity_running() || self.any_cancel_pending())
                     {
+                        if bare_esc {
+                            self.cancel_trigger_hint =
+                                Some(crate::app::actions::CancelTrigger::Esc);
+                        }
                         self.dismiss_jump_picker();
                         return self
                             .handle_agent_action_with_registry(ActionId::CancelTurn, registry);
@@ -2404,7 +2416,7 @@ mod jump_backout_key_tests {
             "an open /jump picker owns Esc/Left in the overlay back-out"
         );
     }
-    /// `/jump` must not swallow Ctrl+C while `/compact` is running; the same escape hatch as a running turn.
+    /// `/jump` must not turn Ctrl+C into a stop while `/compact` is running.
     #[test]
     fn jump_picker_ctrl_c_cancels_compact() {
         let mut agent = make_agent();
@@ -2414,16 +2426,14 @@ mod jump_backout_key_tests {
         };
         open_jump(&mut agent);
         let outcome = agent.handle_input(&ctrl_c(), &ActionRegistry::defaults());
+        assert!(agent.jump_state.is_some(), "Ctrl+C must not dismiss /jump");
         assert!(
-            agent.jump_state.is_none(),
-            "Ctrl+C during /compact must dismiss the jump picker"
-        );
-        assert!(
-            matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-            "Ctrl+C during /compact with /jump open must cancel, got {outcome:?}"
+            !matches!(outcome, InputOutcome::Action(Action::CancelTurn | Action::Quit)),
+            "Ctrl+C during /compact with /jump open must not stop or quit, got {outcome:?}"
         );
     }
-    /// Once a wake cancel is in flight, Ctrl+C must reach the same quit escalation as a stuck normal cancel instead of re-sending forever.
+    /// Once a wake cancel is in flight, Ctrl+C remains inert; Esc owns both
+    /// the initial cancel and the retry gesture.
     #[test]
     fn ctrl_c_escalates_to_quit_while_wake_cancel_is_stuck() {
         let mut agent = make_agent();
@@ -2433,14 +2443,15 @@ mod jump_backout_key_tests {
         });
         let outcome = agent.handle_input(&ctrl_c(), &ActionRegistry::defaults());
         assert!(
-            matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-            "the first Ctrl+C cancels the wake turn, got {outcome:?}"
+            !matches!(outcome, InputOutcome::Action(Action::CancelTurn | Action::Quit)),
+            "Ctrl+C must not cancel or quit a wake turn, got {outcome:?}"
         );
+        assert!(!agent.running_wake_turn.as_ref().unwrap().cancel_sent);
         agent.running_wake_turn.as_mut().unwrap().cancel_sent = true;
         let outcome = agent.handle_input(&ctrl_c(), &ActionRegistry::defaults());
         assert!(
-            matches!(outcome, InputOutcome::Action(Action::Quit)),
-            "Ctrl+C during a stuck wake cancel must escalate to quit, got {outcome:?}"
+            !matches!(outcome, InputOutcome::Action(Action::CancelTurn | Action::Quit)),
+            "Ctrl+C during a stuck wake cancel must remain inert, got {outcome:?}"
         );
     }
 }
