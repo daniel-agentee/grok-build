@@ -92,6 +92,15 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
 impl From<&ConversationRequest> for rs::CreateResponse {
     fn from(req: &ConversationRequest) -> Self {
         let input = build_responses_input(req);
+        let instructions = req
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::System(s) if !s.content.is_empty() => Some(s.content.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
         let tools = build_responses_tools(req);
 
         let tool_choice = req.tool_choice.as_ref().map(|tc| match tc {
@@ -125,7 +134,7 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             conversation: None,
             include: None,
             input,
-            instructions: None,
+            instructions: (!instructions.is_empty()).then_some(instructions),
             max_output_tokens: req.max_output_tokens,
             max_tool_calls: None,
             metadata: None,
@@ -193,13 +202,8 @@ pub fn patch_reasoning_text_types(body: &mut serde_json::Value) {
 
 fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputItem> {
     match item {
-        ConversationItem::System(s) => {
-            vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
-                r#type: rs::MessageType::Message,
-                role: rs::Role::System,
-                content: rs::EasyInputContent::Text(s.content.as_ref().to_owned()),
-            })]
-        }
+        // System text is carried by CreateResponse.instructions, not input messages.
+        ConversationItem::System(_) => Vec::new(),
         ConversationItem::User(u) => {
             let content = content_parts_to_easy_input_content(&u.content);
             vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
