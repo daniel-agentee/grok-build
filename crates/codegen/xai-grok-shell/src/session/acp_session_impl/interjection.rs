@@ -32,12 +32,26 @@ impl SessionActor {
         text: String,
         images: Vec<acp::ImageContent>,
         front: bool,
+        peer: Option<xai_interjection_core::PeerOrigin>,
     ) {
+        let origin = match &peer {
+            Some(origin) => super::super::PromptOrigin::Peer {
+                origin: origin.clone(),
+            },
+            None => super::super::PromptOrigin::User,
+        };
+        let text = match &peer {
+            Some(origin) => xai_interjection_core::format_peer(origin, &text),
+            None => text,
+        };
         let prompt_id = format!("{INTERJECT_FALLBACK_PROMPT_PREFIX}{}", uuid::Uuid::now_v7());
         let mut prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(text))];
         prompt_blocks.extend(images.into_iter().map(acp::ContentBlock::Image));
         // Respect an active plan mode: the interjection was aimed at a turn that ran under it, so its fallback turn must not escape the gate
-        let prompt_mode = if self.plan_mode.lock().is_active() {
+        let prompt_mode = if peer.is_some() {
+            // Peers never declare a mode, including while Plan is still Pending or Ask is active.
+            *self.current_prompt_mode.lock()
+        } else if self.plan_mode.lock().is_active() {
             crate::session::plan_mode::PromptMode::Plan
         } else {
             crate::session::plan_mode::PromptMode::Agent
@@ -55,7 +69,7 @@ impl SessionActor {
             screen_mode: None,
             verbatim: false,
             json_schema: None,
-            input_origin: InputOrigin::new(super::super::PromptOrigin::User),
+            input_origin: InputOrigin::new(origin),
             task_wake_fallback: None,
             tool_overrides_update: None,
             respond_to,
@@ -65,7 +79,7 @@ impl SessionActor {
             queue_meta: None,
             queue_mutation_policy: QueueMutationPolicy::hidden(),
             // Send-now placement (see doc): a later real send-now must not leapfrog this fallback in `queue_input`'s FIFO scan
-            send_now: front,
+            send_now: front && peer.is_none(),
             traceparent: None,
         };
         let mut state = self.state.lock().await;
@@ -89,8 +103,13 @@ impl SessionActor {
         let count = stranded.len();
         // Reversed push_fronts keep entry 0 front-most.
         for entry in stranded.into_iter().rev() {
-            self.queue_interjection_fallback_prompt(entry.text, entry.attachments, true)
-                .await;
+            self.queue_interjection_fallback_prompt(
+                entry.text,
+                entry.attachments,
+                true,
+                entry.peer,
+            )
+            .await;
         }
         count
     }
@@ -330,6 +349,15 @@ impl SessionActor {
     }
 
     pub(super) async fn drain_pending_interjections(&self) -> bool {
+        // Never inject peer data while a human reverse-request owns the turn.
+        if !self
+            .pending_interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            return false;
+        }
         // Manual drain (not `drain_formatted`): skill parsing needs the raw text.
         // Parsed after wrapping, the envelope's closing `</user_query>` tag would pollute the trailing skill's args.
         // The guard owns the drained entries until the batch is submitted: every await below is a.
@@ -342,15 +370,27 @@ impl SessionActor {
         }
 
         let mut prepared = Vec::with_capacity(guard.entries.len());
-        for PendingInterjection { text, attachments } in &guard.entries {
+        for PendingInterjection {
+            text,
+            attachments,
+            peer,
+        } in &guard.entries
+        {
             // The sanitizer rewrites `[Image #N: <path>]` to `[Image #N]` before the text reaches the model
             // It covers legacy-client raw text AND text harvested from queued rows sent as interjections
             // Wrapping and truncation stay in the shared crate (`format_interjection`)
             let sanitized = crate::session::placeholder_images::strip_paths_from_image_placeholders(
                 text.clone(),
             );
-            let skill_information = self.interjection_skill_information(&sanitized).await;
-            let mut wrapped = format_interjection(sanitized.clone());
+            let skill_information = if peer.is_none() {
+                self.interjection_skill_information(&sanitized).await
+            } else {
+                None
+            };
+            let mut wrapped = match peer {
+                Some(origin) => xai_interjection_core::format_peer(origin, text),
+                None => format_interjection(sanitized.clone()),
+            };
             // The pipeline consumes a clone; the guard keeps the original attachments restorable
             let images = self
                 .prepare_interjection_images(&mut wrapped, attachments.clone())
@@ -374,6 +414,14 @@ impl SessionActor {
         // Last await before the submit; from here persistence is deliberately synchronous so no
         // cancellation point can separate the submitted batch from its persisted user chunks
         let model_id = self.current_model_id().await;
+        if !self
+            .pending_interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            return false;
+        }
         let (persist_parts, chat_items): (Vec<_>, Vec<_>) = prepared
             .into_iter()
             .map(|(wrapped, typed, images, item)| ((wrapped, typed, images), item))

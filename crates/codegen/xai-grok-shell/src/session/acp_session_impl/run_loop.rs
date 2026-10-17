@@ -361,6 +361,18 @@ pub(super) async fn run_session(
     index_root: std::path::PathBuf,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
 ) {
+    let mut peer_inbox = match crate::session::peer_socket::start(
+        session.session_info.id.0.as_ref(),
+    ) {
+        Ok(inbox) => {
+            tracing::info!(socket = %crate::session::peer_socket::path(session.session_info.id.0.as_ref()).display(), "Peer inbox ready (headless lifetime ends with session)");
+            Some(inbox)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Peer inbox unavailable");
+            None
+        }
+    };
     let (completion_tx, mut completion_rx) =
         mpsc::unbounded_channel::<super::turn_task::TurnCompletionMsg>();
     let mut turn_end_queue = super::turn_end_hooks::TurnEndQueue::spawn(session.clone());
@@ -522,6 +534,27 @@ pub(super) async fn run_session(
     loop {
         tokio::select! {
                 biased;
+                peer = async {
+                    // A held queue must not become an unbounded second inbox.
+                    if session.state.lock().await.pending_inputs.len() >= xai_peer_socket::QUEUE_LIMIT {
+                        std::future::pending::<()>().await;
+                    }
+                    peer_inbox.as_mut().expect("enabled inbox").receiver.recv().await
+                },
+                    if peer_inbox.is_some()
+                    && session.pending_interactions.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+                    && session.pending_interjections.len() < xai_peer_socket::QUEUE_LIMIT => {
+                    if let Some(peer) = peer {
+                        session.broadcast_interjection(&peer.display(), None);
+                        let running = session.current_prompt_id.lock().ok().and_then(|g| g.clone()).is_some();
+                        if running {
+                            session.pending_interjections.push(PendingInterjection { text: peer.text, attachments: vec![], peer: Some(peer.origin) });
+                        } else {
+                            session.queue_interjection_fallback_prompt(peer.text, vec![], false, Some(peer.origin)).await;
+                            SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
+                        }
+                    } else { peer_inbox = None; }
+                }
                 // Idle flush timer fired: run background flush
                 _ = &mut idle_flush_sleep, if session.idle_flush_timeout.is_some()
                     && session.memory.uses_legacy_pipeline()
@@ -2075,13 +2108,14 @@ pub(super) async fn run_session(
                                 .is_some();
                             if turn_running {
                                 session.pending_interjections.push(PendingInterjection {
+                                    peer: None,
                                     text,
                                     attachments: images,
                                 });
                                 tracing::info!("Queued mid-turn interjection");
                             } else {
                                 session
-                                    .queue_interjection_fallback_prompt(text, images, true)
+                                    .queue_interjection_fallback_prompt(text, images, true, None)
                                     .await;
                                 SessionActor::maybe_start_running_task(
                                     session.clone(),

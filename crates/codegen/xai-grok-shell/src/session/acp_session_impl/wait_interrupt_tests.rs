@@ -103,6 +103,7 @@ fn parent_interject_wait_result_is_cancelled_with_the_agent_head() {
 
 fn user_message() -> PendingInterjection<agent_client_protocol::ImageContent> {
     PendingInterjection {
+        peer: None,
         text: "user message".to_owned(),
         attachments: Vec::new(),
     }

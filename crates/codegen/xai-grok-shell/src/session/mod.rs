@@ -89,6 +89,9 @@ pub use xai_agent_lifecycle::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptOrigin {
     User,
+    Peer {
+        origin: xai_interjection_core::PeerOrigin,
+    },
     /// Auto-wake prompt injected when a background terminal task completed.
     TaskCompleted {
         /// The background task ID (without the `task-completed-` prefix).
@@ -185,7 +188,7 @@ impl PromptOrigin {
                 queue: QueuePolicy::VisibleProtected,
                 shutdown: ShutdownPolicy::Drain,
             },
-            Self::ParentHumanMessage { .. } => InputPolicy {
+            Self::Peer { .. } | Self::ParentHumanMessage { .. } => InputPolicy {
                 authority: InputAuthority::ModelAuthoredUntrusted,
                 slash: SlashAuthority::Inert,
                 turn_boundary: TurnBoundary::Conversational,
@@ -233,6 +236,7 @@ impl PromptOrigin {
                 | Self::SubagentCompleted { .. }
                 | Self::WorkflowCompleted { .. }
                 | Self::ParentAgentMessage { .. }
+                | Self::Peer { .. }
                 | Self::ParentHumanMessage { .. }
                 | Self::NotificationDrain
         )
@@ -243,6 +247,7 @@ impl PromptOrigin {
         match self {
             Self::User
             | Self::ParentAgentMessage { .. }
+            | Self::Peer { .. }
             | Self::ParentHumanMessage { .. }
             | Self::SchedulerFired
             | Self::PlanResume => false,
@@ -261,6 +266,7 @@ impl PromptOrigin {
             Self::WorkflowCompleted { completion_id } => Some(completion_id),
             Self::User
             | Self::ParentAgentMessage { .. }
+            | Self::Peer { .. }
             | Self::ParentHumanMessage { .. }
             | Self::NotificationDrain
             | Self::GoalSummary
@@ -592,3 +598,5 @@ pub(crate) mod workflow;
 pub mod worktree;
 pub(crate) mod worktree_cleanup;
 pub mod worktree_pool;
+
+pub(crate) mod peer_socket;

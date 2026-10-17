@@ -3380,6 +3380,7 @@ async fn send_now_cancel_flushes_buffered_interjections_as_prompts() {
                 .lock()
                 .expect("current_prompt_id mutex poisoned") = Some("wait-turn".into());
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "buffered steer".to_string(),
                 attachments: vec![],
             });

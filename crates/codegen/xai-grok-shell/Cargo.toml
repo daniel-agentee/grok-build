@@ -32,6 +32,7 @@ default-bazel = [
 ]
 
 [dependencies]
+xai-peer-socket = { path = "../../common/xai-peer-socket" }
 dunce = { workspace = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }

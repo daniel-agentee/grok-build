@@ -650,6 +650,7 @@ impl SessionActor {
         let text = text_parts.join("\n\n");
         let image_count = attachments.len() as u32;
         self.pending_interjections.push(PendingInterjection {
+            peer: None,
             text: text.clone(),
             attachments,
         });

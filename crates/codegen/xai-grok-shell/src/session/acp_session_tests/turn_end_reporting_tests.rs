@@ -961,6 +961,7 @@ async fn stale_completion_does_not_post_process_the_successor_turn() {
             .lock()
             .expect("current_prompt_id mutex poisoned") = Some("same".into());
         h.actor.pending_interjections.push(PendingInterjection {
+            peer: None,
             text: "keep this with the successor".into(),
             attachments: vec![],
         });

@@ -120,6 +120,14 @@ impl SessionActor {
         self: Arc<Self>,
         completion_tx: mpsc::UnboundedSender<super::turn_task::TurnCompletionMsg>,
     ) {
+        if !self
+            .pending_interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            return;
+        }
         // Fast path under the lock: nothing to promote.
         let may_combine;
         let queued_wake_ids: Vec<String>;

@@ -16,6 +16,7 @@ async fn drain_interjections_pushes_synthetic_user_message_after_tool_result() {
                 .chat_state_handle
                 .push_tool_result(ConversationItem::tool_result("call-1", TOOL_RESULT_CONTENT));
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "please also add tests".to_string(),
                 attachments: vec![],
             });
@@ -85,14 +86,17 @@ async fn drain_multiple_interjections_pushes_one_user_message_each_in_order() {
                 .chat_state_handle
                 .push_tool_result(ConversationItem::tool_result("call-1", TOOL_RESULT_CONTENT));
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "first steer".to_string(),
                 attachments: vec![],
             });
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "second steer".to_string(),
                 attachments: vec![],
             });
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "third steer".to_string(),
                 attachments: vec![],
             });
@@ -255,6 +259,7 @@ async fn drain_with_closed_chat_mailbox_does_not_report_model_delivery() {
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             actor.chat_state_handle = xai_chat_state::ChatStateHandle::noop();
             actor.pending_interjections.push(PendingInterjection {
+                peer: None,
                 text: "please also add tests".to_string(),
                 attachments: vec![],
             });

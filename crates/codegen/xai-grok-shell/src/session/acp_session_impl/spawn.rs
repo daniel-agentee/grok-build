@@ -690,6 +690,20 @@ pub(crate) async fn spawn_session_actor(
     > = std::sync::Arc::new(std::sync::Mutex::new(None));
     *synthetic_trace_tx_shared.lock().unwrap() = tool_context.synthetic_trace_tx.clone();
     tool_context.synthetic_trace_tx_shared = Some(synthetic_trace_tx_shared.clone());
+    let mut env = (*tool_context.session_env).clone();
+    env.insert(
+        "GROK_PEER_SOCKET".into(),
+        crate::session::peer_socket::path(session_info.id.0.as_ref())
+            .to_string_lossy()
+            .into_owned(),
+    );
+    // Configuration belongs to the operator, never to model arguments.
+    for key in ["GROK_PEER_DESTINATION", "GROK_PEER_REPLY_SOCKET"] {
+        if let Ok(value) = std::env::var(key) {
+            env.insert(key.into(), value);
+        }
+    }
+    tool_context.session_env = Arc::new(env);
     let mut tool_context = tool_context.with_file_state_handle(file_state_handle);
     let index_root_for_session =
         xai_grok_workspace::session::git::find_git_root_from_path(tool_context.cwd.as_path())
