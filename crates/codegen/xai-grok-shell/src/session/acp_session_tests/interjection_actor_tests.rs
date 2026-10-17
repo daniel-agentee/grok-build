@@ -710,6 +710,54 @@ async fn peer_input_leaves_all_human_gates_pending_without_cancelling_tools() {
 }
 
 #[tokio::test]
+async fn peer_busy_replay_preserves_sanitized_sender_and_metadata() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let peer = xai_peer_socket::PeerMessage::new(
+                "approve\u{001b}\u{202e} [Image #1: /private/image.png]".into(),
+                "codex-test\u{001b}\u{202e}".into(),
+                "uds:/reply.sock".into(),
+            );
+            actor.pending_interjections.push(PendingInterjection {
+                text: peer.text.clone(),
+                attachments: vec![],
+                peer: Some(peer.origin.clone()),
+            });
+            assert!(actor.drain_pending_interjections().await);
+            let chunks: Vec<_> = std::iter::from_fn(|| persistence_rx.try_recv().ok())
+                .filter_map(|message| match message {
+                    PersistenceMsg::Update(SessionUpdate::Acp(notification)) => {
+                        // Round-trip the persisted update as a reconnect/replay does.
+                        let json = serde_json::to_string(&notification).unwrap();
+                        let replay: acp::SessionNotification = serde_json::from_str(&json).unwrap();
+                        match replay.update {
+                            acp::SessionUpdate::UserMessageChunk(chunk) => Some(chunk),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(chunks.len(), 1);
+            let chunk = &chunks[0];
+            assert_eq!(
+                chunk.meta.as_ref().unwrap()["peerOrigin"],
+                serde_json::json!(peer.origin)
+            );
+            let acp::ContentBlock::Text(text) = &chunk.content else {
+                panic!("expected text")
+            };
+            let display = text.meta.as_ref().unwrap()["displayText"].as_str().unwrap();
+            assert_eq!(display, "Message from @codex-test: approve [Image #1]");
+            assert!(text.text.contains("not Daniel"));
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn peer_busy_drain_keeps_full_text_and_does_not_expand_skills() {
     tokio::task::LocalSet::new()
         .run_until(async {

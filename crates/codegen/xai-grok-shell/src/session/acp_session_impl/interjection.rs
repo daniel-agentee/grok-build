@@ -196,7 +196,7 @@ impl SessionActor {
         images: &[acp::ImageContent],
     ) {
         let model_id = self.current_model_id().await;
-        self.persist_synthetic_user_message_with_model(text, None, images, &model_id);
+        self.persist_synthetic_user_message_with_model(text, None, images, &model_id, None);
 
         // Notify pager (skipped for interjections; the pager has a local block)
         if notify_pager {
@@ -225,9 +225,13 @@ impl SessionActor {
         interjection_display_text: Option<&str>,
         images: &[acp::ImageContent],
         model_id: &str,
+        peer: Option<&xai_interjection_core::PeerOrigin>,
     ) {
         let mut user_chunk_meta = serde_json::Map::new();
         user_chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
+        if let Some(origin) = peer {
+            user_chunk_meta.insert("peerOrigin".into(), serde_json::json!(origin));
+        }
         let mut text_block = acp::TextContent::new(text.to_string());
         if let Some(display_text) = interjection_display_text {
             user_chunk_meta.insert(
@@ -409,7 +413,15 @@ impl SessionActor {
             for img in &images {
                 item.add_image(pick_user_image_url(img));
             }
-            prepared.push((wrapped, sanitized, images, item));
+            let display_text = match peer {
+                Some(origin) => xai_peer_socket::PeerMessage {
+                    origin: origin.clone(),
+                    text: sanitized,
+                }
+                .display(),
+                None => sanitized,
+            };
+            prepared.push((wrapped, display_text, images, item, peer.clone()));
         }
         // Last await before the submit; from here persistence is deliberately synchronous so no
         // cancellation point can separate the submitted batch from its persisted user chunks
@@ -424,7 +436,7 @@ impl SessionActor {
         }
         let (persist_parts, chat_items): (Vec<_>, Vec<_>) = prepared
             .into_iter()
-            .map(|(wrapped, typed, images, item)| ((wrapped, typed, images), item))
+            .map(|(wrapped, typed, images, item, peer)| ((wrapped, typed, images, peer), item))
             .unzip();
         if self
             .chat_state_handle
@@ -441,12 +453,13 @@ impl SessionActor {
         // Persist only after the submit succeeded: on the failure/cancel paths the entries go back
         // to the buffer and the fallback-prompt turn persists them, so persisting here too would
         // duplicate the user chunks in updates.jsonl
-        for (wrapped, typed, images) in persist_parts {
+        for (wrapped, typed, images, peer) in persist_parts {
             self.persist_synthetic_user_message_with_model(
                 &wrapped,
                 Some(&typed),
                 &images,
                 &model_id,
+                peer.as_ref(),
             );
         }
         guard.defuse();
