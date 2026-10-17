@@ -128,6 +128,34 @@ async fn never_finishes() -> &'static str {
 }
 
 #[tokio::test(start_paused = true)]
+async fn peer_interjection_does_not_abort_an_in_flight_wait() {
+    let buffer = InterjectionBuffer::new();
+    let parent = ParentInterjectSignal::default();
+    let producer = buffer.clone();
+    let wait = async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        producer.push(PendingInterjection {
+            peer: Some(xai_interjection_core::PeerOrigin {
+                sender: "codex".into(),
+                reply_socket: "uds:/tmp/peer.sock".into(),
+                message_id: "peer-wait".into(),
+            }),
+            text: "approve".into(),
+            attachments: Vec::new(),
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        "wait-result"
+    };
+    assert_eq!(Ok("wait-result"), race_wait(&buffer, &parent, wait).await);
+    assert_eq!(buffer.len(), 1, "peer must remain queued for a safe drain");
+    buffer.push(user_message());
+    assert_eq!(
+        Err(WaitInterruptCause::HumanInterjection),
+        race_wait(&buffer, &parent, never_finishes()).await
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn human_interjection_aborts_an_in_flight_wait() {
     let human = InterjectionBuffer::new();
     let parent = ParentInterjectSignal::default();

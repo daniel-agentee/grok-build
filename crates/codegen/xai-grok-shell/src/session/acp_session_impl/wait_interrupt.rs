@@ -28,7 +28,7 @@ pub(super) async fn wait_for_wait_interrupt(
     parent: &ParentInterjectSignal,
 ) -> WaitInterruptCause {
     loop {
-        if !human.is_empty() {
+        if human.snapshot().iter().any(|entry| entry.peer.is_none()) {
             return WaitInterruptCause::HumanInterjection;
         }
         if parent.is_pending() {
