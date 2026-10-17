@@ -14331,6 +14331,7 @@ dependencies = [
  "xai-grok-workspace",
  "xai-hooks-plugins-types",
  "xai-interjection-core",
+ "xai-peer-socket",
  "xai-prompt-queue",
  "xai-ratatui-inline",
  "xai-ratatui-textarea",
@@ -14379,6 +14380,7 @@ dependencies = [
  "xai-grok-update",
  "xai-grok-version",
  "xai-grok-workspace",
+ "xai-peer-socket",
  "xai-tty-utils",
  "zstd",
 ]
@@ -14846,6 +14848,7 @@ dependencies = [
  "xai-hunk-tracker",
  "xai-interjection-core",
  "xai-message-delivery-core",
+ "xai-peer-socket",
  "xai-prompt-queue",
  "xai-test-utils",
  "xai-token-estimation",
@@ -15137,6 +15140,7 @@ dependencies = [
  "xai-grok-workspace-types",
  "xai-interjection-core",
  "xai-message-delivery-core",
+ "xai-peer-socket",
  "xai-test-utils",
  "xai-token-estimation",
  "xai-tool-protocol",
@@ -15409,6 +15413,7 @@ name = "xai-interjection-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -15439,6 +15444,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "xai-interjection-core",
 ]
 
 [[package]]

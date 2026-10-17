@@ -16,6 +16,7 @@ name = "xai-grok-pager"
 path = "src/main.rs"
 
 [dependencies]
+xai-peer-socket = { path = "../../common/xai-peer-socket" }
 # The pager library (all application logic + the public API main.rs drives).
 xai-grok-pager = { path = "../xai-grok-pager", default-features = false }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.

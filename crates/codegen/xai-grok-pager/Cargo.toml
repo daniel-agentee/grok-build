@@ -6,6 +6,7 @@ license = "Apache-2.0"
 authors = ["xAI"]
 
 [dependencies]
+xai-peer-socket = { path = "../../common/xai-peer-socket" }
 # TTY safety — detach subprocesses from the controlling terminal
 dunce = { workspace = true }
 xai-tty-utils = { workspace = true }

@@ -58,6 +58,7 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
         Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
         Some(
             Command::Inspect { .. }
+            | Command::Peer(_)
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
@@ -98,6 +99,7 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         | Some(Command::Worktree(_)) => true,
         Some(
             Command::Inspect { .. }
+            | Command::Peer(_)
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
@@ -2049,6 +2051,18 @@ fn main() {
     if dispatch_version_if_requested(&args) || dispatch_doctor_if_requested(&args) {
         return;
     }
+    // Peer transport is local administration, independent of login, updates and resident runtimes.
+    if let Some(Command::Peer(peer)) = &args.command {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("peer runtime");
+        if let Err(error) = runtime.block_on(xai_grok_pager::peer_cmd::run(peer.clone())) {
+            eprintln!("Peer transport failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     xai_grok_pager_minimal::install();
     #[cfg(all(feature = "test-seams", debug_assertions))]
     test_seam::install();
@@ -2247,6 +2261,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     &update_config,
                 )
                 .await;
+            }
+            Command::Peer(peer) => {
+                return xai_grok_pager::peer_cmd::run(peer).await;
             }
             Command::Doctor(_) => {
                 unreachable!("doctor was consumed before runtime startup")

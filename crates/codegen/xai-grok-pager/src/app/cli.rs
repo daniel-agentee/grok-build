@@ -6,6 +6,8 @@ use std::path::PathBuf;
 /// Top-level commands for the pager binary.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Send peer messages or run a loopback-only socket bridge
+    Peer(crate::peer_cmd::PeerArgs),
     /// Run Grok without the interactive UI
     Agent(Box<AgentArgs>),
     /// Show the configuration Grok discovers for this directory

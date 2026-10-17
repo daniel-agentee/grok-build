@@ -33,6 +33,7 @@ impl From<&crate::types::ToolInput> for AccessKind {
             | ToolInput::AskUserQuestion(_)
             | ToolInput::UpdateGoal(_) => AccessKind::Read(None),
             ToolInput::Task(_) => AccessKind::Tool("task".to_owned()),
+            ToolInput::SendPeerMessage(_) => AccessKind::Tool("send_peer_message".to_owned()),
             ToolInput::SchedulerCreate(_) => AccessKind::Tool("scheduler_create".to_owned()),
             ToolInput::SchedulerDelete(_) => AccessKind::Tool("scheduler_delete".to_owned()),
             ToolInput::Workflow(_) => AccessKind::Tool("workflow".to_owned()),

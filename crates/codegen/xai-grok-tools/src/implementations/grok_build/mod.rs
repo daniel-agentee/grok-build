@@ -83,3 +83,6 @@ pub use workflow::{
     WORKFLOW_TOOL_NAME, WorkflowTool, is_workflow_tool, is_workflow_tool_id,
     workflow_tool_short_name,
 };
+
+pub mod send_peer_message;
+pub use send_peer_message::SendPeerMessageTool;

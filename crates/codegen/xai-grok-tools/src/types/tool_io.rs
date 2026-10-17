@@ -54,6 +54,7 @@ pub struct MCPToolInput {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::TryInto, derive_more::From)]
 #[serde(tag = "variant")]
 pub enum ToolInput {
+    SendPeerMessage(crate::implementations::grok_build::send_peer_message::SendPeerMessageInput),
     ReadFile(ReadFileInput),
     SearchReplace(SearchReplaceInput),
     Bash(BashToolInput),
