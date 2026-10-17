@@ -1,14 +1,16 @@
 # Peer sockets
 
-Use this checkout with `cargo run -p xai-grok-pager-bin --bin xai-grok-pager -- …`.
-Do not install or codesign `~/.grok/bin/custom-grok`.
+Use the pager-free session entrypoint below to run this checkout’s real session
+actor. The pager CLI commands elsewhere in this note require resolving its
+pre-existing voice/UI build errors. Do not install or codesign
+`~/.grok/bin/custom-grok`.
 
 Each real session actor owns one `~/.grok/socks/<session UUID>.sock` inbox.
 The exact path is logged at startup and supplied as `GROK_PEER_SOCKET` only in
 that session's child-tool environment. Nothing exports it into the parent shell.
 A headless `-p` session exits after its work; this feature does not add a peer wait
-mode. For a persistent conversation use an interactive session with `--no-leader`
-so the session runs in the freshly built fork rather than an older resident runtime.
+mode. For a persistent pager-free session, keep the ACP entrypoint’s stdin open
+after `session/new`, as shown below.
 
 Socket directories must already have an existing parent and be owned by the
 current user with mode 0700. Sockets and token files must have mode 0600.
@@ -16,6 +18,69 @@ Collisions fail closed, including stale sockets: the operator must inspect and
 remove a stale socket before reusing a path. Cleanup checks the socket inode and
 never removes a replacement. Symlinks are rejected except root-managed macOS
 ancestor aliases such as `/tmp`.
+
+## Pager-free session actor
+
+Build and run the shell-only ACP entrypoint from this checkout (no pager or voice
+UI is compiled):
+
+```sh
+cargo build -p xai-grok-shell --example peer-session
+cargo run -p xai-grok-shell --example peer-session
+```
+
+It loads the normal effective Grok config and credentials and calls
+`xai_grok_shell::agent::app::run_stdio_agent`. It speaks newline-delimited ACP
+JSON-RPC on stdin/stdout. Creating the real actor requires `initialize`, followed
+by `session/new`; merely starting the process creates no session inbox. Keep
+stdin open for peer replies and subsequent turns. This launcher performs the
+handshake and prints the session ID and subsequent updates; Ctrl-C stops only
+its own child:
+
+```sh
+python3 -u - <<'PYTHON'
+import json
+import os
+import subprocess
+
+process = subprocess.Popen(
+    ["cargo", "run", "-p", "xai-grok-shell", "--example", "peer-session"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+)
+def request(request_id, method, params):
+    process.stdin.write(json.dumps({
+        "jsonrpc": "2.0", "id": request_id, "method": method, "params": params,
+    }) + "\n")
+    process.stdin.flush()
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            raise RuntimeError("session process exited before handshake completed")
+        print(line, end="", flush=True)
+        reply = json.loads(line)
+        if reply.get("id") == request_id:
+            if "error" in reply:
+                raise RuntimeError(reply["error"])
+            return reply["result"]
+try:
+    request(1, "initialize", {"protocolVersion": 1, "clientCapabilities": {}})
+    session = request(2, "session/new", {"cwd": os.getcwd(), "mcpServers": []})
+    print("Session inbox: ~/.grok/socks/" + session["sessionId"] + ".sock", flush=True)
+    # process.stdin remains open while the actual session actor handles peers.
+    for line in process.stdout:
+        print(line, end="", flush=True)
+finally:
+    process.stdin.close()
+    if process.poll() is None:
+        process.terminate()
+    process.wait()
+PYTHON
+```
+
+Set `GROK_PEER_DESTINATION` (and, for bridges, `GROK_PEER_REPLY_SOCKET`) before
+launching to advertise `send_peer_message` to the model. This entrypoint uses
+normal authentication and tool permission policy. It does not bypass human
+permission prompts; an ACP client must answer reverse requests when required.
 
 ## Direct local send
 
