@@ -760,6 +760,17 @@ impl AgentBuilder {
                 definition.name
             )));
         }
+        if self.session_env.as_ref().is_some_and(|env| {
+            env.get("GROK_PEER_DESTINATION")
+                .is_some_and(|destination| !destination.trim().is_empty())
+        }) {
+            let peer_tool = xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::grok_build::SendPeerMessageTool,
+            >();
+            if !tool_config.tools.iter().any(|tool| tool.id == peer_tool.id) {
+                tool_config.tools.push(peer_tool);
+            }
+        }
         let is_parent_grok_build = matches!(
             definition.builtin_name,
             Some(
@@ -2672,6 +2683,37 @@ mod tests {
         assert_eq!(vec!["reviewer"], names(Some(&allowed)));
         assert!(names(Some(&[])).is_empty());
     }
+    #[tokio::test]
+    async fn peer_tool_is_advertised_only_with_a_configured_destination() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        let workdir = tempfile::tempdir().unwrap();
+        for destination in [None, Some(""), Some("   "), Some("/tmp/peer.sock")] {
+            let mut env = HashMap::new();
+            if let Some(destination) = destination {
+                env.insert("GROK_PEER_DESTINATION".into(), destination.into());
+            }
+            let agent = AgentBuilder::new(
+                workdir.path().to_path_buf(),
+                Arc::new(LocalTerminalBackend::new()),
+                ToolNotificationHandle::noop(),
+            )
+            .from_definition(crate::config::AgentDefinition::default_grok_build())
+            .with_session_env(Arc::new(env))
+            .build()
+            .await
+            .unwrap();
+            let definitions = agent.tool_definitions().await;
+            assert_eq!(
+                definitions
+                    .iter()
+                    .filter(|tool| tool.function.name == "send_peer_message")
+                    .count(),
+                usize::from(destination.is_some_and(|value| !value.trim().is_empty())),
+                "destination: {destination:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn spawn_schema_offers_plugin_agent_types_by_name() {
         use crate::plugins::SharedPluginRegistryHandle;
