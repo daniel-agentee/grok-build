@@ -207,6 +207,10 @@ pub fn private_dir(path: &Path) -> Result<()> {
     if !path.exists() {
         fs::DirBuilder::new().mode(0o700).create(path)?;
     }
+    existing_private_dir(path)
+}
+fn existing_private_dir(path: &Path) -> Result<()> {
+    no_symlink_ancestors(path)?;
     let m = fs::symlink_metadata(path)?;
     ensure!(
         m.is_dir() && !m.file_type().is_symlink() && owner(&m) && m.mode() & 0o777 == 0o700,
@@ -216,6 +220,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
 }
 pub fn validate_socket(path: &Path) -> Result<fs::Metadata> {
     ensure!(path.is_absolute(), "absolute socket required");
+    existing_private_dir(path.parent().context("socket parent")?)?;
     no_symlink_ancestors(path)?;
     let m = fs::symlink_metadata(path)?;
     ensure!(
@@ -346,6 +351,48 @@ mod tests {
                 .encode()
                 .is_err()
         );
+    }
+    #[test]
+    fn unsupported_fields_and_inconsistent_envelopes_are_rejected() {
+        let message = PeerMessage::new("hello".into(), "grok".into(), "uds:/reply".into());
+        let original: serde_json::Value =
+            serde_json::from_slice(&message.encode().unwrap()).unwrap();
+        for (field, value) in [
+            ("/type", serde_json::json!("auth")),
+            ("/message/role", serde_json::json!("assistant")),
+            ("/message/content", serde_json::json!([])),
+            ("/from", serde_json::json!("uds:/different")),
+            ("/priority", serde_json::json!("now")),
+            ("/msgV", serde_json::json!(2)),
+            ("/msg_id", serde_json::json!("not-a-message-id")),
+        ] {
+            let mut frame = original.clone();
+            *frame.pointer_mut(field).unwrap() = value;
+            assert!(
+                PeerMessage::decode(&json_line(&frame).unwrap()).is_err(),
+                "field {field}"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn symlinks_and_writable_destination_directories_are_rejected() {
+        let d = tempfile::Builder::new()
+            .prefix("secure-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = d.path().join("session.sock");
+        let (_guard, _listener) = SocketGuard::bind(&socket).unwrap();
+        let alias = d.path().join("alias.sock");
+        std::os::unix::fs::symlink(&socket, &alias).unwrap();
+        assert!(validate_socket(&alias).is_err());
+        let token = d.path().join("token");
+        create_token(&token).unwrap();
+        let alias = d.path().join("token-alias");
+        std::os::unix::fs::symlink(&token, &alias).unwrap();
+        assert!(read_token(&alias).is_err());
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_socket(&socket).is_err());
     }
     #[tokio::test]
     async fn bounded_reads_reject_oversize_utf8_and_eof() {

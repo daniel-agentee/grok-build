@@ -357,3 +357,103 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    #[tokio::test]
+    async fn paired_bridges_deliver_bidirectionally_and_refuse_second_binding() {
+        let d = tempfile::Builder::new()
+            .prefix("pair-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let token_file = d.path().join("token");
+        create_token(&token_file).unwrap();
+        let a = d.path().join("a.sock");
+        let b = d.path().join("b.sock");
+        let (_a_guard, a_inbox) = SocketGuard::bind(&a).unwrap();
+        let (_b_guard, b_inbox) = SocketGuard::bind(&b).unwrap();
+        let reserve_a = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let reserve_b = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port_a = reserve_a.local_addr().unwrap().port();
+        let port_b = reserve_b.local_addr().unwrap().port();
+        drop((reserve_a, reserve_b));
+        let cfg_a = Config {
+            listen_port: port_a,
+            token_file: token_file.clone(),
+            local_socket: a.clone(),
+            proxy_socket: d.path().join("a-proxy.sock"),
+            remote_port: port_b,
+            remote_socket: b.clone(),
+        };
+        let cfg_b = Config {
+            listen_port: port_b,
+            token_file,
+            local_socket: b,
+            proxy_socket: d.path().join("b-proxy.sock"),
+            remote_port: port_a,
+            remote_socket: a,
+        };
+        let task_a = tokio::spawn(run(cfg_a.clone()));
+        let task_b = tokio::spawn(run(cfg_b.clone()));
+        timeout(Duration::from_secs(3), async {
+            for port in [port_a, port_b] {
+                loop {
+                    if TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            run(cfg_a.clone()).await.is_err(),
+            "second binding must fail closed"
+        );
+        let m = PeerMessage::new(
+            "ping".into(),
+            "test-a".into(),
+            format!("uds:{}", cfg_b.proxy_socket.display()),
+        );
+        send_proxy(&cfg_a.proxy_socket, &m).await.unwrap();
+        let (mut received, _) = b_inbox.accept().await.unwrap();
+        let ping = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
+        assert_eq!(ping.text, "ping");
+        assert_eq!(
+            ping.origin.reply_socket,
+            format!("uds:{}", cfg_b.proxy_socket.display())
+        );
+        let pong = PeerMessage::new(
+            "pong".into(),
+            "test-b".into(),
+            format!("uds:{}", cfg_a.proxy_socket.display()),
+        );
+        send_proxy(&cfg_b.proxy_socket, &pong).await.unwrap();
+        let (mut received, _) = a_inbox.accept().await.unwrap();
+        let pong = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
+        assert_eq!(pong.text, "pong");
+        assert_eq!(
+            pong.origin.reply_socket,
+            format!("uds:{}", cfg_a.proxy_socket.display())
+        );
+        task_b.abort();
+        let _ = task_b.await;
+        // The outbound proxy stays live, but loss of its downstream must propagate as failure.
+        assert!(
+            timeout(Duration::from_secs(9), send_proxy(&cfg_a.proxy_socket, &m))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        task_a.abort();
+        let _ = task_a.await;
+        assert!(!cfg_a.proxy_socket.exists());
+        assert!(!cfg_b.proxy_socket.exists());
+    }
+}
