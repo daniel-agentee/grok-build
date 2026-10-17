@@ -73,7 +73,7 @@ impl PeerMessage {
             "absolute uds reply address required"
         );
         let content = format!(
-            "<cross-session-message from=\"{}\" from-name=\"{}\" from-mode=\"default\">\n{}\n</cross-session-message>",
+            "<cross-session-message from=\"{}\" from-name=\"{}\" from-mode=\"prompting\">\n{}\n</cross-session-message>",
             escape_attr(&self.origin.reply_socket),
             escape_attr(&self.origin.sender),
             self.text
@@ -117,8 +117,12 @@ impl PeerMessage {
             .strip_prefix(&prefix)
             .context("inconsistent peer envelope")?;
         let (name, body) = rest
-            .split_once("\" from-mode=\"default\">\n")
+            .split_once("\" from-mode=\"")
             .context("invalid peer envelope")?;
+        let body = body
+            .strip_prefix("prompting\">\n")
+            .or_else(|| body.strip_prefix("bypass\">\n"))
+            .context("invalid peer permission class")?;
         ensure!(
             !name.contains(['<', '>', '"', '\n', '\r']),
             "invalid sender label"
@@ -330,11 +334,47 @@ mod tests {
             "grok\x1b\n".into(),
             "uds:/socket".into(),
         );
-        let decoded = PeerMessage::decode(&m.encode().unwrap()).unwrap();
+        let encoded = m.encode().unwrap();
+        let frame: Frame = serde_json::from_slice(&encoded).unwrap();
+        assert!(frame.message.content.contains("from-mode=\"prompting\""));
+        assert!(!frame.message.content.contains("from-mode=\"default\""));
+        let decoded = PeerMessage::decode(&encoded).unwrap();
         assert_eq!(decoded.text, m.text);
         assert_eq!(decoded.origin.sender, "grok");
+        assert_eq!(decoded.origin.reply_socket, m.origin.reply_socket);
+        assert_eq!(decoded.origin.message_id, m.origin.message_id);
         assert!(decoded.model_text().contains("not Daniel"));
         assert_eq!(escape_attr("\"<&"), "&quot;&lt;&amp;");
+    }
+    #[test]
+    fn permission_classes_are_strict() {
+        let message = PeerMessage::new("hello".into(), "grok".into(), "uds:/reply".into());
+        let original: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+        for mode in [
+            "prompting",
+            "bypass",
+            "default",
+            "",
+            "unknown",
+            "Prompting",
+            "bypass ",
+        ] {
+            let mut frame: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            frame.message.content = original
+                .message
+                .content
+                .replace("from-mode=\"prompting\"", &format!("from-mode=\"{mode}\""));
+            let decoded = PeerMessage::decode(&json_line(&frame).unwrap());
+            assert_eq!(
+                decoded.is_ok(),
+                matches!(mode, "prompting" | "bypass"),
+                "mode {mode:?}"
+            );
+            if let Ok(decoded) = decoded {
+                assert_eq!(decoded.text, message.text);
+                assert_eq!(decoded.origin.reply_socket, message.origin.reply_socket);
+            }
+        }
     }
     #[test]
     fn serialized_overhead_counts_and_no_truncation() {
