@@ -698,7 +698,11 @@ pub(crate) async fn spawn_session_actor(
             .into_owned(),
     );
     // Configuration belongs to the operator, never to model arguments.
-    for key in ["GROK_PEER_DESTINATION", "GROK_PEER_REPLY_SOCKET"] {
+    for key in [
+        "GROK_PEER_DESTINATION",
+        "GROK_PEER_REPLY_SOCKET",
+        "GROK_PEER_CLASS",
+    ] {
         if let Ok(value) = std::env::var(key) {
             env.insert(key.into(), value);
         }

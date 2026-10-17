@@ -33,9 +33,16 @@ fn configured_message(
             "Peer destination and reply identity must match session configuration",
         ));
     }
+    let class = env
+        .get("GROK_PEER_CLASS")
+        .map(String::as_str)
+        .unwrap_or("prompting")
+        .parse::<xai_peer_socket::PeerClass>()
+        .map_err(|_| invalid("GROK_PEER_CLASS must be prompting or bypass"))?;
     Ok((
         destination,
-        xai_peer_socket::PeerMessage::new(input.text, "grok".into(), format!("uds:{reply}")),
+        xai_peer_socket::PeerMessage::new(input.text, "grok".into(), format!("uds:{reply}"))
+            .with_class(class),
     ))
 }
 impl crate::types::tool_metadata::ToolMetadata for SendPeerMessageTool {
@@ -147,5 +154,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn peer_send_class_comes_only_from_operator_env() {
+        for configured in [None, Some("bypass"), Some("prompting")] {
+            let mut env = env();
+            if let Some(value) = configured {
+                env.insert("GROK_PEER_CLASS".into(), value.into());
+            }
+            let (_, message) = configured_message(&env, input()).unwrap();
+            let expected = configured.unwrap_or("prompting");
+            assert_eq!(message.class.as_str(), expected);
+            let frame: serde_json::Value =
+                serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            let content = frame["message"]["content"].as_str().unwrap();
+            assert!(content.contains(&format!("from-mode=\"{expected}\"")));
+            let other = if expected == "bypass" {
+                "prompting"
+            } else {
+                "bypass"
+            };
+            assert!(!content.contains(&format!("from-mode=\"{other}\"")));
+        }
+        for value in ["default", "unknown", "", "Bypass", "bypass "] {
+            let mut env = env();
+            env.insert("GROK_PEER_CLASS".into(), value.into());
+            assert!(
+                configured_message(&env, input()).is_err(),
+                "class {value:?}"
+            );
+        }
+    }
+    #[test]
+    fn peer_send_arguments_cannot_set_class() {
+        for field in ["class", "from_mode", "GROK_PEER_CLASS"] {
+            for value in ["bypass", "prompting"] {
+                let mut args = serde_json::json!({"text": "hello"});
+                args[field] = serde_json::json!(value);
+                assert!(serde_json::from_value::<SendPeerMessageInput>(args).is_err());
+            }
+        }
     }
 }

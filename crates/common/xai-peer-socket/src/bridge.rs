@@ -420,11 +420,13 @@ mod runtime_tests {
             "ping".into(),
             "test-a".into(),
             format!("uds:{}", cfg_b.proxy_socket.display()),
-        );
+        )
+        .with_class(PeerClass::Bypass);
         send_proxy(&cfg_a.proxy_socket, &m).await.unwrap();
         let (mut received, _) = b_inbox.accept().await.unwrap();
         let ping = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
         assert_eq!(ping.text, "ping");
+        assert_eq!(ping.class, PeerClass::Bypass);
         assert_eq!(
             ping.origin.reply_socket,
             format!("uds:{}", cfg_b.proxy_socket.display())
@@ -438,6 +440,7 @@ mod runtime_tests {
         let (mut received, _) = a_inbox.accept().await.unwrap();
         let pong = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
         assert_eq!(pong.text, "pong");
+        assert_eq!(pong.class, PeerClass::Prompting);
         assert_eq!(
             pong.origin.reply_socket,
             format!("uds:{}", cfg_a.proxy_socket.display())

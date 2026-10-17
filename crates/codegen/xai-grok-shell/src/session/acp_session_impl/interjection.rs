@@ -417,6 +417,8 @@ impl SessionActor {
                 Some(origin) => xai_peer_socket::PeerMessage {
                     origin: origin.clone(),
                     text: sanitized,
+                    // Display-only reconstruction; this value is never sent or encoded.
+                    class: xai_peer_socket::PeerClass::Prompting,
                 }
                 .display(),
                 None => sanitized,
