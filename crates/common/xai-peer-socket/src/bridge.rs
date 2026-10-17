@@ -163,9 +163,25 @@ pub async fn run(cfg: Config) -> Result<()> {
                     if let Ok(line) = read_line(&mut stream).await {
                         if let Ok(message) = PeerMessage::decode(&line) {
                             let ok = matches!(timeout(Duration::from_secs(7), forward(&message, &cfg, &token)).await, Ok(Ok(())));
-                            let _ = result(&mut stream, ok).await;
+                            let mut queued = [0; 1024];
+                            // Half-closed peers only need EOF; send_proxy still needs its result.
+                            if !matches!(stream.try_read(&mut queued), Ok(0)) {
+                                let _ = result(&mut stream, ok).await;
+                            }
                         }
                     }
+                    // Order the result before FIN, then consume queued data and the peer FIN
+                    // before dropping the socket. Bound the drain for peers waiting on our FIN.
+                    let _ = stream.flush().await;
+                    let _ = stream.shutdown().await;
+                    let _ = timeout(Duration::from_millis(100), async {
+                        let mut queued = [0; 1024];
+                        while let Ok(n) = stream.read(&mut queued).await {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    }).await;
                 });
             }
         }
@@ -361,8 +377,23 @@ mod tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
-    #[tokio::test]
-    async fn paired_bridges_deliver_bidirectionally_and_refuse_second_binding() {
+    struct Pair {
+        _directory: tempfile::TempDir,
+        _guards: (SocketGuard, SocketGuard),
+        cfg_a: Config,
+        cfg_b: Config,
+        a_inbox: UnixListener,
+        b_inbox: UnixListener,
+        task_a: tokio::task::JoinHandle<Result<()>>,
+        task_b: tokio::task::JoinHandle<Result<()>>,
+    }
+    impl Drop for Pair {
+        fn drop(&mut self) {
+            self.task_a.abort();
+            self.task_b.abort();
+        }
+    }
+    async fn pair() -> Pair {
         let d = tempfile::Builder::new()
             .prefix("pair-")
             .tempdir_in("/tmp")
@@ -412,6 +443,86 @@ mod runtime_tests {
         })
         .await
         .unwrap();
+        Pair {
+            _directory: d,
+            _guards: (_a_guard, _b_guard),
+            cfg_a,
+            cfg_b,
+            a_inbox,
+            b_inbox,
+            task_a,
+            task_b,
+        }
+    }
+    #[tokio::test]
+    async fn half_closed_proxy_reply_is_forwarded_without_connection_reset() {
+        let pair = pair().await;
+        let message = PeerMessage::new(
+            "Claude peer reply".into(),
+            "claude".into(),
+            format!("uds:{}", pair.cfg_a.proxy_socket.display()),
+        );
+        let mut client = UnixStream::connect(&pair.cfg_a.proxy_socket).await.unwrap();
+        client.write_all(&message.encode().unwrap()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        let read = timeout(Duration::from_secs(3), client.read_to_end(&mut response))
+            .await
+            .expect("proxy must close after forwarding");
+        assert_ne!(
+            read.as_ref().err().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::ConnectionReset),
+            "proxy close must consume the peer FIN"
+        );
+        read.expect("half-closed peer must read a clean EOF");
+        assert!(
+            response.is_empty(),
+            "half-closed peers must not receive a result"
+        );
+        let (mut received, _) = timeout(Duration::from_secs(3), pair.b_inbox.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let received = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
+        assert_eq!(received.text, message.text);
+    }
+    #[tokio::test]
+    async fn proxy_without_half_close_still_acknowledges_local_write() {
+        let pair = pair().await;
+        let message = PeerMessage::new(
+            "acknowledged reply".into(),
+            "test".into(),
+            format!("uds:{}", pair.cfg_a.proxy_socket.display()),
+        );
+        assert_eq!(
+            send_proxy(&pair.cfg_a.proxy_socket, &message)
+                .await
+                .unwrap(),
+            RESULT_DESCRIPTION
+        );
+        let (mut received, _) = timeout(Duration::from_secs(3), pair.b_inbox.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            PeerMessage::decode(&read_line(&mut received).await.unwrap())
+                .unwrap()
+                .text,
+            message.text
+        );
+    }
+    #[tokio::test]
+    async fn paired_bridges_deliver_bidirectionally_and_refuse_second_binding() {
+        let mut pair = pair().await;
+        let Pair {
+            cfg_a,
+            cfg_b,
+            a_inbox,
+            b_inbox,
+            task_a,
+            task_b,
+            ..
+        } = &mut pair;
         assert!(
             run(cfg_a.clone()).await.is_err(),
             "second binding must fail closed"
@@ -446,7 +557,7 @@ mod runtime_tests {
             format!("uds:{}", cfg_a.proxy_socket.display())
         );
         task_b.abort();
-        let _ = task_b.await;
+        let _ = (&mut *task_b).await;
         // The outbound proxy stays live, but loss of its downstream must propagate as failure.
         assert!(
             timeout(Duration::from_secs(9), send_proxy(&cfg_a.proxy_socket, &m))
@@ -455,7 +566,7 @@ mod runtime_tests {
                 .is_err()
         );
         task_a.abort();
-        let _ = task_a.await;
+        let _ = (&mut *task_a).await;
         assert!(!cfg_a.proxy_socket.exists());
         assert!(!cfg_b.proxy_socket.exists());
     }
