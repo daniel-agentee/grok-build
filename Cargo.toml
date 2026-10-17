@@ -102,6 +102,7 @@ members = [
     "crates/common/xai-computer-hub-sdk",
     "crates/common/xai-grok-compaction",
     "crates/common/xai-interjection-core",
+    "crates/common/xai-peer-socket",
     "crates/common/xai-message-delivery-core",
     "crates/common/xai-test-utils",
     "crates/common/xai-tool-protocol",

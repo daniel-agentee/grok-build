@@ -15429,6 +15429,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-peer-socket"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "xai-prompt-queue"
 version = "0.1.0"
 dependencies = [
