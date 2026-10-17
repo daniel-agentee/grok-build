@@ -6,6 +6,7 @@ edition.workspace = true
 description = "Shared mid-turn interjection buffer and formatting for the client and server agent loops"
 
 [dependencies]
+serde_json.workspace = true
 serde = { workspace = true }
 
 [lints]

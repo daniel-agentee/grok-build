@@ -8,3 +8,5 @@ pub use format::{
     INTERJECTION_NOTE, INTERRUPT_NOTE, LARGE_PROMPT_THRESHOLD, UNFINISHED_TASKS_REMINDER,
     format_interjection, format_interrupt, frame_user_turn, user_query,
 };
+
+pub use buffer::{PeerOrigin, format_peer};
