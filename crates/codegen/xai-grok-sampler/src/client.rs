@@ -89,6 +89,56 @@ impl GrokRequestHeaders<'_> {
     }
 }
 
+/// Decode one Responses SSE payload.
+///
+/// An event type the typed enum does not know is skipped (`Ok(None)`).
+/// A known event that fails to parse is still an error.
+///
+/// AGENT-DECISION(NO-TICKET): skip only an unknown top-level event type.
+/// Codex `response.metadata` is not in the typed enum and was failing the stream after text deltas.
+///
+/// A broken known event still errors, so a bad completion is not dropped.
+pub(crate) fn take_response_stream_frame(data: &str) -> Result<Option<rs::ResponseStreamEvent>> {
+    if is_unknown_top_level_response_event(data) {
+        let event_type = response_event_type_name(data).unwrap_or_else(|| "unknown".to_string());
+        tracing::warn!(
+            event_type = %event_type,
+            "skipping unknown Responses stream event type"
+        );
+        return Ok(None);
+    }
+    deserialize_response_event(data).map(Some)
+}
+
+/// True when the payload's top-level `type` is not a [`rs::ResponseStreamEvent`] variant.
+/// The probe is only `{"type": kind}`, so a nested unknown variant on a known event stays false.
+fn is_unknown_top_level_response_event(data: &str) -> bool {
+    let Some(kind) = response_event_type_name(data) else {
+        return false;
+    };
+    let probe = format!(r#"{{"type":"{kind}"}}"#);
+    match serde_json::from_str::<rs::ResponseStreamEvent>(&probe) {
+        Ok(_) => false,
+        Err(err) => err
+            .to_string()
+            .starts_with(&format!("unknown variant `{kind}`")),
+    }
+}
+
+/// Top-level SSE `type` when it is a plain event name. Rejects characters that would break the probe JSON.
+fn response_event_type_name(data: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    let kind = value.get("type")?.as_str()?;
+    if kind.is_empty()
+        || !kind
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(kind.to_string())
+}
+
 /// Deserialize a Responses SSE event, stripping unknown tools and rewriting terminal `total_tokens` from `context_details`.
 pub(crate) fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
     let mut event = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
@@ -1594,7 +1644,13 @@ impl SamplingClient {
                         } else if let Some(stream_error) = try_parse_stream_error(data) {
                             Some(Some(Err(stream_error)))
                         } else {
-                            Some(Some(deserialize_response_event(data)))
+                            // Unknown top-level types (Codex `response.metadata`) are skipped.
+                            // A known event that fails to parse still fails the stream.
+                            match take_response_stream_frame(data) {
+                                Ok(Some(event)) => Some(Some(Ok(event))),
+                                Ok(None) => Some(None),
+                                Err(err) => Some(Some(Err(err))),
+                            }
                         }
                     }
                     Err(e) => {
@@ -3466,6 +3522,47 @@ mod tests {
             event,
             rs::ResponseStreamEvent::ResponseOutputTextDelta(_)
         ));
+    }
+
+    #[test]
+    fn take_response_stream_frame_skips_unknown_metadata_event() {
+        let sse = r#"{"type":"response.metadata","metadata":{"foo":"bar"}}"#;
+        let frame = take_response_stream_frame(sse).expect("unknown type is not a stream failure");
+        assert!(frame.is_none());
+    }
+
+    #[test]
+    fn take_response_stream_frame_keeps_known_output_text_delta() {
+        let sse = r#"{
+            "type": "response.output_text.delta",
+            "sequence_number": 0,
+            "item_id": "item-1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "pong",
+            "logprobs": []
+        }"#;
+        let frame = take_response_stream_frame(sse).expect("delta parses");
+        assert!(matches!(
+            frame,
+            Some(rs::ResponseStreamEvent::ResponseOutputTextDelta(_))
+        ));
+    }
+
+    #[test]
+    fn take_response_stream_frame_errors_on_truncated_known_event() {
+        let sse = r#"{"type":"response.output_text.delta","sequence_number":0}"#;
+        let err = take_response_stream_frame(sse).expect_err("a broken known event still fails");
+        let message = err.to_string();
+        assert!(message.starts_with("serialization error:"), "{message}");
+        assert!(!message.contains("response.metadata"), "{message}");
+    }
+
+    #[test]
+    fn take_response_stream_frame_errors_when_known_event_has_a_bad_nested_value() {
+        let sse = r#"{"type":"response.completed","response":"not-an-object"}"#;
+        let err = take_response_stream_frame(sse).expect_err("nested damage still fails");
+        assert!(err.to_string().starts_with("serialization error:"), "{err}");
     }
 
     /// A request as the builder emits it: `reasoning.summary` already set to the built-in default.
