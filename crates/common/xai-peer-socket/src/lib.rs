@@ -100,22 +100,44 @@ impl PeerMessage {
             f.kind == "user" && f.message.role == "user" && f.version == 1 && f.priority == "next",
             "unsupported peer frame"
         );
+        let cc_id = f
+            .msg_id
+            .strip_prefix("cc-msg-")
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|c| c.is_ascii_hexdigit()));
+        let uuid_id = f.msg_id.len() == 36
+            && f.msg_id.bytes().enumerate().all(|(i, c)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    c == b'-'
+                } else {
+                    c.is_ascii_digit() || (b'a'..=b'f').contains(&c)
+                }
+            });
         ensure!(
-            f.from.starts_with("uds:/")
-                && f.msg_id.starts_with("cc-msg-")
-                && f.msg_id.len() == 39
-                && f.msg_id[7..].bytes().all(|c| c.is_ascii_hexdigit()),
+            f.from.starts_with("uds:/") && (cc_id || uuid_id),
             "invalid peer fields"
         );
-        let prefix = format!(
-            "<cross-session-message from=\"{}\" from-name=\"",
-            escape_attr(&f.from)
-        );
+        let prefix = format!("<cross-session-message from=\"{}\" ", escape_attr(&f.from));
         let rest = f
             .message
             .content
             .strip_prefix(&prefix)
             .context("inconsistent peer envelope")?;
+        let rest = if let Some(rest) = rest.strip_prefix("hop-chain=\"") {
+            let (hop_chain, rest) = rest.split_once("\" ").context("invalid hop chain")?;
+            ensure!(
+                (8..=64).contains(&hop_chain.len())
+                    && hop_chain
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+                "invalid hop chain"
+            );
+            rest
+        } else {
+            rest
+        };
+        let rest = rest
+            .strip_prefix("from-name=\"")
+            .context("invalid peer envelope")?;
         let (name, body) = rest
             .split_once("\" from-mode=\"")
             .context("invalid peer envelope")?;
@@ -345,6 +367,102 @@ mod tests {
         assert_eq!(decoded.origin.message_id, m.origin.message_id);
         assert!(decoded.model_text().contains("not Daniel"));
         assert_eq!(escape_attr("\"<&"), "&quot;&lt;&amp;");
+    }
+    #[test]
+    fn live_claude_reply_decodes() {
+        let line = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"<cross-session-message from=\"uds:/tmp/cc-socks/2070.sock\" hop-chain=\"7451794902d6de07d4c6cf76\" from-name=\"molty-cc\" from-mode=\"bypass\">\npong grok\n</cross-session-message>"},"from":"uds:/tmp/cc-socks/2070.sock","priority":"next","msgV":1,"msg_id":"5b0d4c4a-0231-47f4-b1d3-861bf3508879"}"#,
+            "\n"
+        );
+        let decoded = PeerMessage::decode(line.as_bytes()).unwrap();
+        assert_eq!(decoded.origin.sender, "molty-cc");
+        assert_eq!(decoded.text, "pong grok");
+        assert_eq!(decoded.origin.reply_socket, "uds:/tmp/cc-socks/2070.sock");
+        assert_eq!(
+            decoded.origin.message_id,
+            "5b0d4c4a-0231-47f4-b1d3-861bf3508879"
+        );
+    }
+    #[test]
+    fn prompting_without_hop_chain_accepts_both_id_formats() {
+        let message = PeerMessage::new("hello".into(), "grok".into(), "uds:/reply".into());
+        for id in [
+            "5b0d4c4a-0231-47f4-b1d3-861bf3508879",
+            "cc-msg-5b0d4c4a023147f4b1d3861bf3508879",
+        ] {
+            let mut frame: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            assert!(!frame.message.content.contains("hop-chain="));
+            frame.msg_id = id.into();
+            let decoded = PeerMessage::decode(&json_line(&frame).unwrap()).unwrap();
+            assert_eq!(decoded.origin.message_id, id);
+            assert_eq!(decoded.text, "hello");
+        }
+    }
+    #[test]
+    fn malformed_message_ids_are_rejected() {
+        let message = PeerMessage::new("hello".into(), "grok".into(), "uds:/reply".into());
+        for id in [
+            "",
+            "cc-msg-5b0d4c4a023147f4b1d3861bf350887",
+            "cc-msg-5b0d4c4a023147f4b1d3861bf35088790",
+            "cc-msg-5b0d4c4a023147f4b1d3861bf350887g",
+            "5B0D4C4A-0231-47F4-B1D3-861BF3508879",
+            "5b0d4c4a023147f4b1d3861bf3508879",
+            "5b0d4c4a_0231-47f4-b1d3-861bf3508879",
+            "5b0d4c4a-0231-47f4-b1d3-861bf350887g",
+            "5b0d4c4a-0231-47f4-b1d3-861bf3508879 ",
+        ] {
+            let mut frame: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            frame.msg_id = id.into();
+            assert!(
+                PeerMessage::decode(&json_line(&frame).unwrap()).is_err(),
+                "id {id:?}"
+            );
+        }
+    }
+    #[test]
+    fn hop_chain_and_extra_attributes_are_strict() {
+        let message = PeerMessage::new("hello".into(), "grok".into(), "uds:/reply".into());
+        for hop_chain in [
+            "01234567".to_owned(),
+            "abcdef01".repeat(8),
+            "".to_owned(),
+            "0123456".to_owned(),
+            "a".repeat(65),
+            "ABCDEF01".to_owned(),
+            "0123456g".to_owned(),
+            "0123 4567".to_owned(),
+            "0123\"4567".to_owned(),
+            "0123<4567".to_owned(),
+            "0123>4567".to_owned(),
+        ] {
+            let mut frame: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            frame.message.content = frame.message.content.replace(
+                " from-name=",
+                &format!(" hop-chain=\"{hop_chain}\" from-name="),
+            );
+            assert_eq!(
+                PeerMessage::decode(&json_line(&frame).unwrap()).is_ok(),
+                hop_chain == "01234567" || hop_chain == "abcdef01".repeat(8),
+                "hop chain {hop_chain:?}"
+            );
+        }
+        for extra in [
+            "from-session=\"session\" ",
+            "unknown=\"value\" ",
+            "hop-chain=\"01234567\" from-session=\"session\" ",
+            "hop-chain=\"01234567\" hop-chain=\"89abcdef\" ",
+        ] {
+            let mut frame: Frame = serde_json::from_slice(&message.encode().unwrap()).unwrap();
+            frame.message.content = frame
+                .message
+                .content
+                .replace(" from-name=", &format!(" {extra}from-name="));
+            assert!(
+                PeerMessage::decode(&json_line(&frame).unwrap()).is_err(),
+                "extra {extra:?}"
+            );
+        }
     }
     #[test]
     fn permission_classes_are_strict() {
