@@ -7,6 +7,7 @@ license = "Apache-2.0"
 [dependencies]
 xai-interjection-core = { path = "../xai-interjection-core" }
 anyhow.workspace = true
+chrono.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true

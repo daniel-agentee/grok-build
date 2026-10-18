@@ -14,6 +14,8 @@ use tokio::{
     time::timeout,
 };
 
+pub mod registry;
+
 pub const MAX_LINE: usize = 32 * 1024;
 pub const DEADLINE: Duration = Duration::from_secs(30);
 pub const WRITE_DEADLINE: Duration = Duration::from_secs(2);
