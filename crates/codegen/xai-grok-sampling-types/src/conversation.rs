@@ -656,6 +656,8 @@ pub struct ConversationRequest {
     pub traceparent: Option<String>,
     /// Reasoning effort level for reasoning models.
     pub reasoning_effort: Option<crate::ReasoningEffort>,
+    /// Responses API service tier selected by a per-invocation Codex speed flag.
+    pub service_tier: Option<rs::ServiceTier>,
     /// JSON Schema for structured output (strict mode).
     pub json_schema: Option<serde_json::Value>,
     /// Sticky routing key for prompt-cache reuse; overrides `x_grok_conv_id` for routing.

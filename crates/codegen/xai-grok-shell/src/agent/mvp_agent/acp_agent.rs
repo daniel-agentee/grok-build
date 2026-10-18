@@ -67,10 +67,15 @@ impl MvpAgent {
             }
             None => crate::agent::handlers::model_switch::SwitchEffort::Preserve,
         };
+        let switch_service_tier = match parse_service_tier_meta(args.meta.as_ref()) {
+            Some(tier) => crate::agent::handlers::model_switch::SwitchServiceTier::Set(tier),
+            None => crate::agent::handlers::model_switch::SwitchServiceTier::Preserve,
+        };
         let res = crate::agent::handlers::model_switch::apply(
                 self,
                 args,
                 switch_effort,
+                switch_service_tier,
                 crate::agent::handlers::model_switch::ConfigNotice::Send,
             )
             .await;
@@ -1067,6 +1072,7 @@ impl acp::Agent for MvpAgent {
                             restore_model_id.clone(),
                         ),
                         crate::agent::handlers::model_switch::SwitchEffort::Preserve,
+                        crate::agent::handlers::model_switch::SwitchServiceTier::Preserve,
                         crate::agent::handlers::model_switch::ConfigNotice::Send,
                     )
                     .await

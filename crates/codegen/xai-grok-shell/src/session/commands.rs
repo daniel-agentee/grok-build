@@ -310,6 +310,7 @@ impl From<SkillUpdateKind> for AdvertiseTrigger {
 }
 pub struct SessionModelSwitch {
     pub sampling_config: xai_grok_sampler::SamplerConfig,
+    pub service_tier: Option<xai_grok_sampling_types::rs::ServiceTier>,
     pub use_concise: bool,
     /// The two models declare differing `model_family`s, so a lossy compaction runs at switch end.
     pub is_family_switch: bool,

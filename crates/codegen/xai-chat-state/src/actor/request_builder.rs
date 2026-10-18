@@ -89,6 +89,7 @@ impl ChatStateActor {
             traceparent: None,
             prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
+            service_tier: self.state.sampling_config.service_tier,
             json_schema: None,
             // Execute completed tool calls on a Length-truncated turn instead
             // of failing it; text-only salvage stays behind `CompletePartial`.

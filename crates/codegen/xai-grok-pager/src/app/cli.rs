@@ -520,6 +520,9 @@ pub struct PagerArgs {
         overrides_with = "reasoning_effort"
     )]
     pub reasoning_effort: Option<String>,
+    /// Codex service speed tier to use for this invocation.
+    #[arg(long = "service-tier", value_name = "SERVICE_TIER", value_parser = ["fast", "flex"])]
+    pub service_tier: Option<String>,
     /// Extra rules to append to the system prompt.
     #[clap(long = "rules", alias = "append-system-prompt")]
     pub rules: Option<String>,
@@ -1470,6 +1473,16 @@ mod tests {
             PagerArgs::try_parse_from(["grok", "--effort", "high", "--reasoning-effort", "low"])
                 .expect("both effort flag names parse (reverse order)");
         assert_eq!(reverse.reasoning_effort.as_deref(), Some("low"));
+    }
+    #[test]
+    fn service_tier_accepts_codex_speed_values() {
+        let fast = PagerArgs::try_parse_from(["grok", "--service-tier", "fast"])
+            .expect("fast speed parses");
+        assert_eq!(fast.service_tier.as_deref(), Some("fast"));
+        let flex = PagerArgs::try_parse_from(["grok", "--service-tier", "flex"])
+            .expect("flex speed parses");
+        assert_eq!(flex.service_tier.as_deref(), Some("flex"));
+        assert!(PagerArgs::try_parse_from(["grok", "--service-tier", "priority"]).is_err());
     }
     #[test]
     fn agent_args_effort_alias_parses() {

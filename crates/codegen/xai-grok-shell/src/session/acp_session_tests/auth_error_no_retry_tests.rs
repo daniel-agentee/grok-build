@@ -1491,6 +1491,7 @@ async fn model_switch_preserves_existing_conversation_group() {
             actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: incoming,
+                    service_tier: None,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,
@@ -1564,6 +1565,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             let _ = actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: cfg,
+                    service_tier: None,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,
@@ -1650,6 +1652,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
             let _ = actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: cfg,
+                    service_tier: None,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,

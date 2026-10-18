@@ -45,7 +45,7 @@ use crate::agent::remote_config::{
 use crate::agent::session_config;
 use xai_grok_sampling_types::{
     REASONING_EFFORT_META_KEY, ReasoningEffort, ReasoningEffortOption,
-    parse_reasoning_effort_meta, reasoning_effort_meta_value,
+    parse_reasoning_effort_meta, parse_service_tier_meta, reasoning_effort_meta_value,
     supports_reasoning_effort_meta,
 };
 use crate::agent::update_chunk_merge;

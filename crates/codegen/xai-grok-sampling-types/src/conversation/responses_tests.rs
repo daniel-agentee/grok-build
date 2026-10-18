@@ -37,6 +37,21 @@ fn test_conversation_request_to_responses_api() {
 }
 
 #[test]
+fn responses_service_tier_omits_default_and_maps_codex_fast_to_priority() {
+    let default_request = ConversationRequest::from_items(vec![ConversationItem::user("hi")]);
+    let default_responses: rs::CreateResponse = (&default_request).into();
+    assert_eq!(default_responses.service_tier, None);
+    let default_json = serde_json::to_value(default_responses).unwrap();
+    assert!(default_json.get("service_tier").is_none());
+
+    let mut fast_request = default_request;
+    fast_request.service_tier = crate::codex_service_tier_from_speed("fast");
+    let fast_responses: rs::CreateResponse = (&fast_request).into();
+    let fast_json = serde_json::to_value(fast_responses).unwrap();
+    assert_eq!(fast_json["service_tier"], "priority");
+}
+
+#[test]
 fn responses_system_items_become_instructions_in_order() {
     let req = ConversationRequest::from_items(vec![
         ConversationItem::system("First instruction"),

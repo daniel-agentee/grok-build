@@ -872,6 +872,31 @@ impl ReasoningSummary {
 
 pub const REASONING_EFFORT_META_KEY: &str = "reasoningEffort";
 pub const SUPPORTS_REASONING_EFFORT_META_KEY: &str = "supportsReasoningEffort";
+pub const SERVICE_TIER_META_KEY: &str = "serviceTier";
+
+/// Map Codex CLI speed names to the Responses API values Codex sends.
+/// In particular, Codex's `fast` setting is the backend's `priority` tier.
+pub fn codex_service_tier_from_speed(speed: &str) -> Option<crate::rs::ServiceTier> {
+    match speed {
+        "fast" => Some(crate::rs::ServiceTier::Priority),
+        "flex" => Some(crate::rs::ServiceTier::Flex),
+        _ => None,
+    }
+}
+
+pub fn parse_service_tier_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<crate::rs::ServiceTier> {
+    let raw = meta?.get(SERVICE_TIER_META_KEY)?;
+    let Some(speed) = raw.as_str() else {
+        tracing::warn!(value = %raw, "meta.serviceTier: expected string, ignoring");
+        return None;
+    };
+    codex_service_tier_from_speed(speed).or_else(|| {
+        tracing::warn!(speed, "meta.serviceTier: unsupported speed, ignoring");
+        None
+    })
+}
 
 pub fn supports_reasoning_effort_meta(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -1116,6 +1141,9 @@ pub struct SamplingConfig {
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Responses API service tier selected by a per-invocation Codex speed flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<crate::rs::ServiceTier>,
     /// Responses API `reasoning.summary`; `None` keeps the request builder's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<ReasoningSummary>,
@@ -1144,6 +1172,7 @@ impl Default for SamplingConfig {
             env_http_headers: indexmap::IndexMap::new(),
             context_window: NonZeroU64::MIN,
             reasoning_effort: None,
+            service_tier: None,
             reasoning_summary: None,
             stream_tool_calls: None,
         }
@@ -1492,6 +1521,20 @@ mod tests {
         assert_eq!(parse_reasoning_effort_meta(Some(&bad_type)), None);
         let unknown = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
         assert_eq!(parse_reasoning_effort_meta(Some(&unknown)), None);
+    }
+
+    #[test]
+    fn codex_service_tier_maps_supported_speed_values() {
+        assert_eq!(
+            codex_service_tier_from_speed("fast"),
+            Some(crate::rs::ServiceTier::Priority)
+        );
+        assert_eq!(
+            codex_service_tier_from_speed("flex"),
+            Some(crate::rs::ServiceTier::Flex)
+        );
+        assert_eq!(codex_service_tier_from_speed("priority"), None);
+        assert_eq!(codex_service_tier_from_speed("slow"), None);
     }
 
     #[test]

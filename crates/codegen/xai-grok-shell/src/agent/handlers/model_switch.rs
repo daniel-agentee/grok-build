@@ -9,7 +9,7 @@ use crate::sampling::EffortTarget;
 use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
 use tokio::sync::oneshot;
-use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_sampling_types::{ReasoningEffort, rs};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigNotice {
     Send,
@@ -23,11 +23,20 @@ pub(crate) enum SwitchEffort {
     /// Use this effort; `None` falls back to the new model's default (session setup and restore).
     Set(Option<ReasoningEffort>),
 }
+/// How a model switch resolves the Responses API service tier.
+#[derive(Clone, Copy)]
+pub(crate) enum SwitchServiceTier {
+    /// Keep the current session tier when changing models.
+    Preserve,
+    /// Set the tier selected for this invocation.
+    Set(rs::ServiceTier),
+}
 /// Apply a model switch to a session (no gate; `set_session_model` gates first).
 pub(crate) async fn apply(
     agent: &MvpAgent,
     args: acp::SetSessionModelRequest,
     effort: SwitchEffort,
+    service_tier: SwitchServiceTier,
     config_notice: ConfigNotice,
 ) -> Result<acp::SetSessionModelResponse, acp::Error> {
     tracing::info!("Received set session model request {args:?}");
@@ -148,13 +157,18 @@ pub(crate) async fn apply(
             }
         }
     }
+    let current_sampling_config = handle.chat_state_handle.get_sampling_config().await;
     let effective_effort = match effort {
         SwitchEffort::Set(explicit) => explicit,
-        SwitchEffort::Preserve => handle
-            .chat_state_handle
-            .get_sampling_config()
-            .await
+        SwitchEffort::Preserve => current_sampling_config
+            .as_ref()
             .and_then(|cfg| cfg.reasoning_effort),
+    };
+    let effective_service_tier = match service_tier {
+        SwitchServiceTier::Set(tier) => Some(tier),
+        SwitchServiceTier::Preserve => current_sampling_config
+            .as_ref()
+            .and_then(|cfg| cfg.service_tier),
     };
     let mut model_sampling =
         agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());
@@ -165,6 +179,12 @@ pub(crate) async fn apply(
         EffortTarget::ModelSwitch,
     );
     let applied_effort = model_sampling.reasoning_effort;
+    tracing::info!(
+        model = %model_sampling.model,
+        reasoning_effort = applied_effort.map(|effort| effort.to_string()),
+        service_tier = ?effective_service_tier,
+        "model_switch"
+    );
     let (new_threshold, system_prompt_label) = {
         let cfg = agent.cfg.borrow();
         (
@@ -235,6 +255,7 @@ pub(crate) async fn apply(
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
         switch: SessionModelSwitch {
             sampling_config: model_sampling,
+            service_tier: effective_service_tier,
             use_concise,
             is_family_switch,
             apply_prompt_override,

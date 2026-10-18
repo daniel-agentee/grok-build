@@ -33,7 +33,8 @@ use xai_grok_shell::sampling::error::{
     RATE_LIMITED_ERROR_CODE, error_detail_from_data, format_rate_limited_user_message,
 };
 use xai_grok_shell::sampling::types::{
-    REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
+    REASONING_EFFORT_META_KEY, SERVICE_TIER_META_KEY, codex_service_tier_from_speed,
+    parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use xai_grok_shell::util::config as cli_config;
 use xai_grok_telemetry::startup::PendingStartup;
@@ -82,6 +83,8 @@ pub struct HeadlessOptions {
     pub permission_mode_flag: Option<String>,
     /// Effort token (`--reasoning-effort` / `--effort`); resolved like `/effort` after models load.
     pub reasoning_effort: Option<String>,
+    /// Codex speed tier (`--service-tier`); applied after session startup with the model switch.
+    pub service_tier: Option<String>,
     /// Wait for background tasks to report `task_completed` before exiting (default true).
     pub wait_for_background: bool,
     /// Max time to wait for background work to finish after the first turn ends.
@@ -696,8 +699,9 @@ async fn apply_headless_model_and_effort(
     models: &ModelState,
     model_name: Option<&str>,
     effort_token: Option<&str>,
+    service_tier_token: Option<&str>,
 ) -> anyhow::Result<()> {
-    if model_name.is_none() && effort_token.is_none() {
+    if model_name.is_none() && effort_token.is_none() && service_tier_token.is_none() {
         return Ok(());
     }
     let model_id = if let Some(name) = model_name {
@@ -735,17 +739,30 @@ async fn apply_headless_model_and_effort(
             }
         },
     };
-    if model_name.is_none() && effort.is_none() {
+    let service_tier = match service_tier_token {
+        Some(speed) => Some(
+            codex_service_tier_from_speed(speed)
+                .ok_or_else(|| anyhow::anyhow!("--service-tier: unsupported value '{speed}'"))?,
+        ),
+        None => None,
+    };
+    if model_name.is_none() && effort.is_none() && service_tier.is_none() {
         return Ok(());
     }
-    let meta = effort.map(|eff| {
-        let mut m = acp::Meta::new();
-        m.insert(
+    let mut meta = acp::Meta::new();
+    if let Some(effort) = effort {
+        meta.insert(
             REASONING_EFFORT_META_KEY.to_string(),
-            reasoning_effort_meta_value(eff),
+            reasoning_effort_meta_value(effort),
         );
-        m
-    });
+    }
+    if let Some(speed) = service_tier_token {
+        meta.insert(
+            SERVICE_TIER_META_KEY.to_string(),
+            serde_json::Value::String(speed.to_owned()),
+        );
+    }
+    let meta = (!meta.is_empty()).then_some(meta);
     acp_send(
         acp::SetSessionModelRequest::new(session_id.clone(), model_id.clone()).meta(meta),
         acp_tx,
@@ -759,12 +776,13 @@ async fn apply_headless_model_and_effort(
                 e
             )
         } else {
-            anyhow::anyhow!("Couldn't apply reasoning effort: {e}")
+            anyhow::anyhow!("Couldn't apply invocation model settings: {e}")
         }
     })?;
     tracing::debug!(
         model_id = %model_id.0,
         effort = ?effort,
+        service_tier = service_tier_token,
         "headless: model/effort set"
     );
     Ok(())
@@ -1142,6 +1160,7 @@ pub async fn run_single_turn(
         &session_models,
         options.model.as_deref(),
         options.reasoning_effort.as_deref(),
+        options.service_tier.as_deref(),
     )
     .await
     {

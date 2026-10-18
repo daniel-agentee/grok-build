@@ -32,6 +32,7 @@ async fn model_switch_relabels_live_agent_and_system_head() {
                         context_window: 256_000,
                         ..xai_grok_sampler::SamplerConfig::default()
                     },
+                    service_tier: None,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: true,

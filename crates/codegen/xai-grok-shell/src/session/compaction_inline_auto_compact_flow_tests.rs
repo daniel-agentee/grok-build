@@ -859,6 +859,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
             actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: switch_target_config("new-model", server.url()),
+                    service_tier: None,
                     use_concise: false,
                     is_family_switch: true,
                     apply_prompt_override: false,

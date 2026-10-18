@@ -91,6 +91,12 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
 
 impl From<&ConversationRequest> for rs::CreateResponse {
     fn from(req: &ConversationRequest) -> Self {
+        let service_tier =
+            serde_json::to_value(req.service_tier).expect("Responses service tier is serializable");
+        tracing::info!(
+            service_tier = %service_tier.as_str().unwrap_or("none"),
+            "Responses request service tier"
+        );
         let input = build_responses_input(req);
         let instructions = req
             .items
@@ -152,7 +158,7 @@ impl From<&ConversationRequest> for rs::CreateResponse {
                 summary: crate::ReasoningSummary::default().to_responses_api(),
             }),
             safety_identifier: None,
-            service_tier: None,
+            service_tier: req.service_tier,
             store: None,
             stream: None,
             stream_options: None,
