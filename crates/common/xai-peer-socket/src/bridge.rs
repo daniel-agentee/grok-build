@@ -86,6 +86,31 @@ async fn inbound(stream: &mut TcpStream, cfg: &Config, token: &str) -> Result<()
     delivered?;
     Ok(())
 }
+// AGENT-DECISION(NO-TICKET): a half-closed proxy sender is released before forward,
+// because the macOS peer sender resolves on close and destroys the socket after 5s idle.
+async fn sender_half_closed(stream: &mut UnixStream) -> bool {
+    let mut queued = [0; 1024];
+    if matches!(stream.try_read(&mut queued), Ok(0)) {
+        return true;
+    }
+    matches!(
+        timeout(Duration::from_millis(500), stream.read(&mut queued)).await,
+        Ok(Ok(0))
+    )
+}
+async fn release_sender(stream: &mut UnixStream) {
+    let _ = stream.flush().await;
+    let _ = stream.shutdown().await;
+    let _ = timeout(Duration::from_millis(100), async {
+        let mut queued = [0; 1024];
+        while let Ok(n) = stream.read(&mut queued).await {
+            if n == 0 {
+                break;
+            }
+        }
+    })
+    .await;
+}
 async fn forward(message: &PeerMessage, cfg: &Config, token: &str) -> Result<()> {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, cfg.remote_port);
     let mut stream = timeout(WRITE_DEADLINE, TcpStream::connect(address))
@@ -162,6 +187,11 @@ pub async fn run(cfg: Config) -> Result<()> {
                 clients.spawn(async move {
                     if let Ok(line) = read_line(&mut stream).await {
                         if let Ok(message) = PeerMessage::decode(&line) {
+                            if sender_half_closed(&mut stream).await {
+                                release_sender(&mut stream).await;
+                                let _ = timeout(Duration::from_secs(7), forward(&message, &cfg, &token)).await;
+                                return;
+                            }
                             let ok = matches!(timeout(Duration::from_secs(7), forward(&message, &cfg, &token)).await, Ok(Ok(())));
                             let mut queued = [0; 1024];
                             // Half-closed peers only need EOF; send_proxy still needs its result.
@@ -170,18 +200,7 @@ pub async fn run(cfg: Config) -> Result<()> {
                             }
                         }
                     }
-                    // Order the result before FIN, then consume queued data and the peer FIN
-                    // before dropping the socket. Bound the drain for peers waiting on our FIN.
-                    let _ = stream.flush().await;
-                    let _ = stream.shutdown().await;
-                    let _ = timeout(Duration::from_millis(100), async {
-                        let mut queued = [0; 1024];
-                        while let Ok(n) = stream.read(&mut queued).await {
-                            if n == 0 {
-                                break;
-                            }
-                        }
-                    }).await;
+                    release_sender(&mut stream).await;
                 });
             }
         }
@@ -485,6 +504,65 @@ mod runtime_tests {
             .unwrap();
         let received = PeerMessage::decode(&read_line(&mut received).await.unwrap()).unwrap();
         assert_eq!(received.text, message.text);
+    }
+    #[tokio::test]
+    async fn half_closed_sender_is_released_before_slow_forward() {
+        let d = tempfile::Builder::new()
+            .prefix("pair-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let token_file = d.path().join("token");
+        create_token(&token_file).unwrap();
+        let local = d.path().join("local.sock");
+        let (_guard, _inbox) = SocketGuard::bind(&local).unwrap();
+        let remote = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let remote_port = remote.local_addr().unwrap().port();
+        let held = tokio::spawn(async move {
+            let (stream, _) = remote.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(8)).await;
+            drop(stream);
+        });
+        let listen = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let listen_port = listen.local_addr().unwrap().port();
+        drop(listen);
+        let cfg = Config {
+            listen_port,
+            token_file,
+            local_socket: local.clone(),
+            proxy_socket: d.path().join("proxy.sock"),
+            remote_port,
+            remote_socket: local,
+        };
+        let task = tokio::spawn(run(cfg.clone()));
+        timeout(Duration::from_secs(3), async {
+            loop {
+                if cfg.proxy_socket.exists() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let message = PeerMessage::new(
+            "released before forward".into(),
+            "claude".into(),
+            format!("uds:{}", cfg.proxy_socket.display()),
+        );
+        let mut client = UnixStream::connect(&cfg.proxy_socket).await.unwrap();
+        client.write_all(&message.encode().unwrap()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let started = std::time::Instant::now();
+        let mut response = Vec::new();
+        timeout(Duration::from_millis(1000), client.read_to_end(&mut response))
+            .await
+            .expect("half-closed sender must be released before a slow forward")
+            .expect("clean EOF");
+        assert!(response.is_empty(), "half-closed peers must not receive a result");
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        task.abort();
+        held.abort();
     }
     #[tokio::test]
     async fn proxy_without_half_close_still_acknowledges_local_write() {
