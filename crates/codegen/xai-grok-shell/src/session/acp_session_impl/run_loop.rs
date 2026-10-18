@@ -361,11 +361,18 @@ pub(super) async fn run_session(
     index_root: std::path::PathBuf,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
 ) {
+    let peer_session_id = session.session_info.id.0.to_string();
+    let peer_session_name =
+        crate::session::persistence::find_summary_by_session_id(&peer_session_id)
+            .and_then(|summary| summary.display_title_opt())
+            .unwrap_or_else(|| peer_session_id.chars().take(8).collect());
     let mut peer_inbox = match crate::session::peer_socket::start(
-        session.session_info.id.0.as_ref(),
+        &peer_session_id,
+        &session.session_info.cwd,
+        &peer_session_name,
     ) {
         Ok(inbox) => {
-            tracing::info!(socket = %crate::session::peer_socket::path(session.session_info.id.0.as_ref()).display(), "Peer inbox ready (headless lifetime ends with session)");
+            tracing::info!(socket = %crate::session::peer_socket::path(&peer_session_id).display(), "Peer inbox ready (headless lifetime ends with session)");
             Some(inbox)
         }
         Err(error) => {
@@ -659,6 +666,24 @@ pub(super) async fn run_session(
                     if let Some(event) = maybe_event {
                         match event {
                             SessionEvent::Notification(notification) => {
+                                if let crate::session::replay_events::SessionNotification::Xai(
+                                    notification,
+                                ) = &notification
+                                    && let XaiSessionUpdate::SessionSummaryGenerated {
+                                        session_summary,
+                                    } = &notification.update
+                                {
+                                    let name = if session_summary.trim().is_empty() {
+                                        peer_session_id.chars().take(8).collect()
+                                    } else {
+                                        session_summary.clone()
+                                    };
+                                    if let Some(inbox) = peer_inbox.as_mut()
+                                        && let Err(error) = inbox.update_name(name)
+                                    {
+                                        tracing::warn!(%error, "failed to update peer session name");
+                                    }
+                                }
                                 let out = replay_buffer.consume_chunk(notification);
                                 match out {
                                     None => {}

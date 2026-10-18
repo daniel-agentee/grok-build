@@ -697,6 +697,7 @@ pub(crate) async fn spawn_session_actor(
             .to_string_lossy()
             .into_owned(),
     );
+    env.insert("GROK_PEER_SESSION_ID".into(), session_info.id.0.to_string());
     // Configuration belongs to the operator, never to model arguments.
     for key in [
         "GROK_PEER_DESTINATION",
