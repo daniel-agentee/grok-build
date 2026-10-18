@@ -28,6 +28,7 @@ impl From<&crate::types::ToolInput> for AccessKind {
             | ToolInput::MemorySearch(_)
             | ToolInput::SearchTool(_)
             | ToolInput::SchedulerList(_)
+            | ToolInput::ListPeerSessions(_)
             | ToolInput::EnterPlanMode(_)
             | ToolInput::ExitPlanMode(_)
             | ToolInput::AskUserQuestion(_)

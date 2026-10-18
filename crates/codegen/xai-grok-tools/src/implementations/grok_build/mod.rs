@@ -23,6 +23,7 @@ pub mod image_gen;
 pub mod init_or_update_app;
 pub mod kill_task;
 pub mod list_dir;
+pub mod list_peer_sessions;
 pub mod lsp;
 pub mod media_bearer;
 pub mod monitor;
@@ -55,6 +56,7 @@ pub use image_gen::{
 pub use init_or_update_app::INIT_OR_UPDATE_APP_TOOL_NAME;
 pub use kill_task::{KillTaskTool, KillTerminalCommandTool};
 pub use list_dir::ListDirTool;
+pub use list_peer_sessions::ListPeerSessionsTool;
 pub use lsp::LspTool;
 pub use monitor::tool::MonitorTool;
 pub use read_file::ReadFileTool;

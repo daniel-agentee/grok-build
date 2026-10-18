@@ -55,6 +55,7 @@ pub struct MCPToolInput {
 #[serde(tag = "variant")]
 pub enum ToolInput {
     SendPeerMessage(crate::implementations::grok_build::send_peer_message::SendPeerMessageInput),
+    ListPeerSessions(crate::implementations::grok_build::list_peer_sessions::ListPeerSessionsInput),
     ReadFile(ReadFileInput),
     SearchReplace(SearchReplaceInput),
     Bash(BashToolInput),

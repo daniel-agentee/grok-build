@@ -28,6 +28,7 @@ pub struct TextOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_completion_task_id: Option<String>,
 }
+impl xai_tool_runtime::ToolOutput for TextOutput {}
 impl From<String> for TextOutput {
     fn from(text: String) -> Self {
         Self {

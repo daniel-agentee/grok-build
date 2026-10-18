@@ -1,50 +1,139 @@
-//! Peer writes are policy-controlled and restricted to operator-configured destinations.
+//! Peer writes are name-routed through the private local registry or use the configured proxy.
 use crate::types::tool::{ToolKind, ToolNamespace};
+use std::{collections::HashMap, path::PathBuf};
+use xai_peer_socket::registry::PeerRegistry;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendPeerMessageInput {
     /// Text sent as untrusted peer data.
     pub text: String,
-    /// Optional exact configured proxy path; omitted selects this session's configured peer.
+    /// Session name, `name [ref]`, or the exact operator-configured proxy path.
+    /// Omitted selects the configured proxy for compatibility.
     pub to: Option<String>,
-    /// Optional exact configured reply socket. Cannot override session identity.
+    /// Optional identity assertion. Must match this session's inbox for local sends or the
+    /// configured reply path for proxy sends.
     pub reply_socket: Option<String>,
 }
+
 #[derive(Debug, Default)]
 pub struct SendPeerMessageTool;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Transport {
+    Local(PathBuf),
+    Proxy(PathBuf),
+}
+
+#[derive(Debug)]
+struct ConfiguredMessage {
+    transport: Transport,
+    message: xai_peer_socket::PeerMessage,
+}
+
 fn configured_message(
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
+    registry: &PeerRegistry,
     input: SendPeerMessageInput,
-) -> Result<(&str, xai_peer_socket::PeerMessage), xai_tool_runtime::ToolError> {
+) -> Result<ConfiguredMessage, xai_tool_runtime::ToolError> {
     let invalid = xai_tool_runtime::ToolError::invalid_arguments;
-    let destination = env
-        .get("GROK_PEER_DESTINATION")
-        .ok_or_else(|| invalid("No peer proxy configured for this session"))?;
-    let reply = env
-        .get("GROK_PEER_REPLY_SOCKET")
-        .or_else(|| env.get("GROK_PEER_SOCKET"))
-        .ok_or_else(|| invalid("No session reply socket"))?;
-    if input.to.as_ref().is_some_and(|s| s != destination)
-        || input.reply_socket.as_ref().is_some_and(|s| s != reply)
-    {
-        return Err(invalid(
-            "Peer destination and reply identity must match session configuration",
-        ));
-    }
+    let own_socket = env.get("GROK_PEER_SOCKET");
+    let current_session_id = env.get("GROK_PEER_SESSION_ID");
+    let (transport, reply_socket) = match input.to.as_deref() {
+        Some(target) if std::path::Path::new(target).is_absolute() => {
+            let destination = env
+                .get("GROK_PEER_DESTINATION")
+                .filter(|destination| destination.as_str() == target)
+                .ok_or_else(|| {
+                    invalid("Peer destination must be a registered session name or the configured proxy path")
+                })?;
+            let reply = env
+                .get("GROK_PEER_REPLY_SOCKET")
+                .or(own_socket)
+                .ok_or_else(|| invalid("No session reply socket"))?;
+            if input
+                .reply_socket
+                .as_ref()
+                .is_some_and(|value| value != reply)
+            {
+                return Err(invalid(
+                    "Peer reply identity must match session configuration",
+                ));
+            }
+            (Transport::Proxy(destination.into()), reply.clone())
+        }
+        Some(target) => {
+            let current_session_id = current_session_id
+                .ok_or_else(|| invalid("Current peer session identity is unavailable"))?;
+            let peer = registry
+                .resolve(target, current_session_id)
+                .map_err(|error| {
+                    xai_tool_runtime::ToolError::invalid_arguments(error.to_string())
+                })?;
+            let own_socket =
+                own_socket.ok_or_else(|| invalid("Current peer inbox is unavailable"))?;
+            if input
+                .reply_socket
+                .as_ref()
+                .is_some_and(|value| value != own_socket)
+            {
+                return Err(invalid("Peer reply socket must be this session's inbox"));
+            }
+            (Transport::Local(peer.socket), own_socket.clone())
+        }
+        None => {
+            let destination = env
+                .get("GROK_PEER_DESTINATION")
+                .ok_or_else(|| invalid("No peer destination or session name was provided"))?;
+            let reply = env
+                .get("GROK_PEER_REPLY_SOCKET")
+                .or(own_socket)
+                .ok_or_else(|| invalid("No session reply socket"))?;
+            if input
+                .reply_socket
+                .as_ref()
+                .is_some_and(|value| value != reply)
+            {
+                return Err(invalid(
+                    "Peer reply identity must match session configuration",
+                ));
+            }
+            (Transport::Proxy(destination.into()), reply.clone())
+        }
+    };
+
     let class = env
         .get("GROK_PEER_CLASS")
         .map(String::as_str)
         .unwrap_or("prompting")
         .parse::<xai_peer_socket::PeerClass>()
         .map_err(|_| invalid("GROK_PEER_CLASS must be prompting or bypass"))?;
-    Ok((
-        destination,
-        xai_peer_socket::PeerMessage::new(input.text, "grok".into(), format!("uds:{reply}"))
-            .with_class(class),
-    ))
+    let message =
+        xai_peer_socket::PeerMessage::new(input.text, "grok".into(), format!("uds:{reply_socket}"))
+            .with_class(class);
+    Ok(ConfiguredMessage { transport, message })
 }
+
+async fn send_configured(
+    env: &HashMap<String, String>,
+    registry: &PeerRegistry,
+    input: SendPeerMessageInput,
+) -> Result<&'static str, xai_tool_runtime::ToolError> {
+    let invalid = xai_tool_runtime::ToolError::invalid_arguments;
+    let configured = configured_message(env, registry, input)?;
+    let result = match configured.transport {
+        Transport::Local(destination) => {
+            xai_peer_socket::send_unix(&destination, &configured.message).await
+        }
+        Transport::Proxy(destination) => {
+            xai_peer_socket::bridge::send_proxy(&destination, &configured.message).await
+        }
+    };
+    result.map_err(|_| {
+        invalid("Peer transport failed or delivery unknown; do not automatically retry")
+    })
+}
+
 impl crate::types::tool_metadata::ToolMetadata for SendPeerMessageTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Write
@@ -53,9 +142,10 @@ impl crate::types::tool_metadata::ToolMetadata for SendPeerMessageTool {
         ToolNamespace::GrokBuild
     }
     fn description_template(&self) -> &str {
-        "Send untrusted text to this session's operator-configured peer proxy. No arbitrary socket destinations. A transport result does not establish transcript visibility or model processing; never automatically retry an ambiguous write."
+        "Send untrusted text to another live Grok session by name, optionally `name [ref]` when names are ambiguous. The exact operator-configured proxy path remains supported. Reply identity is fixed by this session; never automatically retry an ambiguous write."
     }
 }
+
 impl xai_tool_runtime::Tool for SendPeerMessageTool {
     type Args = SendPeerMessageInput;
     type Output = crate::types::output::ToolOutput;
@@ -85,35 +175,36 @@ impl xai_tool_runtime::Tool for SendPeerMessageTool {
     ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
         let resources = crate::types::tool_metadata::shared_resources(&ctx)?;
         let env = {
-            let res = resources.lock().await;
-            res.require::<crate::types::resources::SessionEnv>()?
+            let resources = resources.lock().await;
+            resources
+                .require::<crate::types::resources::SessionEnv>()?
                 .0
                 .clone()
         };
-        let invalid = xai_tool_runtime::ToolError::invalid_arguments;
-        let (destination, message) = configured_message(&env, input)?;
-        xai_peer_socket::bridge::send_proxy(std::path::Path::new(destination), &message)
-            .await
-            .map(|s| crate::types::output::ToolOutput::Text(s.into()))
-            .map_err(|_| {
-                invalid("Peer transport failed or delivery unknown; do not automatically retry")
-            })
+        let delivery =
+            send_configured(&env, &PeerRegistry::new(crate::util::grok_home()), input).await?;
+        Ok(crate::types::output::TextOutput::from(delivery).into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn env() -> std::collections::HashMap<String, String> {
+    use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+    use tokio::net::UnixListener;
+
+    fn env() -> HashMap<String, String> {
         [
             ("GROK_PEER_DESTINATION", "/local/proxy.sock"),
             ("GROK_PEER_SOCKET", "/local/session.sock"),
+            ("GROK_PEER_SESSION_ID", "caller-session"),
             ("GROK_PEER_REPLY_SOCKET", "/remote/proxy.sock"),
         ]
         .into_iter()
-        .map(|(k, v)| (k.into(), v.into()))
+        .map(|(key, value)| (key.into(), value.into()))
         .collect()
     }
+
     fn input() -> SendPeerMessageInput {
         SendPeerMessageInput {
             text: "hello".into(),
@@ -121,6 +212,42 @@ mod tests {
             reply_socket: None,
         }
     }
+
+    fn registry_and_sockets(
+        home: &std::path::Path,
+        names: &[(&str, &str, &str)],
+    ) -> (
+        PeerRegistry,
+        Vec<UnixListener>,
+        Vec<xai_peer_socket::SocketGuard>,
+        Vec<xai_peer_socket::registry::PeerRegistration>,
+    ) {
+        let sockets = home.join("socks");
+        fs::create_dir(&sockets).unwrap();
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
+        let registry = PeerRegistry::new(home);
+        let mut listeners = Vec::new();
+        let mut guards = Vec::new();
+        let mut registrations = Vec::new();
+        for (session_id, name, cwd) in names {
+            let socket = sockets.join(format!("{session_id}.sock"));
+            let (guard, listener) = xai_peer_socket::SocketGuard::bind(&socket).unwrap();
+            let registration = registry
+                .register(xai_peer_socket::registry::PeerSessionRecord::new(
+                    *session_id,
+                    *name,
+                    std::process::id(),
+                    &socket,
+                    *cwd,
+                ))
+                .unwrap();
+            listeners.push(listener);
+            guards.push(guard);
+            registrations.push(registration);
+        }
+        (registry, listeners, guards, registrations)
+    }
+
     #[test]
     fn peer_send_is_a_policy_controlled_write() {
         use crate::types::tool_metadata::ToolMetadata;
@@ -134,20 +261,29 @@ mod tests {
             matches!(access, xai_grok_permission_rules::types::AccessKind::Tool(name) if name == "send_peer_message")
         );
     }
+
     #[test]
-    fn peer_send_uses_operator_route_and_identity_only() {
+    fn configured_proxy_is_preserved_and_other_paths_are_rejected() {
         let env = env();
-        let (destination, message) = configured_message(&env, input()).unwrap();
-        assert_eq!(destination, "/local/proxy.sock");
-        assert_eq!(message.origin.sender, "grok");
-        assert_eq!(message.origin.reply_socket, "uds:/remote/proxy.sock");
+        let registry = PeerRegistry::new("/not-used");
+        let configured = configured_message(&env, &registry, input()).unwrap();
+        assert_eq!(
+            configured.transport,
+            Transport::Proxy("/local/proxy.sock".into())
+        );
+        assert_eq!(configured.message.origin.sender, "grok");
+        assert_eq!(
+            configured.message.origin.reply_socket,
+            "uds:/remote/proxy.sock"
+        );
+
         let mut evil = input();
         evil.to = Some("/arbitrary.sock".into());
-        assert!(configured_message(&env, evil).is_err());
+        assert!(configured_message(&env, &registry, evil).is_err());
         let mut evil = input();
         evil.reply_socket = Some("/impersonate.sock".into());
-        assert!(configured_message(&env, evil).is_err());
-        assert!(configured_message(&Default::default(), input()).is_err());
+        assert!(configured_message(&env, &registry, evil).is_err());
+        assert!(configured_message(&Default::default(), &registry, input()).is_err());
         assert!(
             serde_json::from_value::<SendPeerMessageInput>(
                 serde_json::json!({"text":"hi", "from_name":"Daniel"})
@@ -155,14 +291,207 @@ mod tests {
             .is_err()
         );
     }
+
+    #[tokio::test]
+    async fn send_by_name_hits_only_the_named_socket_and_uses_sender_inbox_as_reply() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let (registry, listeners, _guards, _registrations) = registry_and_sockets(
+            home.path(),
+            &[
+                ("caller-session", "Caller", "/caller"),
+                ("target-session", "Target", "/target"),
+                ("other-session", "Other", "/other"),
+            ],
+        );
+        let sockets = home.path().join("socks");
+        let mut sender_env = HashMap::from([
+            (
+                "GROK_PEER_SOCKET".into(),
+                sockets.join("caller-session.sock").display().to_string(),
+            ),
+            ("GROK_PEER_SESSION_ID".into(), "caller-session".into()),
+        ]);
+        sender_env.insert("GROK_PEER_CLASS".into(), "bypass".into());
+        let mut message_input = input();
+        message_input.to = Some("Target".into());
+        let result = send_configured(&sender_env, &registry, message_input)
+            .await
+            .unwrap();
+        assert!(result.contains("locally written"));
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listeners[1].accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let received = xai_peer_socket::PeerMessage::decode(
+            &xai_peer_socket::read_line(&mut stream).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(received.text, "hello");
+        assert_eq!(received.class.as_str(), "bypass");
+        assert_eq!(
+            received.origin.reply_socket,
+            format!("uds:{}", sockets.join("caller-session.sock").display())
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listeners[0].accept())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listeners[2].accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_names_need_a_ref_and_the_current_session_is_rejected() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let (registry, listeners, _guards, _registrations) = registry_and_sockets(
+            home.path(),
+            &[
+                ("caller-session", "Caller", "/caller"),
+                ("first-123456", "Same", "/first"),
+                ("second-789012", "Same", "/second"),
+            ],
+        );
+        let sockets = home.path().join("socks");
+        let sender_env = HashMap::from([
+            (
+                "GROK_PEER_SOCKET".into(),
+                sockets.join("caller-session.sock").display().to_string(),
+            ),
+            ("GROK_PEER_SESSION_ID".into(), "caller-session".into()),
+        ]);
+        let mut bare = input();
+        bare.to = Some("Same".into());
+        assert!(send_configured(&sender_env, &registry, bare).await.is_err());
+        let mut selected = input();
+        selected.to = Some("Same [second-7]".into());
+        send_configured(&sender_env, &registry, selected)
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listeners[2].accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let received = xai_peer_socket::PeerMessage::decode(
+            &xai_peer_socket::read_line(&mut stream).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(received.text, "hello");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listeners[1].accept())
+                .await
+                .is_err()
+        );
+
+        let mut self_send = input();
+        self_send.to = Some("Caller".into());
+        assert!(
+            send_configured(&sender_env, &registry, self_send)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("current session")
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_sessions_are_hidden_reaped_and_cannot_be_send_targets() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let sockets = home.path().join("socks");
+        fs::create_dir(&sockets).unwrap();
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
+        let dead_socket = sockets.join("dead.sock");
+        let (_guard, _listener) = xai_peer_socket::SocketGuard::bind(&dead_socket).unwrap();
+        let registry = PeerRegistry::new(home.path());
+        let registration = registry
+            .register(xai_peer_socket::registry::PeerSessionRecord::new(
+                "dead-session",
+                "Dead session",
+                u32::MAX,
+                &dead_socket,
+                "/dead",
+            ))
+            .unwrap();
+        let record_path = registry.directory().join("dead-session.json");
+        std::mem::forget(registration);
+
+        assert!(registry
+            .list(Some("caller-session"))
+            .unwrap()
+            .is_empty());
+        assert!(!record_path.exists());
+
+        let sender_env = HashMap::from([
+            (
+                "GROK_PEER_SOCKET".into(),
+                sockets.join("caller.sock").display().to_string(),
+            ),
+            ("GROK_PEER_SESSION_ID".into(), "caller-session".into()),
+        ]);
+        let mut dead_target = input();
+        dead_target.to = Some("Dead session".into());
+        assert!(send_configured(&sender_env, &registry, dead_target)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn exact_configured_destination_uses_send_proxy() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let sockets = home.path().join("socks");
+        fs::create_dir(&sockets).unwrap();
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
+        let proxy_path = sockets.join("proxy.sock");
+        let (_guard, listener) = xai_peer_socket::SocketGuard::bind(&proxy_path).unwrap();
+        let registry = PeerRegistry::new(home.path());
+        let proxy_path_for_server = proxy_path.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let message = xai_peer_socket::PeerMessage::decode(
+                &xai_peer_socket::read_line(&mut stream).await.unwrap(),
+            )
+            .unwrap();
+            xai_peer_socket::write_line(
+                &mut stream,
+                &xai_peer_socket::json_line(&serde_json::json!({
+                    "type": "result",
+                    "outcome": "locally_written"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            (message, proxy_path_for_server)
+        });
+        let mut env = env();
+        env.insert(
+            "GROK_PEER_DESTINATION".into(),
+            proxy_path.display().to_string(),
+        );
+        let mut proxy_input = input();
+        proxy_input.to = Some(proxy_path.display().to_string());
+        send_configured(&env, &registry, proxy_input).await.unwrap();
+        let (received, received_proxy) = server.await.unwrap();
+        assert_eq!(received.text, "hello");
+        assert_eq!(received.origin.reply_socket, "uds:/remote/proxy.sock");
+        assert_eq!(received_proxy, proxy_path);
+    }
+
     #[test]
     fn peer_send_class_comes_only_from_operator_env() {
+        let registry = PeerRegistry::new("/not-used");
         for configured in [None, Some("bypass"), Some("prompting")] {
             let mut env = env();
             if let Some(value) = configured {
                 env.insert("GROK_PEER_CLASS".into(), value.into());
             }
-            let (_, message) = configured_message(&env, input()).unwrap();
+            let message = configured_message(&env, &registry, input())
+                .unwrap()
+                .message;
             let expected = configured.unwrap_or("prompting");
             assert_eq!(message.class.as_str(), expected);
             let frame: serde_json::Value =
@@ -179,20 +508,15 @@ mod tests {
         for value in ["default", "unknown", "", "Bypass", "bypass "] {
             let mut env = env();
             env.insert("GROK_PEER_CLASS".into(), value.into());
-            assert!(
-                configured_message(&env, input()).is_err(),
-                "class {value:?}"
-            );
+            assert!(configured_message(&env, &registry, input()).is_err());
         }
     }
+
     #[test]
     fn peer_send_arguments_cannot_set_class() {
         for field in ["class", "from_mode", "GROK_PEER_CLASS"] {
-            for value in ["bypass", "prompting"] {
-                let mut args = serde_json::json!({"text": "hello"});
-                args[field] = serde_json::json!(value);
-                assert!(serde_json::from_value::<SendPeerMessageInput>(args).is_err());
-            }
+            let args = serde_json::json!({"text":"hi", field:"bypass"});
+            assert!(serde_json::from_value::<SendPeerMessageInput>(args).is_err());
         }
     }
 }
