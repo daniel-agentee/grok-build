@@ -14,6 +14,7 @@ use tokio::{
     time::timeout,
 };
 
+pub mod claude;
 pub mod registry;
 
 pub const MAX_LINE: usize = 32 * 1024;

@@ -10,6 +10,54 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// Runtime that published a live session. This tag exists only in the combined in-memory view;
+/// Grok's on-disk registry format remains unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerRuntime {
+    Grok,
+    Claude,
+}
+
+impl PeerRuntime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Grok => "grok",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+/// Internal routing view shared by the Grok and Claude registries.
+/// Do not serialize this type into model-facing output: it includes a socket path and pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPeerSession {
+    pub session_id: String,
+    pub name: String,
+    pub pid: u32,
+    pub socket: PathBuf,
+    pub cwd: String,
+    pub runtime: PeerRuntime,
+}
+
+impl ListedPeerSession {
+    pub fn reference(&self) -> String {
+        self.session_id.chars().take(8).collect()
+    }
+}
+
+impl From<PeerSessionRecord> for ListedPeerSession {
+    fn from(record: PeerSessionRecord) -> Self {
+        Self {
+            session_id: record.session_id,
+            name: record.name,
+            pid: record.pid,
+            socket: record.socket,
+            cwd: record.cwd,
+            runtime: PeerRuntime::Grok,
+        }
+    }
+}
+
 /// Metadata published for one live session. Socket paths are internal routing data and should
 /// never be included in model-facing list output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,7 +256,7 @@ fn parse_target(target: &str) -> Result<(String, Option<String>)> {
     Ok((target.to_owned(), None))
 }
 
-fn validate_session_id(session_id: &str) -> Result<()> {
+pub(crate) fn validate_session_id(session_id: &str) -> Result<()> {
     let mut components = Path::new(session_id).components();
     ensure!(
         !session_id.is_empty()
@@ -354,7 +402,7 @@ fn remove_if_same_file(path: &Path, expected: &fs::Metadata) {
     }
 }
 
-fn process_is_alive(pid: u32) -> bool {
+pub(crate) fn process_is_alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
@@ -366,6 +414,51 @@ fn process_is_alive(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Return valid live sessions from both same-machine registries in stable display order.
+pub fn list_combined(
+    grok: &PeerRegistry,
+    claude: &crate::claude::ClaudeSessionRegistry,
+    current_grok_session_id: Option<&str>,
+) -> Result<Vec<ListedPeerSession>> {
+    let mut sessions: Vec<_> = grok
+        .list(current_grok_session_id)?
+        .into_iter()
+        .map(ListedPeerSession::from)
+        .chain(claude.list()?)
+        .collect();
+    sessions.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.runtime.as_str().cmp(right.runtime.as_str()))
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    Ok(sessions)
+}
+
+/// Resolve a model-facing target against both live same-machine registries.
+pub fn resolve_combined(
+    grok: &PeerRegistry,
+    claude: &crate::claude::ClaudeSessionRegistry,
+    target: &str,
+    current_grok_session_id: &str,
+) -> Result<ListedPeerSession> {
+    ensure!(
+        !Path::new(target).is_absolute(),
+        "absolute peer paths are not session names"
+    );
+    let (name, reference) = parse_target(target)?;
+    let matches: Vec<_> = list_combined(grok, claude, Some(current_grok_session_id))?
+        .into_iter()
+        .filter(|session| session.name == name)
+        .filter(|session| reference.as_ref().is_none_or(|r| &session.reference() == r))
+        .collect();
+    match matches.as_slice() {
+        [] => anyhow::bail!("no live peer session named {name:?}"),
+        [session] => Ok(session.clone()),
+        _ => anyhow::bail!("peer session name {name:?} is ambiguous; include the 8-character ref"),
+    }
 }
 
 #[cfg(test)]

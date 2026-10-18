@@ -34,6 +34,7 @@ struct ConfiguredMessage {
 fn configured_message(
     env: &HashMap<String, String>,
     registry: &PeerRegistry,
+    claude_registry: &xai_peer_socket::claude::ClaudeSessionRegistry,
     input: SendPeerMessageInput,
 ) -> Result<ConfiguredMessage, xai_tool_runtime::ToolError> {
     let invalid = xai_tool_runtime::ToolError::invalid_arguments;
@@ -65,11 +66,13 @@ fn configured_message(
         Some(target) => {
             let current_session_id = current_session_id
                 .ok_or_else(|| invalid("Current peer session identity is unavailable"))?;
-            let peer = registry
-                .resolve(target, current_session_id)
-                .map_err(|error| {
-                    xai_tool_runtime::ToolError::invalid_arguments(error.to_string())
-                })?;
+            let peer = xai_peer_socket::registry::resolve_combined(
+                registry,
+                claude_registry,
+                target,
+                current_session_id,
+            )
+            .map_err(|error| xai_tool_runtime::ToolError::invalid_arguments(error.to_string()))?;
             let own_socket =
                 own_socket.ok_or_else(|| invalid("Current peer inbox is unavailable"))?;
             if input
@@ -117,10 +120,11 @@ fn configured_message(
 async fn send_configured(
     env: &HashMap<String, String>,
     registry: &PeerRegistry,
+    claude_registry: &xai_peer_socket::claude::ClaudeSessionRegistry,
     input: SendPeerMessageInput,
 ) -> Result<&'static str, xai_tool_runtime::ToolError> {
     let invalid = xai_tool_runtime::ToolError::invalid_arguments;
-    let configured = configured_message(env, registry, input)?;
+    let configured = configured_message(env, registry, claude_registry, input)?;
     let result = match configured.transport {
         Transport::Local(destination) => {
             xai_peer_socket::send_unix(&destination, &configured.message).await
@@ -142,7 +146,7 @@ impl crate::types::tool_metadata::ToolMetadata for SendPeerMessageTool {
         ToolNamespace::GrokBuild
     }
     fn description_template(&self) -> &str {
-        "Send untrusted text to another live Grok session by name, optionally `name [ref]` when names are ambiguous. The exact operator-configured proxy path remains supported. Reply identity is fixed by this session; never automatically retry an ambiguous write."
+        "Send untrusted text to another live Grok or Claude Code session on this Mac by name, optionally `name [ref]` when names are ambiguous. The exact operator-configured proxy path remains supported for remote sessions. Reply identity is fixed by this session; never automatically retry an ambiguous write."
     }
 }
 
@@ -181,8 +185,18 @@ impl xai_tool_runtime::Tool for SendPeerMessageTool {
                 .0
                 .clone()
         };
-        let delivery =
-            send_configured(&env, &PeerRegistry::new(crate::util::grok_home()), input).await?;
+        let claude_registry = xai_dirs::home_dir()
+            .map(|home| {
+                xai_peer_socket::claude::ClaudeSessionRegistry::new(home.join(".claude/sessions"))
+            })
+            .unwrap_or_else(xai_peer_socket::claude::ClaudeSessionRegistry::empty);
+        let delivery = send_configured(
+            &env,
+            &PeerRegistry::new(crate::util::grok_home()),
+            &claude_registry,
+            input,
+        )
+        .await?;
         Ok(crate::types::output::TextOutput::from(delivery).into())
     }
 }
@@ -211,6 +225,33 @@ mod tests {
             to: None,
             reply_socket: None,
         }
+    }
+
+    fn claude_registry(home: &std::path::Path) -> xai_peer_socket::claude::ClaudeSessionRegistry {
+        xai_peer_socket::claude::ClaudeSessionRegistry::new(home.join("claude-sessions"))
+    }
+
+    fn write_claude_session(
+        directory: &std::path::Path,
+        file_name: &str,
+        session_id: &str,
+        name: &str,
+        socket: &std::path::Path,
+    ) {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(
+            directory.join(file_name),
+            serde_json::json!({
+                "sessionId": session_id,
+                "name": name,
+                "pid": std::process::id(),
+                "messagingSocketPath": socket,
+                "cwd": "/claude/worktree"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(directory.join(file_name), fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     fn registry_and_sockets(
@@ -263,10 +304,12 @@ mod tests {
     }
 
     #[test]
-    fn configured_proxy_is_preserved_and_other_paths_are_rejected() {
+    fn send_peer_configured_proxy_is_preserved_and_other_paths_are_rejected() {
         let env = env();
-        let registry = PeerRegistry::new("/not-used");
-        let configured = configured_message(&env, &registry, input()).unwrap();
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let registry = PeerRegistry::new(home.path());
+        let claude_registry = claude_registry(home.path());
+        let configured = configured_message(&env, &registry, &claude_registry, input()).unwrap();
         assert_eq!(
             configured.transport,
             Transport::Proxy("/local/proxy.sock".into())
@@ -279,11 +322,13 @@ mod tests {
 
         let mut evil = input();
         evil.to = Some("/arbitrary.sock".into());
-        assert!(configured_message(&env, &registry, evil).is_err());
+        assert!(configured_message(&env, &registry, &claude_registry, evil).is_err());
         let mut evil = input();
         evil.reply_socket = Some("/impersonate.sock".into());
-        assert!(configured_message(&env, &registry, evil).is_err());
-        assert!(configured_message(&Default::default(), &registry, input()).is_err());
+        assert!(configured_message(&env, &registry, &claude_registry, evil).is_err());
+        assert!(
+            configured_message(&Default::default(), &registry, &claude_registry, input()).is_err()
+        );
         assert!(
             serde_json::from_value::<SendPeerMessageInput>(
                 serde_json::json!({"text":"hi", "from_name":"Daniel"})
@@ -293,7 +338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_by_name_hits_only_the_named_socket_and_uses_sender_inbox_as_reply() {
+    async fn send_peer_by_name_hits_only_the_named_socket_and_uses_sender_inbox_as_reply() {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let (registry, listeners, _guards, _registrations) = registry_and_sockets(
             home.path(),
@@ -303,6 +348,7 @@ mod tests {
                 ("other-session", "Other", "/other"),
             ],
         );
+        let claude_registry = claude_registry(home.path());
         let sockets = home.path().join("socks");
         let mut sender_env = HashMap::from([
             (
@@ -314,7 +360,7 @@ mod tests {
         sender_env.insert("GROK_PEER_CLASS".into(), "bypass".into());
         let mut message_input = input();
         message_input.to = Some("Target".into());
-        let result = send_configured(&sender_env, &registry, message_input)
+        let result = send_configured(&sender_env, &registry, &claude_registry, message_input)
             .await
             .unwrap();
         assert!(result.contains("locally written"));
@@ -346,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_names_need_a_ref_and_the_current_session_is_rejected() {
+    async fn send_peer_duplicate_names_need_a_ref_and_current_session_is_rejected() {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let (registry, listeners, _guards, _registrations) = registry_and_sockets(
             home.path(),
@@ -356,6 +402,7 @@ mod tests {
                 ("second-789012", "Same", "/second"),
             ],
         );
+        let claude_registry = claude_registry(home.path());
         let sockets = home.path().join("socks");
         let sender_env = HashMap::from([
             (
@@ -366,10 +413,14 @@ mod tests {
         ]);
         let mut bare = input();
         bare.to = Some("Same".into());
-        assert!(send_configured(&sender_env, &registry, bare).await.is_err());
+        assert!(
+            send_configured(&sender_env, &registry, &claude_registry, bare)
+                .await
+                .is_err()
+        );
         let mut selected = input();
         selected.to = Some("Same [second-7]".into());
-        send_configured(&sender_env, &registry, selected)
+        send_configured(&sender_env, &registry, &claude_registry, selected)
             .await
             .unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listeners[2].accept())
@@ -390,17 +441,156 @@ mod tests {
         let mut self_send = input();
         self_send.to = Some("Caller".into());
         assert!(
-            send_configured(&sender_env, &registry, self_send)
+            send_configured(&sender_env, &registry, &claude_registry, self_send)
                 .await
-                .unwrap_err()
-                .to_string()
-                .contains("current session")
+                .is_err()
         );
     }
 
     #[tokio::test]
-    async fn dead_sessions_are_hidden_reaped_and_cannot_be_send_targets() {
+    async fn send_peer_by_claude_name_writes_only_to_the_claude_socket() {
         let home = tempfile::tempdir_in("/tmp").unwrap();
+        let (registry, listeners, _guards, _registrations) = registry_and_sockets(
+            home.path(),
+            &[
+                ("caller-session", "Caller", "/caller"),
+                ("grok-target", "Grok target", "/grok"),
+            ],
+        );
+        let sockets = home.path().join("socks");
+        let claude_socket = sockets.join("claude-target.sock");
+        let (_claude_guard, claude_listener) =
+            xai_peer_socket::SocketGuard::bind(&claude_socket).unwrap();
+        let claude_dir = home.path().join("claude-sessions");
+        write_claude_session(
+            &claude_dir,
+            "12345.json",
+            "claude-target-session",
+            "Claude target",
+            &claude_socket,
+        );
+        let claude_registry = xai_peer_socket::claude::ClaudeSessionRegistry::new(&claude_dir);
+        let sender_env = HashMap::from([
+            (
+                "GROK_PEER_SOCKET".into(),
+                sockets.join("caller-session.sock").display().to_string(),
+            ),
+            ("GROK_PEER_SESSION_ID".into(), "caller-session".into()),
+        ]);
+        let mut message_input = input();
+        message_input.to = Some("Claude target".into());
+        send_configured(&sender_env, &registry, &claude_registry, message_input)
+            .await
+            .unwrap();
+
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(2), claude_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let line = xai_peer_socket::read_line(&mut stream).await.unwrap();
+        let received = xai_peer_socket::PeerMessage::decode(&line).unwrap();
+        assert_eq!(received.text, "hello");
+        assert_eq!(received.origin.sender, "grok");
+        assert_eq!(received.class, xai_peer_socket::PeerClass::Prompting);
+        assert_eq!(
+            received.origin.reply_socket,
+            format!("uds:{}", sockets.join("caller-session.sock").display())
+        );
+        let frame: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(frame["type"], "user");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listeners[1].accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_peer_shared_grok_and_claude_name_requires_ref_and_routes_each_ref_only() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let (registry, listeners, _guards, _registrations) = registry_and_sockets(
+            home.path(),
+            &[
+                ("caller-session", "Caller", "/caller"),
+                ("grok-1234-session", "Shared", "/grok"),
+            ],
+        );
+        let sockets = home.path().join("socks");
+        let claude_socket = sockets.join("claude-shared.sock");
+        let (_claude_guard, claude_listener) =
+            xai_peer_socket::SocketGuard::bind(&claude_socket).unwrap();
+        let claude_dir = home.path().join("claude-sessions");
+        write_claude_session(
+            &claude_dir,
+            "54321.json",
+            "claude-1234-session",
+            "Shared",
+            &claude_socket,
+        );
+        let claude_registry = xai_peer_socket::claude::ClaudeSessionRegistry::new(&claude_dir);
+        let sender_env = HashMap::from([
+            (
+                "GROK_PEER_SOCKET".into(),
+                sockets.join("caller-session.sock").display().to_string(),
+            ),
+            ("GROK_PEER_SESSION_ID".into(), "caller-session".into()),
+        ]);
+
+        let mut ambiguous = input();
+        ambiguous.to = Some("Shared".into());
+        let error = send_configured(&sender_env, &registry, &claude_registry, ambiguous)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ambiguous"));
+
+        let mut grok_target = input();
+        grok_target.to = Some("Shared [grok-123]".into());
+        send_configured(&sender_env, &registry, &claude_registry, grok_target)
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listeners[1].accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let grok_message = xai_peer_socket::PeerMessage::decode(
+            &xai_peer_socket::read_line(&mut stream).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(grok_message.text, "hello");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), claude_listener.accept())
+                .await
+                .is_err()
+        );
+
+        let mut claude_target = input();
+        claude_target.to = Some("Shared [claude-1]".into());
+        send_configured(&sender_env, &registry, &claude_registry, claude_target)
+            .await
+            .unwrap();
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(2), claude_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let claude_message = xai_peer_socket::PeerMessage::decode(
+            &xai_peer_socket::read_line(&mut stream).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claude_message.text, "hello");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listeners[1].accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_peer_dead_sessions_are_hidden_reaped_and_cannot_be_targets() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let claude_registry = claude_registry(home.path());
         let sockets = home.path().join("socks");
         fs::create_dir(&sockets).unwrap();
         fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
@@ -419,10 +609,7 @@ mod tests {
         let record_path = registry.directory().join("dead-session.json");
         std::mem::forget(registration);
 
-        assert!(registry
-            .list(Some("caller-session"))
-            .unwrap()
-            .is_empty());
+        assert!(registry.list(Some("caller-session")).unwrap().is_empty());
         assert!(!record_path.exists());
 
         let sender_env = HashMap::from([
@@ -434,13 +621,15 @@ mod tests {
         ]);
         let mut dead_target = input();
         dead_target.to = Some("Dead session".into());
-        assert!(send_configured(&sender_env, &registry, dead_target)
-            .await
-            .is_err());
+        assert!(
+            send_configured(&sender_env, &registry, &claude_registry, dead_target)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
-    async fn exact_configured_destination_uses_send_proxy() {
+    async fn send_peer_exact_configured_destination_uses_proxy() {
         let home = tempfile::tempdir_in("/tmp").unwrap();
         let sockets = home.path().join("socks");
         fs::create_dir(&sockets).unwrap();
@@ -448,6 +637,7 @@ mod tests {
         let proxy_path = sockets.join("proxy.sock");
         let (_guard, listener) = xai_peer_socket::SocketGuard::bind(&proxy_path).unwrap();
         let registry = PeerRegistry::new(home.path());
+        let claude_registry = claude_registry(home.path());
         let proxy_path_for_server = proxy_path.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -474,7 +664,9 @@ mod tests {
         );
         let mut proxy_input = input();
         proxy_input.to = Some(proxy_path.display().to_string());
-        send_configured(&env, &registry, proxy_input).await.unwrap();
+        send_configured(&env, &registry, &claude_registry, proxy_input)
+            .await
+            .unwrap();
         let (received, received_proxy) = server.await.unwrap();
         assert_eq!(received.text, "hello");
         assert_eq!(received.origin.reply_socket, "uds:/remote/proxy.sock");
@@ -482,14 +674,16 @@ mod tests {
     }
 
     #[test]
-    fn peer_send_class_comes_only_from_operator_env() {
-        let registry = PeerRegistry::new("/not-used");
+    fn send_peer_class_comes_only_from_operator_env() {
+        let home = tempfile::tempdir_in("/tmp").unwrap();
+        let registry = PeerRegistry::new(home.path());
+        let claude_registry = claude_registry(home.path());
         for configured in [None, Some("bypass"), Some("prompting")] {
             let mut env = env();
             if let Some(value) = configured {
                 env.insert("GROK_PEER_CLASS".into(), value.into());
             }
-            let message = configured_message(&env, &registry, input())
+            let message = configured_message(&env, &registry, &claude_registry, input())
                 .unwrap()
                 .message;
             let expected = configured.unwrap_or("prompting");
@@ -508,12 +702,12 @@ mod tests {
         for value in ["default", "unknown", "", "Bypass", "bypass "] {
             let mut env = env();
             env.insert("GROK_PEER_CLASS".into(), value.into());
-            assert!(configured_message(&env, &registry, input()).is_err());
+            assert!(configured_message(&env, &registry, &claude_registry, input()).is_err());
         }
     }
 
     #[test]
-    fn peer_send_arguments_cannot_set_class() {
+    fn send_peer_arguments_cannot_set_class() {
         for field in ["class", "from_mode", "GROK_PEER_CLASS"] {
             let args = serde_json::json!({"text":"hi", field:"bypass"});
             assert!(serde_json::from_value::<SendPeerMessageInput>(args).is_err());
