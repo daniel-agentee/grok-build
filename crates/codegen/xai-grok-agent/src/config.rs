@@ -261,6 +261,8 @@ fn grok_build_core_toolset_with(
         bash_tool_config(),
         (&grok_build::ReadFileTool).into(),
         (&grok_build::SearchReplaceTool).into(),
+        (&grok_build::ListPeerSessionsTool).into(),
+        (&grok_build::SendPeerMessageTool).into(),
         (&grok_build::ListDirTool).into(),
         (&grok_build::GrepTool).into(),
         kill_task_tool_config(),
@@ -316,6 +318,8 @@ pub fn grok_build_hashline_toolset(
     let mut tools: Vec<xai_grok_tools::registry::types::ToolConfig> = vec![bash_tool_config()];
     tools.extend(hashline_tools);
     tools.extend([
+        (&grok_build::ListPeerSessionsTool).into(),
+        (&grok_build::SendPeerMessageTool).into(),
         (&grok_build::ListDirTool).into(),
         kill_task_tool_config(),
         (&grok_build::TodoWriteTool).into(),
@@ -392,6 +396,8 @@ fn grok_build_plan_toolset() -> ToolServerConfig {
             bash_tool_config(),
             (&grok_build::ReadFileTool).into(),
             (&grok_build::SearchReplaceTool).into(),
+            (&grok_build::ListPeerSessionsTool).into(),
+            (&grok_build::SendPeerMessageTool).into(),
             (&grok_build::ListDirTool).into(),
             (&grok_build::GrepTool).into(),
             kill_task_tool_config(),
@@ -499,6 +505,8 @@ fn grok_build_ask_user_toolset() -> ToolServerConfig {
             bash_tool_config(),
             (&grok_build::ReadFileTool).into(),
             (&grok_build::SearchReplaceTool).into(),
+            (&grok_build::ListPeerSessionsTool).into(),
+            (&grok_build::SendPeerMessageTool).into(),
             (&grok_build::ListDirTool).into(),
             (&grok_build::GrepTool).into(),
             kill_task_tool_config(),
