@@ -1,0 +1,62 @@
+{
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "nativeVersion": "1.0.45",
+  "kind": "question",
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+        "requestId": "566078ab-187e-416f-b6c1-14cfc33fa3a7",
+        "promptId": "566078ab-187e-416f-b6c1-14cfc33fa3a7",
+        "totalTokens": 125005,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 124969,
+        "outputTokens": 27,
+        "cachedReadTokens": 123776,
+        "reasoningTokens": 22,
+        "usage": {
+          "inputTokens": 248769,
+          "outputTokens": 1151,
+          "totalTokens": 249920,
+          "cachedReadTokens": 247424,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 1039,
+          "modelCalls": 2,
+          "apiDurationMs": 10568,
+          "costUsdTicks": 906494400,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 248769,
+              "outputTokens": 1151,
+              "totalTokens": 249920,
+              "cachedReadTokens": 247424,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 1039,
+              "modelCalls": 2,
+              "apiDurationMs": 10568,
+              "costUsdTicks": 906494400
+            }
+          },
+          "numTurns": 2
+        }
+      }
+    }
+  },
+  "interactionMethods": [
+    "_x.ai/ask_user_question"
+  ],
+  "completed": true,
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "actualSimulatorDecision": "Single select option0; multi-select options0+1; note Phone native question; form cleared and exact completion received",
+  "nativeToolCallId": "call-b446d4b0-db2f-4de7-b960-9508701cb44b-6",
+  "nativeToolResult": {
+    "type": "AskUserQuestion",
+    "UserAnswered": {
+      "message": "User has answered your questions: \"Choose snacks\"=\"Apple, Bread\", \"Choose a color\"=\"Blue\" user notes: Phone native question note. You can now continue with the user's answers in mind."
+    }
+  },
+  "nativeSelectionsAndNoteVerified": true
+}

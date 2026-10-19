@@ -1,0 +1,13 @@
+{
+  "sessionId": "01a1506d-1f7e-7d71-8854-c72dfe1e7df0",
+  "checks": {
+    "leaderDeathClosedSocket": true,
+    "unavailableLeaderHandshake503": true,
+    "replacementLeaderDifferentInstance": true,
+    "oldActorAttachmentRejected": true,
+    "replacementLeaderNoColdRestoredActors": true
+  },
+  "socketCloseCode": 1011,
+  "oldServerInstance": "fa6fb675-6257-4fc9-9578-a7a356e7ac9e",
+  "newServerInstance": "663272d8-abdc-476b-b0d4-e89d20111337"
+}

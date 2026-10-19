@@ -1,0 +1,10 @@
+{
+  "sessionId": "01a15067-0f81-76e0-aeb4-4c00f40a9afb",
+  "checks": {
+    "realPermissionRejected": true,
+    "rejectedToolDidNotExecute": true,
+    "staleAllowDidNotOverturnDenial": true
+  },
+  "absentFile": "edge-deny-1792350894.txt",
+  "toolCallId": "call-16a2f0c7-4de7-4bd0-ace4-6a4bb815af26-3"
+}

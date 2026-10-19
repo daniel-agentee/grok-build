@@ -1,3 +1,5 @@
+//! Modified 2026-10-18: shared interactions survive dropped renderer channels.
+
 use std::time::Duration;
 
 use super::*;
@@ -4268,6 +4270,193 @@ async fn pending_interaction_survives_disconnect_and_replays_on_reconnect() {
     );
 
     cancel.cancel();
+}
+
+/// Obtain the real gateway error produced by a disappearing renderer, rather
+/// than relying on a hand-written replica of its JSON discriminator.
+async fn renderer_channel_failure(recv_failed: bool) -> agent_client_protocol::Error {
+    let (tx, mut rx) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    let request = agent_client_protocol::ExtRequest::new(
+        "x.ai/ask_user_question",
+        serde_json::value::to_raw_value(&serde_json::json!({}))
+            .unwrap()
+            .into(),
+    );
+    if recv_failed {
+        let pending = tokio::spawn(async move { xai_acp_lib::acp_send(request, &tx).await });
+        drop(rx.recv().await.expect("renderer receives reverse-request"));
+        pending.await.unwrap().unwrap_err()
+    } else {
+        drop(rx);
+        xai_acp_lib::acp_send(request, &tx).await.unwrap_err()
+    }
+}
+
+#[tokio::test]
+async fn disconnected_interaction_response_only_filters_typed_pending_transport_failures() {
+    let requests = HashMap::from([(
+        "sess-int".to_string(),
+        HashMap::from([("tc-int".to_string(), Arc::from(r#"{"id":801}"#))]),
+    )]);
+    for recv_failed in [false, true] {
+        let failure =
+            serde_json::json!({"id":801,"error":renderer_channel_failure(recv_failed).await});
+        assert!(is_disconnected_interaction_response(&failure, &requests));
+        for id in [
+            serde_json::json!("801"),
+            serde_json::json!(802),
+            serde_json::Value::Null,
+        ] {
+            let mut other = failure.clone();
+            other["id"] = id;
+            assert!(!is_disconnected_interaction_response(&other, &requests));
+        }
+        for (key, value) in [
+            ("method", serde_json::json!("x.ai/ask_user_question")),
+            ("result", serde_json::json!({})),
+        ] {
+            let mut other = failure.clone();
+            other[key] = value;
+            assert!(!is_disconnected_interaction_response(&other, &requests));
+        }
+        let mut semantic = failure.clone();
+        semantic["error"]["code"] = serde_json::json!(-32602);
+        assert!(!is_disconnected_interaction_response(&semantic, &requests));
+    }
+    for response in [
+        serde_json::json!({"id":801,"result":{"outcome":{"outcome":"cancelled"}}}),
+        serde_json::json!({"id":801,"error":{"code":-32603,"message":"semantic error"}}),
+        serde_json::json!({"id":801,"error":{"code":-32603,"message":"unknown","data":{"xaiAcpChannelFailure":"timeout"}}}),
+    ] {
+        assert!(!is_disconnected_interaction_response(&response, &requests));
+    }
+}
+
+#[tokio::test]
+async fn disconnected_interaction_response_preserves_other_subscriber_and_reconnect() {
+    for (index, method) in [
+        "session/request_permission",
+        "x.ai/ask_user_question",
+        "x.ai/exit_plan_mode",
+        "x.ai/mcp/elicit",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let temp = TempDir::new().unwrap();
+        let (sock_path, cancel, response_tx, mut acp_rx) =
+            setup_persistent_server_with_agent(&temp).await;
+        let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "terminal").await;
+        load_session(&mut writer_a, "sess-int").await;
+        complete_load(&mut acp_rx, &response_tx).await;
+        let _ = next_acp_payload(&mut reader_a).await;
+        let (mut reader_b, mut writer_b) = connect_and_register(&sock_path, "phone").await;
+        load_session(&mut writer_b, "sess-int").await;
+        complete_load(&mut acp_rx, &response_tx).await;
+        let _ = next_acp_payload(&mut reader_b).await;
+
+        let request = serde_json::json!({"jsonrpc":"2.0","id":801,"method":method,
+            "params":{"sessionId":"sess-int","toolCallId":"tc-int","toolCall":{"toolCallId":"tc-int"}}});
+        response_tx.send(request.to_string()).unwrap();
+        assert!(
+            next_acp_payload_matching(&mut reader_a, method)
+                .await
+                .is_some()
+        );
+        assert!(
+            next_acp_payload_matching(&mut reader_b, method)
+                .await
+                .is_some()
+        );
+
+        // Graceful shutdown drops the renderer's oneshot before closing IPC.
+        let failure = serde_json::json!({"jsonrpc":"2.0","id":801,
+            "error":renderer_channel_failure(index % 2 == 0).await});
+        write_message(
+            &mut writer_a,
+            &ClientMessage::Acp {
+                payload: failure.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(60), acp_rx.recv())
+                .await
+                .is_err(),
+            "renderer transport failure must not answer the shared interaction"
+        );
+        // The seam must not swallow unrelated transport failures or semantic
+        // errors from a real renderer that is still handling the interaction.
+        let mut unrelated = failure.clone();
+        unrelated["id"] = serde_json::json!(802);
+        let semantic = serde_json::json!({"jsonrpc":"2.0","id":801,
+            "error":{"code":-32603,"message":"semantic failure"}});
+        for response in [unrelated, semantic] {
+            write_message(
+                &mut writer_a,
+                &ClientMessage::Acp {
+                    payload: response.to_string(),
+                },
+            )
+            .await
+            .unwrap();
+            let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&forwarded).unwrap(),
+                response
+            );
+        }
+        drop(reader_a);
+        drop(writer_a);
+
+        if index % 2 == 1 {
+            // Even the last subscriber disappearing must retain the request.
+            drop(reader_b);
+            drop(writer_b);
+            let (mut reader_c, mut writer_c) =
+                connect_and_register(&sock_path, "reconnected-phone").await;
+            load_session(&mut writer_c, "sess-int").await;
+            complete_load(&mut acp_rx, &response_tx).await;
+            assert!(
+                next_acp_payload_matching(&mut reader_c, method)
+                    .await
+                    .is_some()
+            );
+            reader_b = reader_c;
+            writer_b = writer_c;
+        }
+
+        // Real answers still pass through exactly once, including explicit denial.
+        let answer = serde_json::json!({"jsonrpc":"2.0","id":801,"result":{
+            "outcome":{"outcome":"selected","optionId":if index % 2 == 0 {"allow_once"} else {"reject_once"}}}});
+        write_message(
+            &mut writer_b,
+            &ClientMessage::Acp {
+                payload: answer.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&forwarded).unwrap(),
+            answer
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(60), acp_rx.recv())
+                .await
+                .is_err()
+        );
+        drop(reader_b);
+        cancel.cancel();
+    }
 }
 
 /// An interaction raised while the session has NO subscriber must still be cached, so the FIRST client to attach gets the modal replayed.

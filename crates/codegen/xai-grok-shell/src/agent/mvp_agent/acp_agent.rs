@@ -1,3 +1,4 @@
+// Modified 2026-10-18: advertise the resident-only live attachment contract.
 #![cfg_attr(rustfmt, rustfmt::skip)]
 #![allow(unused_imports)]
 use super::*;
@@ -610,6 +611,8 @@ impl acp::Agent for MvpAgent {
                     "agentVersion": xai_grok_version::VERSION,
                     "agentId": agent_id(),
                     "agentInstanceId": agent_instance_id(),
+                    "x.ai/residentOnlyAttach": true,
+                    "x.ai/residentActorIdentity": true,
                     "hostname": hostname.to_string_lossy().to_string(),
                     "modelState": init_model_state,
                     "mcpServers": mcp_servers,
@@ -1034,6 +1037,7 @@ impl acp::Agent for MvpAgent {
         mut arguments: acp::PromptRequest,
     ) -> Result<acp::PromptResponse, acp::Error> {
         use crate::session::plan_mode::PromptMode;
+        let actor_target = self.resident_actor_target(&arguments.session_id, arguments.meta.as_ref())?;
         if let Some(meta) = arguments.meta.as_ref() {
             xai_grok_otel::link_current_span_to_meta(
                 &serde_json::Value::Object(meta.clone()),
@@ -1050,10 +1054,11 @@ impl acp::Agent for MvpAgent {
             Some(arguments.session_id.0.as_ref()),
             None,
         );
-        let handle = self
-            .session_handle_waiting_for_load(&arguments.session_id)
-            .await
-            .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+        let handle = match actor_target.as_ref() {
+            Some(target) => target.clone(),
+            None => self.session_handle_waiting_for_load(&arguments.session_id).await
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?,
+        };
         if let Some(deny) = self.models_manager.prompt_block_message().await {
             self.send_model_auto_switched(
                     &arguments.session_id,
@@ -1067,6 +1072,7 @@ impl acp::Agent for MvpAgent {
         let latched_model = self
             .session_registry
             .unavailable_model(&arguments.session_id);
+        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
         if let Some(unavailable_model) = latched_model {
             let models = self.models_manager.models();
             let available = self.models_manager.available();
@@ -1097,7 +1103,7 @@ impl acp::Agent for MvpAgent {
                         acp::SetSessionModelRequest::new(
                             arguments.session_id.clone(),
                             restore_model_id.clone(),
-                        ),
+                        ).meta(arguments.meta.clone().unwrap_or_default()),
                         crate::agent::handlers::model_switch::SwitchEffort::Preserve,
                         SwitchContextWindow::Preserve,
                         crate::agent::handlers::model_switch::ConfigNotice::Send,
@@ -1142,6 +1148,7 @@ impl acp::Agent for MvpAgent {
         }
         let dispatch_lock = self.dispatch_lock(&arguments.session_id);
         let dispatch_guard = dispatch_lock.lock().await;
+        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
         crate::agent::mvp_agent::test_hooks::park_forever_if_blackholed(
                 &arguments.session_id,
             )
@@ -1171,6 +1178,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
         let turn_number = self.allocate_turn_number(&arguments.session_id);
         tracing::Span::current().record("turn_number", turn_number);
         tracing::info!("Setting up prompt tracing");
@@ -1388,6 +1396,7 @@ impl acp::Agent for MvpAgent {
             .as_ref()
             .map(|ctx| ctx.artifact_upload_context());
         let traceparent = xai_grok_otel::current_traceparent();
+        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
         let dispatch_result: Result<(), acp::Error> = if send_now {
             handle
                 .cmd_tx
@@ -1876,8 +1885,12 @@ impl acp::Agent for MvpAgent {
         }
     }
     async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
+        let actor_target = self.resident_actor_target(&args.session_id, args.meta.as_ref())?;
         tracing::info!("Received cancel request {args:?}");
-        let handle = self.session_handle_waiting_for_load(&args.session_id).await;
+        let handle = match actor_target.as_ref() {
+            Some(target) => Some(target.clone()),
+            None => self.session_handle_waiting_for_load(&args.session_id).await,
+        };
         let cancel_trigger = args
             .meta
             .as_ref()
@@ -1924,6 +1937,7 @@ impl acp::Agent for MvpAgent {
             };
             let dispatch_lock = self.dispatch_lock(&args.session_id);
             let _dispatch_guard = dispatch_lock.lock().await;
+            self.verify_resident_only_attach_target(&args.session_id, actor_target.as_ref())?;
             let user_initiated = cancel_trigger
                 .as_ref()
                 .is_none_or(crate::session::CancelTrigger::is_user_gesture);
@@ -1967,6 +1981,7 @@ impl acp::Agent for MvpAgent {
         &self,
         args: acp::SetSessionModelRequest,
     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
+        self.resident_actor_target(&args.session_id, args.meta.as_ref())?;
         self.set_model_gated(args).await
     }
     async fn set_session_config_option(

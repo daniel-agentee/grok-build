@@ -1,0 +1,30 @@
+{
+  "sessionId": "01a150a8-8a2e-78c0-bef7-19b86d4a8cf1",
+  "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project",
+  "checks": {
+    "relativeWorkspace": "rejected",
+    "wrongWorkspace": "rejected",
+    "missingSession": "rejected",
+    "dormantSession": "rejected",
+    "invalidAttachmentCreatesNoActor": true,
+    "createAndColdResumeRejected": true,
+    "pendingApprovalSurvivesDisconnect": true,
+    "concurrentAndStaleApprovalExecutesOnce": true,
+    "resolutionBroadcastToBothClients": true,
+    "rejectedPermissionDoesNotExecute": true,
+    "staleAllowCannotOverturnRejection": true,
+    "fourSimultaneousPromptsEachOnce": true
+  },
+  "agentInstanceId": "50061598-7915-40bf-98ae-f5dec797d4a4",
+  "nativeVersion": "1.0.45",
+  "approvalToolCallId": "call-e0bc3442-db79-4f83-81db-ca760acb3f0c-0",
+  "approvalFile": "edge-pending-1792354650.txt",
+  "deniedFile": "edge-denied-1792354650.txt",
+  "queueMarkers": [
+    "EDGE-QUEUE-1792354650-0",
+    "EDGE-QUEUE-1792354650-1",
+    "EDGE-QUEUE-1792354650-2",
+    "EDGE-QUEUE-1792354650-3"
+  ],
+  "queueNotifications": 12
+}

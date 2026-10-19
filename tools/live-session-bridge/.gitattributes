@@ -1,0 +1,14 @@
+# Literal fixed-width Terminal renderings retain layout spaces and final rows.
+evidence/edge-final-main-terminal-rendered.txt whitespace=-blank-at-eol,-blank-at-eof
+evidence/edge-final-terminal-rendered.txt whitespace=-blank-at-eol,-blank-at-eof
+evidence/verified-final/actual-terminal-render-rendered.txt whitespace=-blank-at-eol,-blank-at-eof
+evidence/verified-final/actual-terminal-return-rendered.txt whitespace=-blank-at-eol,-blank-at-eof
+
+# Exact native patch context includes single-space blank context lines.
+resident-only-attach.patch whitespace=-blank-at-eol
+
+# Preserve the standard test harness's final blank line in these raw transcripts.
+evidence/native-actor-tests.txt whitespace=-blank-at-eof
+evidence/native-disconnect-tests.txt whitespace=-blank-at-eof
+evidence/native-final-actor-tests.txt whitespace=-blank-at-eof
+evidence/native-resident-only-tests.txt whitespace=-blank-at-eof

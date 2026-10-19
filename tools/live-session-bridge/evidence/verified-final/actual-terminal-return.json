@@ -1,0 +1,17 @@
+{
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "residentActorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "actualSimulatorPhoneMarker": "PHONE-UI-GATE-4FAB5B5F",
+  "terminalFollowup": "D419-ACTUAL-TERMINAL-RETURN-1792359124892548000",
+  "terminalPID": 14538,
+  "checks": {
+    "actualTerminalRenderedActualSimulatorPromptAndACK": true,
+    "actualTerminalSubmittedFollowup": true,
+    "actualTerminalResponseRecalledActualPhoneContext": true,
+    "actualTerminalResponseVisibleInVT": true,
+    "reattachAndTerminalDeparturePreservedResidentActor": true
+  },
+  "renderedEvidence": "actual-terminal-return-rendered.txt",
+  "evidenceBasis": "Original actual PTY submitted unique followup; this subsequent read-only actual PTY captured the resulting shared conversation after correcting monitor chunk aggregation. No prompt resubmitted."
+}

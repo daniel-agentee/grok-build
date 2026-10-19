@@ -1,0 +1,12 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "sessionId": "01a150c2-68a1-7f40-9a9b-ef146f772b08",
+  "terminalPID": 1487,
+  "checks": {
+    "actualTerminalRenderedActualSimulatorUniquePrompt": true,
+    "actualTerminalRenderedActualSimulatorUniqueACK": true,
+    "actualTerminalRenderedCorrectedGateACK": true
+  },
+  "renderedEvidence": "edge-final-main-terminal-rendered.txt"
+}

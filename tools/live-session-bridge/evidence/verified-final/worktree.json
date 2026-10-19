@@ -1,0 +1,17 @@
+{
+  "sessionId": "01a150e6-66b8-7a51-9ede-1f44ee30d05e",
+  "parentSessionId": "01a150e6-64e9-72c0-b6b3-c908c5fa2f1e",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "realGitWorktreeWithNativeSessionFork": true,
+    "rosterDisplayCwdDiffersFromActualExecutionCwd": true,
+    "displayCwdRejectedByNativeAtomicGuard": true,
+    "twoMobileClientsAttachedSameNativeWorktreeActor": true,
+    "approvedEditExecutedOnceOnlyInActualWorktree": true
+  },
+  "rosterDisplayCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/edge-worktree-fixture-1792356200",
+  "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/edge-worktree-fixture-1792356200/.worktrees/mobile-edge",
+  "residentActorId": "01a150e6-67b7-7421-ac54-f50aaffcfd76",
+  "filename": "edge-worktree-1792358643328963000.txt",
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab"
+}

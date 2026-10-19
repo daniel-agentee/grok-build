@@ -1,0 +1,24 @@
+{
+  "sessionId": "01a150a5-dd48-7e71-aca6-ad8a2f10ea89",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "preflightSawResident": true,
+    "nativeCloseMadeNonresident": true,
+    "loadSucceededAfterActorClosed": false,
+    "actorBecameResidentAgain": false
+  },
+  "nativeCloseResponse": {
+    "jsonrpc": "2.0",
+    "id": "control",
+    "result": {
+      "_meta": {
+        "x.ai/closeOutcome": "closed"
+      }
+    }
+  },
+  "loadError": {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": "live attachment target is no longer resident; select a running session"
+  }
+}

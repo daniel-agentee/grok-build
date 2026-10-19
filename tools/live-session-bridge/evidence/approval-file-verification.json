@@ -1,0 +1,14 @@
+{
+  "approval-phone-once.txt": {
+    "lineCount": 1,
+    "expectedMarkerOccurrences": 1,
+    "contents": "PHONE-APPROVAL-ONCE\n",
+    "bytes": 20
+  },
+  "approval-terminal-once.txt": {
+    "lineCount": 1,
+    "expectedMarkerOccurrences": 1,
+    "contents": "TERMINAL-APPROVAL-ONCE\n",
+    "bytes": 23
+  }
+}

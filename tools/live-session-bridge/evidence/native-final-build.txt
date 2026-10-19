@@ -1,0 +1,33 @@
+Command: python3 tools/live-session-bridge/pin_build.py
+
+   Compiling xai-grok-tools-api v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-tools-api)
+   Compiling xai-tool-runtime v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-tool-runtime)
+   Compiling xai-computer-hub-core v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-core)
+   Compiling xai-computer-hub-sdk v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-sdk)
+   Compiling xai-grok-tools v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-tools)
+   Compiling xai-computer-hub-mcp-adapter v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-mcp-adapter)
+   Compiling xai-grok-workspace-client v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace-client)
+   Compiling xai-grok-workspace-daemon v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace-daemon)
+   Compiling xai-grok-hooks v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-hooks)
+   Compiling xai-grok-mcp v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-mcp)
+   Compiling xai-grok-announcements v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-announcements)
+   Compiling xai-grok-pager-diff v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-pager-diff)
+   Compiling xai-grok-agent v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-agent)
+   Compiling xai-grok-workspace v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace)
+   Compiling xai-grok-plugin-marketplace v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-plugin-marketplace)
+   Compiling xai-grok-subagent-resolution v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-subagent-resolution)
+   Compiling xai-grok-http v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-http)
+   Compiling xai-grok-shell-terminal v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell-terminal)
+   Compiling xai-grok-pager-render v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-pager-render)
+   Compiling xai-grok-memory v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-memory)
+   Compiling xai-grok-shell-session-support v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell-session-support)
+   Compiling xai-grok-login v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-login)
+   Compiling xai-grok-cloud-config v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-cloud-config)
+   Compiling xai-grok-shell v1.0.45 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell)
+   Compiling xai-grok-update v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-update)
+   Compiling xai-grok-pager v1.0.45 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-pager)
+   Compiling xai-grok-pager-minimal v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-pager-minimal)
+   Compiling xai-grok-pager-bin v1.0.45 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-pager-bin)
+    Finished `dev` profile [unoptimized] target(s) in 2m 32s
+Pinned locally rebuilt Grok artifact SHA256 d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab.
+Run the targeted tests and live acceptance before treating this local build as verified.

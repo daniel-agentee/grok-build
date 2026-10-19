@@ -1,0 +1,18 @@
+{
+  "sessionId": "01a150e2-cb3f-78e3-b19a-32f1f871c3c0",
+  "checks": {
+    "duplicatePendingPromptCloses1008": true,
+    "acceptedPromptContinuesExactlyOnce": true,
+    "bridgeRestartWhileToolRuns": true,
+    "sameAgentInstanceAfterRestart": true,
+    "toolCompletedOnceDuringTransportLoss": true
+  },
+  "agentInstanceId": "293a484c-2975-47d2-ad5b-74392dc035d9",
+  "duplicateMarker": "EDGE-DUPLICATE-1792358600",
+  "restartFiles": [
+    "edge-restart-started-1792358600.txt",
+    "edge-restart-finished-1792358600.txt"
+  ],
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "leaderSocket": "~/.grok/leader-mobile-switching-final.sock"
+}

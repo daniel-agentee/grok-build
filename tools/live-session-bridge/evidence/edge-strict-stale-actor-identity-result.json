@@ -1,0 +1,73 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150b2-aa14-72c1-a79f-b821e00e7904",
+  "checks": {
+    "phoneInitiallyAttachedResidentActor": true,
+    "nativeActorBecameNonresident": true,
+    "sameSIDColdRestoredResident": true,
+    "phonePromptAcceptedWithoutReattach": true
+  },
+  "nativeCloseResponse": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "_meta": {
+        "x.ai/closeOutcome": "closed"
+      }
+    }
+  },
+  "phoneCloseCodeAfterNativeClose": null,
+  "nativeRestoreSucceeded": true,
+  "phonePromptResponse": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a150b2-aa14-72c1-a79f-b821e00e7904",
+        "requestId": "6aed1003-7e7e-48ac-9b04-d10a4dc7ea5a",
+        "promptId": "6aed1003-7e7e-48ac-9b04-d10a4dc7ea5a",
+        "totalTokens": 49017,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 48965,
+        "outputTokens": 43,
+        "cachedReadTokens": 1152,
+        "reasoningTokens": 37,
+        "usage": {
+          "inputTokens": 48965,
+          "outputTokens": 43,
+          "totalTokens": 49008,
+          "cachedReadTokens": 1152,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 37,
+          "modelCalls": 1,
+          "apiDurationMs": 3337,
+          "costUsdTicks": 655928000,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 48965,
+              "outputTokens": 43,
+              "totalTokens": 49008,
+              "cachedReadTokens": 1152,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 37,
+              "modelCalls": 1,
+              "apiDurationMs": 3337,
+              "costUsdTicks": 655928000
+            }
+          },
+          "numTurns": 1
+        }
+      }
+    }
+  },
+  "phoneCloseCodeFinal": null,
+  "eventsAfterCloseSummary": {
+    "_x.ai/mcp/server_status": 36,
+    "_x.ai/mcp/init_progress": 17,
+    "_x.ai/session_notification": 2,
+    "_x.ai/sessions/changed": 1,
+    "_x.ai/mcp_initialized": 1
+  },
+  "closeNotificationObserved": false
+}

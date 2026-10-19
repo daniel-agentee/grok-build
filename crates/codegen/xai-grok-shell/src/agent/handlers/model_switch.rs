@@ -1,3 +1,4 @@
+// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
 //! Applies a model switch to a session, the ungated path.
 //! `set_session_model` enforces the `allowed_models` gate before delegating here.
 //! Internal callers (`new_session`, `load_session`) call `apply` directly.
@@ -33,6 +34,7 @@ pub(crate) async fn apply(
     context_window: SwitchContextWindow,
     config_notice: ConfigNotice,
 ) -> Result<acp::SetSessionModelResponse, acp::Error> {
+    let actor_target = agent.resident_actor_target(&args.session_id, args.meta.as_ref())?;
     tracing::info!("Received set session model request {args:?}");
     xai_grok_telemetry::unified_log::info(
         "model changed",
@@ -50,7 +52,11 @@ pub(crate) async fn apply(
         .await
         .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
     let _config_guard = agent.config_mutation_lock(&session_id).lock_owned().await;
-    let handle = agent.resident_handle(&session_id).unwrap_or(handle);
+    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
+    let handle = actor_target
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| agent.resident_handle(&session_id).unwrap_or(handle));
     let model = agent.resolve_model_id(&model_id)?;
     let use_concise = model.info().use_concise;
     let session_default = handle
@@ -198,6 +204,7 @@ pub(crate) async fn apply(
         );
         pending_rebuild_definition = None;
     }
+    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
     let did_rebuild = if let Some(def) = pending_rebuild_definition {
         let (rebuild_tx, rebuild_rx) = oneshot::channel();
         let _ = handle
@@ -236,6 +243,7 @@ pub(crate) async fn apply(
     } else {
         false
     };
+    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
     let model_unchanged = previous_model_id == model_id.0;
     let (tx, rx) = oneshot::channel();
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
@@ -255,6 +263,7 @@ pub(crate) async fn apply(
     let updated_model = rx
         .await
         .map_err(|_| acp::Error::internal_error().data("failed to set session model"))?;
+    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
     agent.with_resident_mut(&session_id, |handle| {
         handle.model_id = model_id.clone();
         handle.reasoning_effort = applied_effort;

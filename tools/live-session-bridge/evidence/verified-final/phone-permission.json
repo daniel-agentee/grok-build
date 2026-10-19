@@ -1,0 +1,17 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "surface": "phone",
+  "filename": "edge-d419-phone-1792358654.txt",
+  "ack": "EDGE-FINAL-PHONE-DONE-1792358654",
+  "toolCallId": "call-90391aa1-8363-41b2-84c8-d7e91df6eb2a-4",
+  "checks": {
+    "fileAbsentUntilRealPermissionDecision": true,
+    "effectExactlyOnce": true,
+    "freshReplayNoStalePermission": true
+  },
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "actualDecisionSurface": "Built iOS app in Simulator; system Dynamic Type at maximum",
+  "terminalObservedResolution": "Original interactive Terminal continued to next accepted prompt; no stale prior modal"
+}

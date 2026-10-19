@@ -1,0 +1,29 @@
+{
+  "sessionId": "01a150aa-2869-79a2-9ac6-9d7bf8886782",
+  "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project",
+  "agentInstanceId": "397efe4b-15e3-4142-a04e-bc6acc6eb967",
+  "agentVersion": "1.0.45",
+  "resident": true,
+  "yolo": false,
+  "wrongSecretRejected": true,
+  "cursor": null,
+  "cursorFallbackToFullReplay": false,
+  "eventIds": [
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-2",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-3",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-4",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-17",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-13",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-18",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-20",
+    "01a150aa-2869-79a2-9ac6-9d7bf8886782-21"
+  ],
+  "duplicateEventIds": [],
+  "userMessages": [
+    "EDGE-LAUNCHER-FINAL: Reply exactly EDGE-LAUNCHER-FINAL-ACK. No tools."
+  ],
+  "assistantText": "EDGE-LAUNCHER-FINAL-ACK",
+  "toolUpdateCount": 0,
+  "queueNotifications": [],
+  "promptStopReason": null
+}

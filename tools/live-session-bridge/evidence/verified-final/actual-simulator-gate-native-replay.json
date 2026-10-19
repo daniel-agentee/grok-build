@@ -1,0 +1,20 @@
+{
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "residentActorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "checks": {
+    "basicPromptOnce": true,
+    "basicACKOnce": true,
+    "gatePromptOnce": true,
+    "gateACKOnce": true,
+    "phoneFollowupPromptOnce": true,
+    "phoneFollowupACKOnce": true,
+    "gateCompletionPrecedesActualPhoneFollowup": true,
+    "nativeEventIdsUnique": true,
+    "sameResidentActor": true
+  },
+  "eventCount": 47,
+  "gateFile": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-d419-ui-gate-1792358383978246000.finished",
+  "gateFinishedText": "FINISHED-ONCE"
+}

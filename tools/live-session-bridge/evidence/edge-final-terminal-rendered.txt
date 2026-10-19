@@ -1,0 +1,237 @@
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+
+--- VT frame ---
+
+                                                                                                                                                                
+  ~/c/_/grok-live-switching/disposable-project                                                                                       122K / 256K │ [Dashboard]  
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+     ❯ EDGE-DUPLICATE-1792356496: Reply exactly ACK-EDGE-DUPLICATE-1792356496. No tools.                                                            10:48 PM    
+                                                                                                                                                                
+                                                                                                                                                                
+     ACK-EDGE-DUPLICATE-1792356496                                                                                                                  10:48 PM    
+                                                                                                                                                                
+     Worked for 8.9s                                                                                                                                            
+                                                                                                                                                                
+                                                                                                                                                                
+     ❯ EDGE-RESTART-1792356496: Run this exact command once, requesting normal permission: python3 -c "from pathlib import Path; import time;       10:48 PM    
+       Path('edge-restart-started-1792356496.txt').write_text('STARTED'); time.sleep(12); Path('edge-restart-finished-                                          
+       1792356496.txt').write_text('FINISHED-ONCE')" . After success reply EDGE-RESTART-DONE-1792356496.                                                        
+                                                                                                                                                                
+                                                                                                                                                                
+     ◆ Thought for 5.4s                                                                                                                                         
+                                                                                                                                                                
+     I'll run that command once and wait for it to finish.                                                                                          10:48 PM    
+                                                                                                                                                                
+     ◆ Run Write restart start and finish markers once                                                                                                          
+                                                                                                                                                                
+     EDGE-RESTART-DONE-1792356496                                                                                                                   10:48 PM   █
+                                                                                                                                                               █
+     Worked for 34s                                                                                                                                            █
+                                                                                                                                                               █
+                                                                                                                                                               █
+     ❯ PHONE-RETURN-1792357053320372000: Remember my codeword PHONE-RETURN-1792357053320372000. Reply exactly PHONE-RETURN-ACK-                     10:57 PM   █
+       1792357053320372000. No tools.                                                                                                                          █
+                                                                                                                                                               █
+                                                                                                                                                               █
+     PHONE-RETURN-ACK-1792357053320372000                                                                                                           10:57 PM   █
+                                                                                                                                                               █
+     Worked for 3.6s                                                                                                                                           █
+                                                                                                                                                               █
+                                                                                                                                                                
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ❯                                                                                                                                                        │  
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 Fast (high) ─╯  
+                                                                                                                                                                
+  Shift+Tab:mode  │  Ctrl+x:shortcuts                                                                                                                           
+                                                                                                                                                                
+
+--- VT frame ---
+
+                                                                                                                                                                
+  ~/c/_/grok-live-switching/disposable-project                                                                                       122K / 256K │ [Dashboard]  
+                                                                                                                                                                
+                                                                                                                                                                
+     ❯ TERMINAL-RECALL-1792357053320372000: What was my most recent codeword beginning PHONE-RETURN? Reply with that exact codeword only. No        10:57 PM    
+       tools.                                                                                                                                                   
+                                                                                                                                                                
+                                                                                                                                                                
+     PHONE-RETURN-1792357053320372000                                                                                                               10:57 PM    
+                                                                                                                                                                
+     Worked for 8.4s                                                                                                                                            
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                               ▴
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                              ━━
+                                                                                                                                                               ▾
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ❯                                                                                                                                                        │  
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 Fast (high) ─╯  
+                                                                                                                                                                
+  Shift+Tab:mode  │  Ctrl+x:shortcuts                                                                                                                           
+                                                                                                                                                                
+
+--- VT frame ---
+
+                                                                                                                                                                
+  ~/c/_/grok-live-switching/disposable-project                                                                                       122K / 256K │ [Dashboard]  
+                                                                                                                                                                
+                                                                                                                                                                
+     ❯ TERMINAL-RECALL-1792357053320372000: What was my most recent codeword beginning PHONE-RETURN? Reply with that exact codeword only. No        10:57 PM    
+       tools.                                                                                                                                                   
+                                                                                                                                                                
+                                                                                                                                                                
+     PHONE-RETURN-1792357053320372000                                                                                                               10:57 PM    
+                                                                                                                                                                
+     Worked for 8.4s                                                                                                                                            
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                               ▴
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                              ━━
+                                                                                                                                                               ▾
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ❯                                                                                                                                                        │  
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 Fast (high) ─╯  
+                                                                                                                                                                
+  Ctrl+c:press again to quit                                                                                                                                    
+                                                                                                                                                                
+
+--- VT frame ---
+
+                                                                                                                                                                
+  ~/c/_/grok-live-switching/disposable-project                                                                                       122K / 256K │ [Dashboard]  
+                                                                                                                                                                
+                                                                                                                                                                
+     ❯ TERMINAL-RECALL-1792357053320372000: What was my most recent codeword beginning PHONE-RETURN? Reply with that exact codeword only. No        10:57 PM    
+       tools.                                                                                                                                                   
+                                                                                                                                                                
+                                                                                                                                                                
+     PHONE-RETURN-1792357053320372000                                                                                                               10:57 PM    
+                                                                                                                                                                
+     Worked for 8.4s                                                                                                                                            
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                               ▴
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                               ─
+                                                                                                                                                              ━━
+                                                                                                                                                               ▾
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+                                                                                                                                                                
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ❯                                                                                                                                                        │  
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 Fast (high) ─╯  
+                                                                                                                                                                
+  Shift+Tab:mode  │  Ctrl+x:shortcuts                                                                                                                           
+                                                                                                                                                                

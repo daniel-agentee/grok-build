@@ -1,0 +1,68 @@
+{
+  "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+  "nativeVersion": "1.0.45",
+  "kind": "plan",
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+        "requestId": "3773dee1-a122-4b7d-a617-5284689ca3f7",
+        "promptId": "3773dee1-a122-4b7d-a617-5284689ca3f7",
+        "totalTokens": 124908,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 124853,
+        "outputTokens": 46,
+        "cachedReadTokens": 124672,
+        "reasoningTokens": 41,
+        "usage": {
+          "inputTokens": 495774,
+          "outputTokens": 1985,
+          "totalTokens": 497759,
+          "cachedReadTokens": 492928,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 1814,
+          "modelCalls": 4,
+          "apiDurationMs": 16803,
+          "costUsdTicks": 1795648800,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 495774,
+              "outputTokens": 1985,
+              "totalTokens": 497759,
+              "cachedReadTokens": 492928,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 1814,
+              "modelCalls": 4,
+              "apiDurationMs": 16803,
+              "costUsdTicks": 1795648800
+            }
+          },
+          "numTurns": 4
+        }
+      }
+    }
+  },
+  "interactionMethods": [
+    "_x.ai/exit_plan_mode"
+  ],
+  "completed": true,
+  "checks": {
+    "actualSimulatorApprovedNativePlan": true,
+    "terminalObservedCompletion": true,
+    "freshReplayHasNoPendingInteraction": true,
+    "normalPermissionPolicyPreserved": true
+  },
+  "nativeToolOutput": [
+    {
+      "type": "ExitPlanMode",
+      "PlanReady": {
+        "message": "Your plan has been approved. You can now start coding.",
+        "plan_content": "# Verify the shared session\n\nVerify the existing shared session and report completion. No files or commands are needed.\n",
+        "plan_file_path": "/Users/danielstojanovic/.grok/sessions/%2FUsers%2Fdanielstojanovic%2Fcode%2F_tools%2Fgrok-live-switching%2Fdisposable-project/01a150a3-00c6-75b2-9b04-80cddfb159ef/plan.md"
+      }
+    }
+  ]
+}

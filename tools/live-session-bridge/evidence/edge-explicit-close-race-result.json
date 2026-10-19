@@ -1,0 +1,18 @@
+{
+  "sessionId": "01a15069-0eed-7d60-be52-ba18918865ca",
+  "checks": {
+    "preflightSawResident": true,
+    "nativeCloseMadeNonresident": true,
+    "loadSucceededAfterActorClosed": true,
+    "actorBecameResidentAgain": true
+  },
+  "nativeCloseResponse": {
+    "jsonrpc": "2.0",
+    "id": "control",
+    "result": {
+      "_meta": {
+        "x.ai/closeOutcome": "closed"
+      }
+    }
+  }
+}

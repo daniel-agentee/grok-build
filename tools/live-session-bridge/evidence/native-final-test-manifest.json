@@ -1,0 +1,14 @@
+{
+  "test_binary": "target/debug/deps/xai_grok_shell-7f734dc12c3eb672",
+  "test_binary_sha256": "d4d2a564bd81ad14a5036abd1b9e9eda1f5a8587434581a3e22d108ea05de40c",
+  "source_patch_sha256": "27bc4517a3c4e4e73d66d2f9c4404465d134ee88819e37c2d0cb752daf245f4b",
+  "cargo_lock_sha256": "73f15eb527021f73f585dad1e6903208e35c4cdca1a15b73d9a4b8c8432da692",
+  "disconnected_interaction_response": {
+    "passed": 2
+  },
+  "resident_only": {
+    "passed": 6
+  },
+  "RUST_MIN_STACK": "33554432",
+  "tests_coverage": "Real ACP channel errors and leader Unix IPC; session fixture for resident actor controls. Live model and Simulator acceptance recorded separately."
+}

@@ -1,3 +1,5 @@
+//! Modified 2026-10-18: renderer disconnects cannot reject shared interactions.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -515,6 +517,40 @@ fn is_interaction_request(json: &serde_json::Value) -> bool {
                 | "x.ai/mcp/elicit",
         )
     )
+}
+/// A renderer dropping its response channel is not a user's answer. During a
+/// graceful TUI exit the gateway can report this failure before its IPC socket
+/// closes. Forwarding it would let the disappearing renderer reject a shared
+/// interaction still visible to other subscribers. Leave it pending for those
+/// subscribers (or replay on reconnect); explicit cancellation and denial still
+/// pass through, as do failures unrelated to a cached interaction.
+fn is_disconnected_interaction_response(
+    json: &serde_json::Value,
+    interaction_requests: &HashMap<String, HashMap<String, Arc<str>>>,
+) -> bool {
+    if json.get("method").is_some() || json.get("result").is_some() {
+        return false;
+    }
+    let Some(id) = json.get("id").filter(|id| !id.is_null()) else {
+        return false;
+    };
+    let Some(error) = json.get("error").and_then(|error| {
+        serde_json::from_value::<agent_client_protocol::Error>(error.clone()).ok()
+    }) else {
+        return false;
+    };
+    if error.code != agent_client_protocol::ErrorCode::InternalError
+        || xai_acp_lib::acp_channel_failure(&error).is_none()
+    {
+        return false;
+    }
+    interaction_requests.values().any(|requests| {
+        requests.values().any(|payload| {
+            serde_json::from_str::<serde_json::Value>(payload)
+                .ok()
+                .is_some_and(|request| request.get("id") == Some(id))
+        })
+    })
 }
 /// Extract the `tool_call_id` an interaction reverse-request carries. The leader caches it (keyed by id) for replay-on-attach and evicts it on `InteractionResolved`.
 /// The ext-methods (`ask_user_question` / `exit_plan_mode`) carry it directly under (inner) `params`; `request_permission` nests it under `toolCall`.
@@ -1794,6 +1830,15 @@ pub async fn run_leader_server(
                 ServerEvent::Message(id, ClientMessage::Acp { payload }) => {
                     let mut json: Option<serde_json::Value> = serde_json::from_str(&payload).ok();
                     let mut payload_mutated = false;
+                    if json.as_ref().is_some_and(|json| {
+                        is_disconnected_interaction_response(json, &interaction_requests)
+                    }) {
+                        debug!(
+                            client_id = id.0,
+                            "Ignored renderer channel failure for a pending shared interaction"
+                        );
+                        continue;
+                    }
                     if !*ready_rx.borrow() {
                         if let Some(error_payload) =
                             json.as_ref().and_then(make_leader_starting_error)

@@ -1,0 +1,21 @@
+{
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "actorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "signal": "term",
+  "toolCallId": "call-9a59beea-a90e-4e35-a238-546155bf9209-0",
+  "timeline": {
+    "permissionPending": 1792358259.19044,
+    "terminalDeparture": 1792358267.223626
+  },
+  "filename": "edge-terminal-detach-term-1792358180185638000.txt",
+  "checks": {
+    "pendingBeforeOwnTerminalDeparture": true,
+    "pendingAfterOwnTerminalDeparture": true,
+    "fileAbsentBeforeSurvivingClientAllows": true,
+    "completedAfterSurvivingClientAllowOnce": true,
+    "effectExactlyOnce": true,
+    "residentActorUnchanged": true
+  },
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "nativeVersion": "1.0.45"
+}

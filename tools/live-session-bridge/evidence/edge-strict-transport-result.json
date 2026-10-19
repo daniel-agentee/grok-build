@@ -1,0 +1,16 @@
+{
+  "sessionId": "01a150a8-8a2e-78c0-bef7-19b86d4a8cf1",
+  "checks": {
+    "duplicatePendingPromptCloses1008": true,
+    "acceptedPromptContinuesExactlyOnce": true,
+    "bridgeRestartWhileToolRuns": true,
+    "sameAgentInstanceAfterRestart": true,
+    "toolCompletedOnceDuringTransportLoss": true
+  },
+  "agentInstanceId": "50061598-7915-40bf-98ae-f5dec797d4a4",
+  "duplicateMarker": "EDGE-DUPLICATE-1792354712",
+  "restartFiles": [
+    "edge-restart-started-1792354712.txt",
+    "edge-restart-finished-1792354712.txt"
+  ]
+}

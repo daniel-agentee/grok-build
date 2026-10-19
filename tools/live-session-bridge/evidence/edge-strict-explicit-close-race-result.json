@@ -1,0 +1,19 @@
+{
+  "sessionId": "01a1509d-fce2-75b3-b8f1-742436ad52e9",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "preflightSawResident": true,
+    "nativeCloseMadeNonresident": true,
+    "loadSucceededAfterActorClosed": false,
+    "actorBecameResidentAgain": false
+  },
+  "nativeCloseResponse": {
+    "jsonrpc": "2.0",
+    "id": "control",
+    "result": {
+      "_meta": {
+        "x.ai/closeOutcome": "closed"
+      }
+    }
+  }
+}

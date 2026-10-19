@@ -1,0 +1,78 @@
+{
+  "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+  "agentInstanceId": "a1fa4de1-bcfe-4dbe-9666-09fc174fd871",
+  "planUpdates": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "update": {
+          "sessionUpdate": "plan",
+          "entries": [
+            {
+              "content": "Verify shared session identity",
+              "priority": "medium",
+              "status": "in_progress"
+            },
+            {
+              "content": "Report verification completion",
+              "priority": "medium",
+              "status": "pending"
+            }
+          ]
+        },
+        "_meta": {
+          "totalTokens": 126777,
+          "requestTrimmedTokens": 0,
+          "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-988",
+          "agentTimestampMs": 1792348488876,
+          "promptId": "caa0c0a5-2299-4ff4-88b2-d1f06f86df75",
+          "streamStartMs": 1792348483793,
+          "turnStartMs": 1792348481858,
+          "updateType": "Plan",
+          "updateParams": {
+            "planSteps": 2
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "update": {
+          "sessionUpdate": "plan",
+          "entries": [
+            {
+              "content": "Verify shared session identity",
+              "priority": "medium",
+              "status": "completed"
+            },
+            {
+              "content": "Report verification completion",
+              "priority": "medium",
+              "status": "completed"
+            }
+          ]
+        },
+        "_meta": {
+          "totalTokens": 126874,
+          "requestTrimmedTokens": 0,
+          "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-997",
+          "agentTimestampMs": 1792348492082,
+          "promptId": "caa0c0a5-2299-4ff4-88b2-d1f06f86df75",
+          "streamStartMs": 1792348490195,
+          "turnStartMs": 1792348481858,
+          "updateType": "Plan",
+          "updateParams": {
+            "planSteps": 2
+          }
+        }
+      }
+    }
+  ],
+  "assistantText": "Creating the two plan entries, then marking both completed.PLAN-COMPLETE-2059",
+  "stopReason": "end_turn"
+}

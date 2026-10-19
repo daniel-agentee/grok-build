@@ -1,0 +1,19 @@
+{
+  "sessionId": "01a150a8-8a2e-78c0-bef7-19b86d4a8cf1",
+  "nativeVersion": "1.0.45",
+  "before": {
+    "modelId": "grok-4.7-build-fast",
+    "reasoningEffort": "low",
+    "yolo": false,
+    "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project"
+  },
+  "after": {
+    "modelId": "grok-4.7-build-fast",
+    "reasoningEffort": "low",
+    "yolo": false,
+    "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project"
+  },
+  "checks": {
+    "mobileAttachPreservedNondefaultLiveModelEffortWorkspacePermissions": true
+  }
+}

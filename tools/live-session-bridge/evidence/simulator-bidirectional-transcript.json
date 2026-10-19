@@ -1,0 +1,26 @@
+{
+  "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+  "agentInstanceId": "a1fa4de1-bcfe-4dbe-9666-09fc174fd871",
+  "events": [
+    {
+      "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-316",
+      "kind": "user_message_chunk",
+      "text": "SIMULATOR-PHONE-2016: Reply with SIMULATOR-ACK-2016 and the exact current workspace path. Do not run tools."
+    },
+    {
+      "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-358",
+      "kind": "user_message_chunk",
+      "text": "TERMINAL-TO-SIMULATOR-2017: Tell the phone app that this instruction arrived from the same Terminal session. Mention SIMULATOR-ACK-2016 and our shared workspace path. No tools."
+    },
+    {
+      "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-349",
+      "kind": "agent_message_chunk",
+      "text": "SIMULATOR-ACK-2016\n/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project"
+    },
+    {
+      "eventId": "01a15035-cd29-7df3-a035-1a461eda40d0-416",
+      "kind": "agent_message_chunk",
+      "text": "This instruction arrived from the same Terminal session. SIMULATOR-ACK-2016 is the earlier simulator acknowledgement, and the shared workspace path is `/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project`."
+    }
+  ]
+}

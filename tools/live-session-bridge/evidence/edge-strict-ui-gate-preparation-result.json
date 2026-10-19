@@ -1,0 +1,16 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150ae-8124-75b2-9737-50e7620572ca",
+  "checks": {
+    "actualTerminalGateApprovedAllowOnce": true,
+    "gateStarted": true,
+    "gateFinishedOnce": true,
+    "actualSimulatorMidShellPass": false
+  },
+  "files": {
+    "started": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-ui-gate-1792355807339479000.started",
+    "release": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-ui-gate-1792355807339479000.release",
+    "finished": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-ui-gate-1792355807339479000.finished"
+  },
+  "note": "Simulator3 attached while native turn awaited tool permission and verified background/reconnect, then its completion assertion matched an old repeated ACK and failed. Shell started only after Terminal option3; this fixture does not prove actual Simulator mid-shell attachment. Final rebuild requires a unique ACK and STARTED before watcher launch."
+}

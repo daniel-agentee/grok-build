@@ -1,0 +1,12 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "sessionId": "01a150c2-68a1-7f40-9a9b-ef146f772b08",
+  "actorId": "01a150c2-6b38-7592-8a41-117713a5ac43",
+  "prefix": "LONG-STREAM-RETRY-1792357800",
+  "checks": {
+    "actualTerminalSubmitted300LineInstruction": true,
+    "freshReplay300NumberedAssistantLinesInOrderExactlyOnce": true,
+    "freshReplayCompletionACK": true
+  },
+  "lineCount": 300
+}

@@ -1,0 +1,25 @@
+{
+  "sessionId": "01a150e7-3a58-7db3-b53e-ac587c2fa915",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "connectedCloseRevokesSocket4409": true,
+    "connectedReplacementRejectsCachedActor": true,
+    "explicitSelectionGetsNewActorIdentity": true,
+    "offlineCloseAndColdRestoreRejectCachedActor": true,
+    "offlineExplicitSelectionGetsNewIdentity": true,
+    "nativeStalePromptRejected": true,
+    "nativeStaleModelRejected": true,
+    "nativeStaleCancelDoesNotCancelReplacementTask": true,
+    "rejectedStalePromptAbsentFromHistory": true
+  },
+  "files": [
+    "edge-identity-started-1792358719419367000.txt",
+    "edge-identity-finished-1792358719419367000.txt"
+  ],
+  "actorIds": [
+    "01a150e7-3bc4-7380-b2c9-014255f14f0f",
+    "01a150e7-600d-73e0-ac4d-18413eed56b9",
+    "01a150e7-98e2-7051-8193-ea4ee7caabbd"
+  ],
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab"
+}

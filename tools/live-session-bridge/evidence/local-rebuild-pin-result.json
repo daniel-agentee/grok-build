@@ -1,0 +1,8 @@
+{
+  "result": "rebuild-and-pin-helper-passed",
+  "rebuilt_artifact_sha256": "e5fb8527497db235625339dbf9cad96835da856a06463c3baf72cbc5eecf1c1d",
+  "native_inputs_unchanged": true,
+  "tested_artifact_sha256": "64b609fca4e066c8f1ea8552ad233381afa1bfaa7a12212c74156c1a1fe16cb2",
+  "tested_artifact_restored": true,
+  "note": "Local rebuild artifact is not the artifact used for final live acceptance. The previously tested artifact and launcher/manifest pin were restored."
+}

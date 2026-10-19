@@ -1,0 +1,50 @@
+{
+  "verifiedAt": "2026-10-18T18:38:20.294933+00:00",
+  "binary": "grok1.0.62 (1474f9cbdd91)",
+  "sessionId": "01a15048-205a-71e1-bd32-cdd84834d39a",
+  "workspace": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-ask.sock",
+  "bridgePort": 18792,
+  "testType": "Real stock native Terminal + actual iOS Simulator UI + live Grok model",
+  "physicalDeviceTested": false,
+  "rounds": [
+    {
+      "submittedFrom": "Terminal",
+      "approvedFrom": "iOS Simulator",
+      "requestId": 0,
+      "toolCallId": "call-d5931116-f6c5-4154-9b47-5e4426b0f2d9-0",
+      "chosenOptionId": "allow-once",
+      "file": "approval-phone-once.txt",
+      "marker": "PHONE-APPROVAL-ONCE",
+      "markerCount": 1,
+      "fileBytes": 20,
+      "interactionEvents": [
+        "tool_call_delta_chunk",
+        "pending_interaction",
+        "interaction_resolved"
+      ],
+      "otherClientPendingCleared": true,
+      "assistantReportedExitCode": 0
+    },
+    {
+      "submittedFrom": "iOS Simulator",
+      "approvedFrom": "Terminal",
+      "requestId": 1,
+      "toolCallId": "call-52c8b71c-fd42-4513-8879-413223fa50c7-1",
+      "chosenOptionId": "allow-once",
+      "file": "approval-terminal-once.txt",
+      "marker": "TERMINAL-APPROVAL-ONCE",
+      "markerCount": 1,
+      "fileBytes": 23,
+      "interactionEvents": [
+        "tool_call_delta_chunk",
+        "pending_interaction",
+        "interaction_resolved"
+      ],
+      "otherClientPendingCleared": true,
+      "assistantReportedExitCode": 0
+    }
+  ],
+  "policyPreparation": "Explicit native leader and TUI permission-mode default; user-authorized disposable project local defaultMode override and native trust; no global settings changed. Existing hooks/rules retained.",
+  "events": "approval-live-events.jsonl"
+}

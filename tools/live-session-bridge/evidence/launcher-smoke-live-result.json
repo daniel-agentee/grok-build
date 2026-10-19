@@ -1,0 +1,27 @@
+{
+  "sessionId": "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3",
+  "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project",
+  "agentInstanceId": "a20b92c2-6ed8-45e1-8be1-c4209353fd60",
+  "agentVersion": "1.0.62",
+  "wrongSecretRejected": true,
+  "cursor": null,
+  "cursorFallbackToFullReplay": false,
+  "eventIds": [
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-2",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-3",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-4",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-15",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-19",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-20",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-23",
+    "01a15048-2caa-7fa0-a5f4-de7b1a60a3e3-24"
+  ],
+  "duplicateEventIds": [],
+  "userMessages": [
+    "LAUNCHER-SMOKE-2051: Reply exactly LAUNCHER-SMOKE-ACK-2051. Do not use tools."
+  ],
+  "assistantText": "LAUNCHER-SMOKE-ACK-2051",
+  "toolUpdateCount": 0,
+  "queueNotifications": [],
+  "promptStopReason": null
+}

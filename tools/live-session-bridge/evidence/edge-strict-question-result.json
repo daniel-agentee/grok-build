@@ -1,0 +1,63 @@
+{
+  "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+  "nativeVersion": "1.0.45",
+  "kind": "question",
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+        "requestId": "7e6dcece-32c7-4b3a-9280-9e4e53f063eb",
+        "promptId": "7e6dcece-32c7-4b3a-9280-9e4e53f063eb",
+        "totalTokens": 122397,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 122359,
+        "outputTokens": 29,
+        "cachedReadTokens": 121344,
+        "reasoningTokens": 24,
+        "usage": {
+          "inputTokens": 243733,
+          "outputTokens": 969,
+          "totalTokens": 244702,
+          "cachedReadTokens": 242560,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 863,
+          "modelCalls": 2,
+          "apiDurationMs": 12810,
+          "costUsdTicks": 880192000,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 243733,
+              "outputTokens": 969,
+              "totalTokens": 244702,
+              "cachedReadTokens": 242560,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 863,
+              "modelCalls": 2,
+              "apiDurationMs": 12810,
+              "costUsdTicks": 880192000
+            }
+          },
+          "numTurns": 2
+        }
+      }
+    }
+  },
+  "interactionMethods": [
+    "_x.ai/ask_user_question"
+  ],
+  "completed": true,
+  "checks": {
+    "actualSimulatorSingleChoice": "Blue",
+    "actualSimulatorMultipleChoices": [
+      "Apple",
+      "Bread"
+    ],
+    "actualSimulatorNotes": "Phone native question note",
+    "nativeToolResultContainsAllAnswers": true,
+    "terminalObservedCompletion": true,
+    "replayedPendingRequestRecovered": true
+  }
+}

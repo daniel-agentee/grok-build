@@ -1,0 +1,14 @@
+Command: CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 RUST_MIN_STACK=33554432 target/debug/deps/xai_grok_shell-7f734dc12c3eb672 resident_only --nocapture
+Source: exact build-manifest patch inputs, before production pin build.
+
+
+running 6 tests
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_target_rejects_closed_actor_and_invalid_flag ... ok
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_target_rejects_replacement_and_workspace_change ... ok
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_actor_token_rejects_replacement_controls_before_await ... ok
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_load_rejects_missing_actor_before_history_access ... ok
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_load_reuses_the_exact_running_actor ... ok
+test agent::mvp_agent::tests::session_resume_close_tests::resident_only_load_rejects_close_during_await_without_cold_restore ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 7054 filtered out; finished in 11.22s
+

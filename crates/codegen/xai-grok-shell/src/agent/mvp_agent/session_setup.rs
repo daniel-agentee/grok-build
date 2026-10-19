@@ -1,4 +1,5 @@
 //! ACP [session setup]: the four methods that create, attach to, and free a session.
+//! Modified 2026-10-18: resident-only attachment cannot cold-restore a closed actor.
 //! Split from `acp_agent.rs`, whose trait impl delegates all four.
 //!
 //! [session setup]: https://agentclientprotocol.com/protocol/v1/session-setup
@@ -16,6 +17,8 @@ pub(super) const RESUME_REFUSES_EXTRA_DIRS: &str =
     "session/resume does not support additionalDirectories";
 const TOOL_OVERRIDES_ECHO_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 const BACKGROUND_TASKS_SNAPSHOT_ACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+pub(super) const RESIDENT_ONLY_REFUSAL: &str =
+    "live attachment target is no longer resident; select a running session";
 async fn read_applied_tool_overrides(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<SessionCommand>,
 ) -> Option<xai_grok_sampling_types::ToolOverrides> {
@@ -932,6 +935,9 @@ impl MvpAgent {
         op: AttachOperation,
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let attach_started_at = std::time::Instant::now();
+        // Capture the actor before any await. A roster check in another RPC is
+        // insufficient: close may remove the actor between discovery and load.
+        let resident_only_target = self.resident_only_attach_target(&arguments)?;
         let load_guard = self.begin_session_load(&arguments.session_id);
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
         let live_cwd = AbsPathBuf::new(arguments.cwd.clone())
@@ -964,7 +970,11 @@ impl MvpAgent {
             meta: request_meta,
             ..
         } = arguments;
-        let policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
+        let mut policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
+        if resident_only_target.is_some() {
+            // A live attachment is observation, never a checkout under a running turn.
+            policy.restore_code = false;
+        }
         let SessionWorkspace {
             cwd,
             remote_settings,
@@ -1093,7 +1103,9 @@ impl MvpAgent {
                 None
             }
         };
-        self.set_turn_number(&session_id, summary.next_trace_turn);
+        if resident_only_target.is_none() {
+            self.set_turn_number(&session_id, summary.next_trace_turn);
+        }
         tracing::info!(
             session_id = %session_id.0,
             next_trace_turn = summary.next_trace_turn,
@@ -1152,7 +1164,7 @@ impl MvpAgent {
                 .emit_local_background_tasks
                 .store(false, std::sync::atomic::Ordering::Release);
         }
-        let interrupted_turn = if self.is_resident(&session_id) {
+        let interrupted_turn = if resident_only_target.is_some() || self.is_resident(&session_id) {
             None
         } else {
             self.record_interrupted_turn(
@@ -1177,8 +1189,16 @@ impl MvpAgent {
                 gateway_backed,
             )
             .await?;
-        self.attach_status_line(&session_id, request_meta.as_ref(), init);
-        self.attach_user_message_echo(&session_id, request_meta.as_ref(), init);
+        if resident_only_target.is_none()
+            || Self::resolve_status_line_capability(request_meta.as_ref(), init)
+        {
+            self.attach_status_line(&session_id, request_meta.as_ref(), init);
+        }
+        if resident_only_target.is_none()
+            || Self::resolve_user_message_echo_capability(request_meta.as_ref(), init)
+        {
+            self.attach_user_message_echo(&session_id, request_meta.as_ref(), init);
+        }
         let ClientCaps {
             code_nav: client_code_nav_enabled,
             terminal: client_terminal,
@@ -1191,7 +1211,13 @@ impl MvpAgent {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| summary.prompt_display_cwd.clone());
+        #[cfg(test)]
+        super::test_hooks::pause_at(super::test_hooks::AttachPause::BeforeResidentCheck).await;
+        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
         let restored_from_disk = if !self.is_resident(&session_id) {
+            if resident_only_target.is_some() {
+                return Err(acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL));
+            }
             tracing::info!(
                 session_id = %session_id.0,
                 "load_session: spawning new session actor (session not in memory)"
@@ -1300,25 +1326,26 @@ impl MvpAgent {
                 "load_session: reconnecting to existing session, updating MCP servers"
             );
             let attach_hints = explicit_startup_hints(request_meta.as_ref());
-            self.with_resident_mut(&session_id, |handle| {
-                handle.initial_client_mcp_servers = initial_client_mcp_servers.clone();
-                if let Some(hints) = attach_hints {
-                    let _ =
-                        handle
-                            .cmd_tx
-                            .send(crate::session::SessionCommand::UpdateAttachPolicy {
+            if resident_only_target.is_none() {
+                self.with_resident_mut(&session_id, |handle| {
+                    handle.initial_client_mcp_servers = initial_client_mcp_servers.clone();
+                    if let Some(hints) = attach_hints {
+                        let _ = handle.cmd_tx.send(
+                            crate::session::SessionCommand::UpdateAttachPolicy {
                                 startup_hints: Box::new(hints),
-                            });
-                }
-                let (tx, _rx) = tokio::sync::oneshot::channel();
-                let _ = handle
-                    .cmd_tx
-                    .send(crate::session::SessionCommand::UpdateMcpServers {
-                        mcp_servers,
-                        client_seed: Some(initial_client_mcp_servers),
-                        respond_to: tx,
-                    });
-            });
+                            },
+                        );
+                    }
+                    let (tx, _rx) = tokio::sync::oneshot::channel();
+                    let _ = handle
+                        .cmd_tx
+                        .send(crate::session::SessionCommand::UpdateMcpServers {
+                            mcp_servers,
+                            client_seed: Some(initial_client_mcp_servers),
+                            respond_to: tx,
+                        });
+                });
+            }
             false
         };
         if gateway_backed {
@@ -1335,7 +1362,7 @@ impl MvpAgent {
             self.emit_background_tasks_snapshot_and_wait(&session_id)
                 .await;
         }
-        {
+        if resident_only_target.is_none() {
             let init_meta = self
                 .initialize_request
                 .get()
@@ -1348,7 +1375,9 @@ impl MvpAgent {
                 );
             }
         }
-        if let Some(hooks) = crate::extensions::hooks::reconnect_client_hooks(request_meta.as_ref())
+        if resident_only_target.is_none()
+            && let Some(hooks) =
+                crate::extensions::hooks::reconnect_client_hooks(request_meta.as_ref())
             && let Some(handle) = self.resident_handle(&session_id)
         {
             handle.set_client_hooks(hooks);
@@ -1359,27 +1388,29 @@ impl MvpAgent {
                 .as_ref()
                 .and_then(|p| std::fs::metadata(p).ok())
                 .is_some_and(|m| m.len() > 0);
-        self.refresh_reconnect_session_state(
-            &session_id,
-            client_code_nav_enabled,
-            session_yolo_mode,
-            session_auto_mode,
-        );
-        self.maybe_spawn_interactive_trust_prompt(
-            &session_id,
-            cwd.as_path(),
-            remote_settings.as_ref(),
-        );
-        self.heal_orphaned_subagents(&session_id, &unfinished_subagents)
-            .await;
-        self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
-            .await;
+        if resident_only_target.is_none() {
+            self.refresh_reconnect_session_state(
+                &session_id,
+                client_code_nav_enabled,
+                session_yolo_mode,
+                session_auto_mode,
+            );
+            self.maybe_spawn_interactive_trust_prompt(
+                &session_id,
+                cwd.as_path(),
+                remote_settings.as_ref(),
+            );
+            self.heal_orphaned_subagents(&session_id, &unfinished_subagents)
+                .await;
+            self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
+                .await;
+        }
         let (model_state, response_meta) = self
             .build_attach_response_meta(&session_id, &summary, persist_data, code_restore_info)
             .await;
         xai_grok_telemetry::unified_log::info("session loaded", Some(session_id.0.as_ref()), None);
         let config_options = self.acp_config_options(Some(&session_id), &model_state);
-        let response = acp::LoadSessionResponse::new()
+        let mut response = acp::LoadSessionResponse::new()
             .models(Some(model_state))
             .config_options(Some(config_options))
             .meta(response_meta.as_object().cloned());
@@ -1387,7 +1418,7 @@ impl MvpAgent {
             let _ = handle.cmd_tx.send(SessionCommand::AdvertiseCommands {
                 trigger: crate::session::AdvertiseTrigger::SessionLoad,
             });
-            if restored.awaiting_plan_approval {
+            if resident_only_target.is_none() && restored.awaiting_plan_approval {
                 let _ = handle.cmd_tx.send(SessionCommand::RestorePlanApproval);
             }
         }
@@ -1417,7 +1448,85 @@ impl MvpAgent {
             attach_started_at.elapsed(),
             restored_from_disk,
         );
+        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
+        if let Some(target) = resident_only_target.as_ref() {
+            response.meta.get_or_insert_with(Default::default).insert(
+                "x.ai/residentActorId".into(),
+                serde_json::json!(target.resident_actor_id.to_string()),
+            );
+        }
         Ok(response)
+    }
+
+    /// Opt-in load contract: reuse this exact live actor or return an error,
+    /// never create a replacement from persisted conversation history.
+    pub(super) fn resident_only_attach_target(
+        &self,
+        request: &acp::LoadSessionRequest,
+    ) -> Result<Option<crate::session::SessionHandle>, acp::Error> {
+        let required = match request
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("x.ai/resident_only"))
+        {
+            None | Some(serde_json::Value::Bool(false)) => false,
+            Some(serde_json::Value::Bool(true)) => true,
+            _ => {
+                return Err(acp::Error::invalid_params().data("x.ai/resident_only must be boolean"));
+            }
+        };
+        let asserted_actor =
+            self.resident_actor_target(&request.session_id, request.meta.as_ref())?;
+        if !required && asserted_actor.is_none() {
+            return Ok(None);
+        }
+        let target = self
+            .resident_handle(&request.session_id)
+            .filter(|handle| !handle.cmd_tx.is_closed())
+            .ok_or_else(|| acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL))?;
+        if std::path::Path::new(&target.info.cwd) != request.cwd.as_path() {
+            return Err(acp::Error::invalid_params().data("live attachment workspace differs"));
+        }
+        Ok(Some(target))
+    }
+
+    /// Optional actor assertion for mobile controls. Capture before any await;
+    /// callers keep this handle and recheck after waits, never look up a successor.
+    pub(crate) fn resident_actor_target(
+        &self,
+        session_id: &acp::SessionId,
+        meta: Option<&acp::Meta>,
+    ) -> Result<Option<crate::session::SessionHandle>, acp::Error> {
+        let Some(value) = meta.and_then(|m| m.get("x.ai/residentActorId")) else {
+            return Ok(None);
+        };
+        let expected = value.as_str().ok_or_else(|| {
+            acp::Error::invalid_params().data("x.ai/residentActorId must be a UUID string")
+        })?;
+        self.resident_handle(session_id)
+            .filter(|h| !h.cmd_tx.is_closed() && h.resident_actor_id.to_string() == expected)
+            .map(Some)
+            .ok_or_else(|| {
+                acp::Error::invalid_params()
+                    .data("live session actor changed; select a running session")
+            })
+    }
+
+    pub(crate) fn verify_resident_only_attach_target(
+        &self,
+        session_id: &acp::SessionId,
+        expected: Option<&crate::session::SessionHandle>,
+    ) -> Result<(), acp::Error> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        if self.resident_handle(session_id).is_some_and(|current| {
+            !current.cmd_tx.is_closed() && current.cmd_tx.same_channel(&expected.cmd_tx)
+        }) {
+            Ok(())
+        } else {
+            Err(acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL))
+        }
     }
     /// Refuses a cwd that is neither a grok worktree nor the session's own, so it cannot detach a real checkout.
     async fn restore_session_code(

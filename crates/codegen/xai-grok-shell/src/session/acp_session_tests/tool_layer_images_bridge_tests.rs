@@ -1,4 +1,6 @@
 //! Wiring tests for MCP tool-layer images through `handle_bridge_tool_success`.
+//! Modified 2026-10-18: import the trait required by the existing image fixture.
+use base64::Engine as _;
 use super::support::*;
 use super::*;
 use xai_grok_sampling_types::{ContentPart, ConversationItem};

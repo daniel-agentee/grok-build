@@ -1,3 +1,4 @@
+// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
 //! Session bring-up for `acp_session`: `spawn_session_actor` and the per-session OS thread (`SessionThread` / `spawn_session_on_thread`).
 //! Also holds the MCP auto-restart wiring (`SessionRestartActions`).
 //!
@@ -2435,6 +2436,7 @@ pub(crate) async fn spawn_session_actor(
         let _ = session_done_tx.send(());
     });
     let handle = SessionHandle {
+        resident_actor_id: uuid::Uuid::now_v7(),
         cmd_tx,
         persistence_tx: persistence.tx.clone(),
         current_prompt_id,

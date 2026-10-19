@@ -1,0 +1,62 @@
+name: Mobile bridge checks
+
+on:
+  pull_request:
+    paths:
+      - "tools/live-session-bridge/**"
+      - ".github/workflows/mobile-bridge.yml"
+  push:
+    paths:
+      - "tools/live-session-bridge/**"
+      - ".github/workflows/mobile-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  transport:
+    name: Protocol, authentication and launcher regressions
+    # External repository: no self-hosted runner configuration exists. This
+    # lightweight Python job explicitly uses a GitHub-hosted Linux runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: tools/live-session-bridge
+    steps:
+      - name: Check out the change
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/live-session-bridge/requirements.txt
+      - name: Install pinned validation tools
+        run: python -m pip install -r requirements.txt ruff==0.15.12
+      - name: Check transport and launcher style
+        run: >-
+          python -m ruff check
+          bridge.py launch.py pin_build.py
+          test_bridge.py test_launch.py test_pin_build.py
+      - name: Check formatting
+        run: >-
+          python -m ruff format --check
+          bridge.py launch.py pin_build.py
+          test_bridge.py test_launch.py test_pin_build.py
+      - name: Exercise protocol and failure paths
+        run: python -m unittest discover -s . -p 'test_*.py' -v
+      - name: Summarize validation scope
+        if: always()
+        run: |
+          {
+            echo '### Mobile bridge validation'
+            echo '- Scoped Python protocol, authentication, reconnect and launcher regressions.'
+            echo '- No native rebuild or model credentials are used in CI.'
+            echo '- Live CLI and iOS Simulator evidence is recorded separately in the runbook.'
+          } >> "$GITHUB_STEP_SUMMARY"

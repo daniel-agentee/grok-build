@@ -1,0 +1,24 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "fixtures": {
+    "connected": {
+      "sid": "01a150c7-93d3-7742-bf31-fd0cd289689c",
+      "initialActor": "01a150c7-955a-74a1-ad9e-40d11599e716",
+      "replacementActor": "01a150d5-2899-7da1-8436-50efb5f9435c",
+      "replacementDiffers": true
+    },
+    "offline": {
+      "sid": "01a150c7-9a1c-7c91-8ef6-777bcdd5bf8d",
+      "initialActor": "01a150c7-9b66-72d0-9808-91298d38b5b9",
+      "replacementActor": "01a150d6-908f-7782-b787-7a9031ca6fc2",
+      "replacementDiffers": true
+    }
+  },
+  "checks": {
+    "bothActorIncarnationsReplaced": true,
+    "actualSimulatorConnectedEndShowsExplicitPicker": true,
+    "actualSimulatorOfflineReplacementRejectsOldActor": true,
+    "onlyProbeActorsClosedAfterUITests": true
+  },
+  "uiSource": "edge_ios final68 connected-end and offline-replace XCUITest logs"
+}

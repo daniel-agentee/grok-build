@@ -1,0 +1,21 @@
+{
+  "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+  "agentInstanceId": "a1fa4de1-bcfe-4dbe-9666-09fc174fd871",
+  "cursor": "01a15035-cd29-7df3-a035-1a461eda40d0-740",
+  "receivedEventIds": [
+    "01a15035-cd29-7df3-a035-1a461eda40d0-742",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-745",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-744",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-749",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-826",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-830",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-831",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-833",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-834"
+  ],
+  "duplicateEventIds": [],
+  "oldEventsRepeated": [],
+  "workspaceFile": "reconnect-result.txt",
+  "fileContents": "RECONNECT-DONE-2028\n",
+  "replayedCompletionObserved": true
+}

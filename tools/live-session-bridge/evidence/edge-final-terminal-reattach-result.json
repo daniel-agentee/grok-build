@@ -1,0 +1,17 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "sessionId": "01a150c3-8ed0-76e3-a565-92636eacef27",
+  "actorId": "01a150c3-9137-7380-b349-a734f891a572",
+  "marker": "PHONE-RETURN-1792357053320372000",
+  "phoneACK": "PHONE-RETURN-ACK-1792357053320372000",
+  "terminalRecall": "TERMINAL-RECALL-1792357053320372000",
+  "terminalPID": 89509,
+  "checks": {
+    "actualPTYTerminalReattachRenderedPhonePromptAndResponse": true,
+    "actualTerminalSubmittedFollowup": true,
+    "actualTerminalResponseRecalledPhoneContext": true,
+    "reattachAndTerminalDeparturePreservedResidentActor": true
+  },
+  "renderedEvidence": "edge-final-terminal-rendered.txt",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

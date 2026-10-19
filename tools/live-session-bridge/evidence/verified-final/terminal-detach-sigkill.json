@@ -1,0 +1,21 @@
+{
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "actorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "signal": "kill",
+  "toolCallId": "call-11669981-69de-4c93-8e25-85db83593964-1",
+  "timeline": {
+    "permissionPending": 1792358331.544113,
+    "terminalDeparture": 1792358339.552075
+  },
+  "filename": "edge-terminal-detach-kill-1792358322199655000.txt",
+  "checks": {
+    "pendingBeforeOwnTerminalDeparture": true,
+    "pendingAfterOwnTerminalDeparture": true,
+    "fileAbsentBeforeSurvivingClientAllows": true,
+    "completedAfterSurvivingClientAllowOnce": true,
+    "effectExactlyOnce": true,
+    "residentActorUnchanged": true
+  }
+}

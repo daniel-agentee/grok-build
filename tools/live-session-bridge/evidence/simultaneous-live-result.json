@@ -1,0 +1,159 @@
+{
+  "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+  "agentInstanceId": "a1fa4de1-bcfe-4dbe-9666-09fc174fd871",
+  "phoneSentUnix": 1792347985.532107,
+  "userMessages": [
+    "SIMULTANEOUS-PHONE-2044: Reply exactly QUEUED-PHONE-ACK-2044. No tools.",
+    "SIMULTANEOUS-TERMINAL-2044: Reply exactly QUEUED-TERMINAL-ACK-2044. No tools."
+  ],
+  "assistantText": "QUEUED-PHONE-ACK-2044QUEUED-TERMINAL-ACK-2044",
+  "eventIds": [
+    "01a15035-cd29-7df3-a035-1a461eda40d0-899",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-900",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-901",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-903",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-904",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-905",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-906",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-907",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-908",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-909",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-910",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-911",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-912",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-915",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-916",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-917",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-918",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-920",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-921",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-922",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-923",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-924",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-925",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-926",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-927",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-928",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-929",
+    "01a15035-cd29-7df3-a035-1a461eda40d0-930"
+  ],
+  "queueNotifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "_x.ai/queue/changed",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "entries": [
+          {
+            "id": "b337cbe0-6884-4fb6-ac18-2440f22e9151",
+            "version": 0,
+            "kind": "prompt",
+            "text": "SIMULTANEOUS-PHONE-2044: Reply exactly QUEUED-PHONE-ACK-2044. No tools.",
+            "position": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_x.ai/queue/changed",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "entries": [],
+        "runningPromptId": "b337cbe0-6884-4fb6-ac18-2440f22e9151",
+        "runningText": "SIMULTANEOUS-PHONE-2044: Reply exactly QUEUED-PHONE-ACK-2044. No tools.",
+        "runningKind": "prompt"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_x.ai/queue/changed",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "entries": [
+          {
+            "id": "ecfe4fc6-c84f-42bb-b74d-7355d16b795f",
+            "version": 0,
+            "kind": "prompt",
+            "text": "SIMULTANEOUS-TERMINAL-2044: Reply exactly QUEUED-TERMINAL-ACK-2044. No tools.",
+            "position": 0
+          }
+        ],
+        "runningPromptId": "b337cbe0-6884-4fb6-ac18-2440f22e9151",
+        "runningText": "SIMULTANEOUS-PHONE-2044: Reply exactly QUEUED-PHONE-ACK-2044. No tools.",
+        "runningKind": "prompt"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_x.ai/queue/changed",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "entries": [
+          {
+            "id": "ecfe4fc6-c84f-42bb-b74d-7355d16b795f",
+            "version": 0,
+            "kind": "prompt",
+            "text": "SIMULTANEOUS-TERMINAL-2044: Reply exactly QUEUED-TERMINAL-ACK-2044. No tools.",
+            "position": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_x.ai/queue/changed",
+      "params": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "entries": [],
+        "runningPromptId": "ecfe4fc6-c84f-42bb-b74d-7355d16b795f",
+        "runningText": "SIMULTANEOUS-TERMINAL-2044: Reply exactly QUEUED-TERMINAL-ACK-2044. No tools.",
+        "runningKind": "prompt"
+      }
+    }
+  ],
+  "phoneResult": {
+    "jsonrpc": "2.0",
+    "id": "simultaneous-phone-5",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a15035-cd29-7df3-a035-1a461eda40d0",
+        "requestId": "b337cbe0-6884-4fb6-ac18-2440f22e9151",
+        "promptId": "b337cbe0-6884-4fb6-ac18-2440f22e9151",
+        "totalTokens": 126164,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 126134,
+        "outputTokens": 21,
+        "cachedReadTokens": 121728,
+        "reasoningTokens": 12,
+        "usage": {
+          "inputTokens": 126134,
+          "outputTokens": 21,
+          "totalTokens": 126155,
+          "cachedReadTokens": 121728,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 12,
+          "modelCalls": 1,
+          "apiDurationMs": 3812,
+          "costUsdTicks": 474653600,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 126134,
+              "outputTokens": 21,
+              "totalTokens": 126155,
+              "cachedReadTokens": 121728,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 12,
+              "modelCalls": 1,
+              "apiDurationMs": 3812,
+              "costUsdTicks": 474653600
+            }
+          },
+          "numTurns": 1
+        }
+      }
+    }
+  },
+  "assertions": "one user echo and one answer per submission"
+}

@@ -1,0 +1,99 @@
+{
+  "nativeSource": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+  "nativeVersion": "1.0.45",
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "endpoint": "ws://192.168.178.150:18796/ws",
+  "simulatorEndpoint": "ws://127.0.0.1:18796/ws",
+  "sessionId": "01a150c2-68a1-7f40-9a9b-ef146f772b08",
+  "physicalDevice": "UNVERIFIED",
+  "cases": [
+    {
+      "id": 1,
+      "requirement": "Terminal starts; phone discovers and replays the same actor",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "edge-final-initial-replay-result.json",
+        "edge-final-corrected-gate-result.json"
+      ]
+    },
+    {
+      "id": 2,
+      "requirement": "Attach during a real long-running task",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "edge-final-transport-result.json",
+        "edge-final-corrected-gate-result.json"
+      ]
+    },
+    {
+      "id": 3,
+      "requirement": "Phone prompt and response appear in interactive Terminal",
+      "status": "PASS_ACTUAL_SIMULATOR_AND_INTERACTIVE_TERMINAL",
+      "evidence": [
+        "edge-final-main-terminal-result.json",
+        "edge-final-main-terminal-rendered.txt"
+      ]
+    },
+    {
+      "id": 4,
+      "requirement": "Terminal prompt and response appear on phone",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "edge-final-initial-replay-result.json",
+        "edge-final-corrected-gate-result.json"
+      ]
+    },
+    {
+      "id": 5,
+      "requirement": "Controlled edit uses the same workspace",
+      "status": "LIVE_PROTOCOL_PASS",
+      "evidence": [
+        "edge-final-worktree-result.json"
+      ]
+    },
+    {
+      "id": 6,
+      "requirement": "Approve on phone and Terminal; execute once and clear everywhere",
+      "status": "LIVE_PROTOCOL_PASS_ACTUAL_UI_APPROVALS_PENDING_NATIVE_DETACH_FIX",
+      "evidence": [
+        "edge-final-approval-queue-result.json",
+        "edge-final-terminal-pending-detach-investigation.json"
+      ]
+    },
+    {
+      "id": 7,
+      "requirement": "Disconnect/reconnect phone mid-task without cancelling work",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "edge-final-transport-result.json",
+        "edge-final-corrected-gate-result.json"
+      ]
+    },
+    {
+      "id": 8,
+      "requirement": "iOS background/foreground recovery",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "edge-final-corrected-gate-result.json"
+      ]
+    },
+    {
+      "id": 9,
+      "requirement": "Near-simultaneous instructions are not dropped or duplicated",
+      "status": "PASS_LIVE_PROTOCOL",
+      "evidence": [
+        "edge-final-approval-queue-result.json"
+      ]
+    },
+    {
+      "id": 10,
+      "requirement": "Wrong secret rejected",
+      "status": "PASS_INDEPENDENT_LIVE_CHECK",
+      "evidence": [
+        "edge-final-endpoint-health-auth-result.json"
+      ]
+    }
+  ],
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "knownFailure": "Native graceful Terminal departure while a shared permission is pending fails that permission; fix/build/retest in progress."
+}

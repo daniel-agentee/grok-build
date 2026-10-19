@@ -1,0 +1,12 @@
+{
+  "obsoleteNativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "verifiedOwnedPIDsSignalled": [
+    25870,
+    37196,
+    25751,
+    25353
+  ],
+  "remainingPIDs": [],
+  "idleOwnedResidentActorsBeforeShutdown": 2,
+  "finalD419AndOriginal64bRuntimePreserved": true
+}

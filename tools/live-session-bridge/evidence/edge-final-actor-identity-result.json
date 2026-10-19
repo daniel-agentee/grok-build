@@ -1,0 +1,26 @@
+{
+  "sessionId": "01a150c2-f182-7953-bc59-efd416c96d8e",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "connectedCloseRevokesSocket4409": true,
+    "connectedReplacementRejectsCachedActor": true,
+    "explicitSelectionGetsNewActorIdentity": true,
+    "offlineCloseAndColdRestoreRejectCachedActor": true,
+    "offlineExplicitSelectionGetsNewIdentity": true,
+    "nativeStalePromptRejected": true,
+    "nativeStaleModelRejected": true,
+    "nativeStaleCancelDoesNotCancelReplacementTask": true,
+    "rejectedStalePromptAbsentFromHistory": true
+  },
+  "files": [
+    "edge-identity-started-1792356343398101000.txt",
+    "edge-identity-finished-1792356343398101000.txt"
+  ],
+  "actorIds": [
+    "01a150c2-f2d8-74c2-91b6-9eb27b38d114",
+    "01a150c3-2072-7bf0-a2f3-7a88ea63b827",
+    "01a150c3-5093-76f2-b3cd-4971a1f8a573"
+  ],
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

@@ -1,3 +1,4 @@
+// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
 use super::system_prompt::{
     RequestedSystemPrompt, read_session_or_init_meta_str, requested_system_prompt,
 };
@@ -1224,6 +1225,7 @@ pub(super) fn make_test_handle(
         hunk_cancel,
     );
     crate::session::SessionHandle {
+        resident_actor_id: uuid::Uuid::now_v7(),
         context_window_selection: Default::default(),
         cmd_tx,
         persistence_tx,

@@ -1,0 +1,11 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+  "phonePrompt": "EDGE-UI-9114E657",
+  "phoneAnswer": "ACK-EDGE-UI-9114E657",
+  "checks": {
+    "actualInteractiveTerminalObservedPhonePrompt": true,
+    "actualInteractiveTerminalObservedPhoneAnswer": true,
+    "actualSimulatorMissingAttachDraftRecoveryResidentPickerAndThreeForegroundCyclesPassed": true
+  }
+}

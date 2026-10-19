@@ -1,0 +1,23 @@
+{
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "actorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "agentInstance": "293a484c-2975-47d2-ad5b-74392dc035d9",
+  "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project",
+  "model": "grok-4.7-build-fast",
+  "reasoningEffort": "high",
+  "checks": {
+    "actualTerminalSeedAndACKReplayedOnce": true,
+    "nativeReplayEventIdsUnique": true,
+    "workspaceMatches": true,
+    "defaultPermissionsPreserved": true,
+    "residentActor": true,
+    "simultaneousNumericAndStringIDsRemainDistinct": true
+  },
+  "seedEventIds": [
+    "01a150de-fd8f-7d20-a68e-b28a5aa332e9-4",
+    "01a150de-fd8f-7d20-a68e-b28a5aa332e9-20"
+  ],
+  "eventIdCount": 10
+}

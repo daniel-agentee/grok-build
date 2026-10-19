@@ -1,0 +1,131 @@
+{
+  "nativeSource": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+  "nativeVersion": "1.0.45",
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "endpoint": "ws://192.168.178.150:18797/ws",
+  "simulatorEndpoint": "ws://127.0.0.1:18797/ws",
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "physicalDevice": "UNVERIFIED",
+  "cases": [
+    {
+      "id": 1,
+      "requirement": "Terminal starts; phone discovers and replays the same actor",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "verified-final/initial-seed-identity-config.json",
+        "verified-final/actual-simulator-gate-native-replay.json"
+      ]
+    },
+    {
+      "id": 2,
+      "requirement": "Attach during a real long-running task",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "verified-final/actual-simulator-gate-native-replay.json"
+      ]
+    },
+    {
+      "id": 3,
+      "requirement": "Phone prompt and response appear in interactive Terminal",
+      "status": "PASS_ACTUAL_SIMULATOR_AND_INTERACTIVE_TERMINAL",
+      "evidence": [
+        "verified-final/actual-terminal-render-result.json",
+        "verified-final/actual-terminal-render-rendered.txt"
+      ]
+    },
+    {
+      "id": 4,
+      "requirement": "Terminal prompt and response appear on phone",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "verified-final/actual-simulator-gate-native-replay.json"
+      ]
+    },
+    {
+      "id": 5,
+      "requirement": "Controlled edit uses the same workspace",
+      "status": "LIVE_PROTOCOL_PASS",
+      "evidence": [
+        "verified-final/worktree.json"
+      ]
+    },
+    {
+      "id": 6,
+      "requirement": "Approve on phone and Terminal; execute once and clear everywhere",
+      "status": "PASS_ACTUAL_SIMULATOR_AND_INTERACTIVE_TERMINAL",
+      "evidence": [
+        "verified-final/phone-permission.json",
+        "verified-final/terminal-permission.json",
+        "verified-final/approval-queue.json"
+      ]
+    },
+    {
+      "id": 7,
+      "requirement": "Disconnect/reconnect phone mid-task without cancelling work",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "verified-final/actual-simulator-gate-native-replay.json",
+        "verified-final/transport.json"
+      ]
+    },
+    {
+      "id": 8,
+      "requirement": "iOS background/foreground recovery",
+      "status": "PASS_LIVE_CLI_AND_ACTUAL_SIMULATOR",
+      "evidence": [
+        "verified-final/actual-simulator-gate-native-replay.json"
+      ]
+    },
+    {
+      "id": 9,
+      "requirement": "Near-simultaneous instructions are not dropped or duplicated",
+      "status": "PASS_LIVE_PROTOCOL",
+      "evidence": [
+        "verified-final/approval-queue.json"
+      ]
+    },
+    {
+      "id": 10,
+      "requirement": "Wrong secret rejected",
+      "status": "PASS_ACTUAL_SIMULATOR_AND_INDEPENDENT_HTTP401_CHECK",
+      "evidence": [
+        "verified-final/independent-health-auth.json"
+      ]
+    }
+  ],
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "residentActorId": "01a150de-ffe8-7341-865e-53ae759c7c0f",
+  "finalEdgeEvidence": [
+    "verified-final/terminal-detach-sigterm.json",
+    "verified-final/terminal-detach-sigkill.json",
+    "verified-final/actor-identity.json",
+    "verified-final/worktree.json",
+    "verified-final/approval-queue.json",
+    "verified-final/transport.json"
+  ],
+  "supportingPredecessorEvidence": {
+    "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+    "sameSimulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+    "evidence": [
+      "edge-final-longstream-filtered-native-result.json",
+      "edge-final-delayed-selection-native-result.json",
+      "edge-final-lifecycle-ui-supporting-result.json"
+    ],
+    "note": "Supporting unchanged app features; not fresh D419 executions."
+  },
+  "finalContextReturnEvidence": [
+    "verified-final/actual-terminal-return.json",
+    "verified-final/actual-terminal-return-rendered.txt",
+    "verified-final/final-idle-default-permissions.json"
+  ],
+  "structuredInteractionEvidence": [
+    "verified-final/question.json",
+    "verified-final/plan.json"
+  ],
+  "simulatorUITests": {
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0,
+    "independentXCResultInspection": true
+  }
+}

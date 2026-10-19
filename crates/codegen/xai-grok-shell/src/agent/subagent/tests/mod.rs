@@ -1,3 +1,4 @@
+// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
 #![cfg_attr(rustfmt, rustfmt::skip)]
 use super::*;
 use crate::session::SessionThread;
@@ -221,6 +222,7 @@ fn wedged_child_handle() -> (
     );
     let (signals_handle, signals_actor) = crate::session::signals::SessionSignalsActor::new();
     let handle = SessionHandle {
+        resident_actor_id: uuid::Uuid::now_v7(),
         context_window_selection: Default::default(),
         cmd_tx,
         persistence_tx,

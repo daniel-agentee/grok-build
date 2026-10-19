@@ -1,0 +1,98 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "sessionId": "01a150c3-8ed0-76e3-a565-92636eacef27",
+  "toolCallId": "call-4e2250d4-79b5-462a-b622-f1a1bae16ff5-3",
+  "timeline": {
+    "pending": 1792357456.918736,
+    "secondaryStarted": 1792357456.921698,
+    "afterAttach": 1792357466.92452,
+    "sigterm": 1792357466.92467
+  },
+  "turnFinishedBeforeSecondaryQuit": false,
+  "turnFinishedAfterSecondaryQuitBeforeApproval": true,
+  "fileExists": false,
+  "failedTools": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "01a150c3-8ed0-76e3-a565-92636eacef27",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call-4e2250d4-79b5-462a-b622-f1a1bae16ff5-3",
+          "status": "failed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Failed to request permission from user: failed to request permission for tool `run_terminal_command`"
+              }
+            }
+          ]
+        },
+        "_meta": {
+          "totalTokens": 123029,
+          "eventId": "01a150c3-8ed0-76e3-a565-92636eacef27-824",
+          "agentTimestampMs": 1792357466931,
+          "promptId": "6d7772db-484e-42c9-8832-dd1e27e32bcc",
+          "streamStartMs": 1792357451629,
+          "turnStartMs": 1792357450857,
+          "updateType": "ToolCallUpdate",
+          "updateParams": {
+            "toolCallId": "call-4e2250d4-79b5-462a-b622-f1a1bae16ff5-3",
+            "status": "Failed"
+          }
+        }
+      }
+    }
+  ],
+  "promptResult": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "cancelled",
+      "_meta": {
+        "sessionId": "01a150c3-8ed0-76e3-a565-92636eacef27",
+        "requestId": "6d7772db-484e-42c9-8832-dd1e27e32bcc",
+        "promptId": "6d7772db-484e-42c9-8832-dd1e27e32bcc",
+        "totalTokens": 123029,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 122925,
+        "outputTokens": 97,
+        "cachedReadTokens": 122752,
+        "reasoningTokens": 25,
+        "usage": {
+          "inputTokens": 122925,
+          "outputTokens": 97,
+          "totalTokens": 123022,
+          "cachedReadTokens": 122752,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 25,
+          "modelCalls": 1,
+          "apiDurationMs": 4856,
+          "costUsdTicks": 423667200,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 122925,
+              "outputTokens": 97,
+              "totalTokens": 123022,
+              "cachedReadTokens": 122752,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 25,
+              "modelCalls": 1,
+              "apiDurationMs": 4856,
+              "costUsdTicks": 423667200
+            }
+          },
+          "numTurns": 1
+        },
+        "cancellationCategory": "PermissionRejected",
+        "cancellationContext": {
+          "tool_name": "run_terminal_command",
+          "reason": "Failed to request permission from user: failed to request permission"
+        }
+      }
+    }
+  }
+}

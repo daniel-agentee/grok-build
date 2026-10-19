@@ -1,0 +1,13 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150a8-8a2e-78c0-bef7-19b86d4a8cf1",
+  "checks": {
+    "terminalProcessDetachedWithPhoneProtocolAttached": true,
+    "sameActorRemainedResident": true,
+    "websocketStayedConnectedDuringNewTerminalAttach": true,
+    "phonePromptSubmittedDuringTerminalTransition": true,
+    "freshInteractiveTerminalObservedPhonePrompt": true,
+    "newInteractiveTerminalRecalledPhoneACKFromSameContext": true,
+    "terminalReplyObservedOnStillSameMobileProtocol": true
+  }
+}

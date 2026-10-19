@@ -1,0 +1,18 @@
+{
+  "sessionId": "01a150c3-8ed0-76e3-a565-92636eacef27",
+  "checks": {
+    "duplicatePendingPromptCloses1008": true,
+    "acceptedPromptContinuesExactlyOnce": true,
+    "bridgeRestartWhileToolRuns": true,
+    "sameAgentInstanceAfterRestart": true,
+    "toolCompletedOnceDuringTransportLoss": true
+  },
+  "agentInstanceId": "3192097e-7756-49b2-8d43-2f584398501e",
+  "duplicateMarker": "EDGE-DUPLICATE-1792356496",
+  "restartFiles": [
+    "edge-restart-started-1792356496.txt",
+    "edge-restart-finished-1792356496.txt"
+  ],
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

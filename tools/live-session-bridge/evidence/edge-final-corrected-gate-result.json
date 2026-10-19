@@ -1,0 +1,32 @@
+{
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "simulatorAppSHA256": "2c4d708c3252f3bc48e21e30518586b0351a24a592248392583ab6f969d7158e",
+  "sessionId": "01a150c2-68a1-7f40-9a9b-ef146f772b08",
+  "actorId": "01a150c2-6b38-7592-8a41-117713a5ac43",
+  "gate": {
+    "started": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-final-corrected-ui-gate-1792357065822845000.started",
+    "release": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-final-corrected-ui-gate-1792357065822845000.release",
+    "finished": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-final-corrected-ui-gate-1792357065822845000.finished",
+    "script": "/Users/danielstojanovic/code/_tools/grok-live-switching/disposable-project/edge-final-corrected-ui-gate-1792357065822845000.py",
+    "ack": "MAC-CORRECTED-FINAL-1792357065822845000",
+    "marker": "LIVE-FROM-MAC-CORRECTED-1792357065822845000"
+  },
+  "checks": {
+    "actualTerminalSubmittedDistinctGate": true,
+    "actualTerminalAllowedOnce": true,
+    "startedBeforeActualSimulatorWatcher": true,
+    "actualSimulatorHomeForegroundObservedStillRunning": true,
+    "releasedAfterActualSimulatorForegroundProof": true,
+    "fileFinishedExactlyOnce": true,
+    "freshReplayUniqueGateACKThenNewActualPhonePromptThenNewResponse": true,
+    "freshReplayNativeEventIdsUnique": true
+  },
+  "newPhonePromptCount": 2,
+  "newPhoneACKCount": 2,
+  "orderedReplayIndexes": {
+    "gateACK": 11,
+    "newPhonePrompt": 12,
+    "newPhoneResponse": 13
+  },
+  "freshReplayEventIds": 19
+}

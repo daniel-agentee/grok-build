@@ -1,0 +1,13 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+  "surface": "phone",
+  "filename": "edge-strict-phone-1792354910.txt",
+  "ack": "EDGE-STRICT-PHONE-DONE-1792354910",
+  "toolCallId": "call-7362598a-e008-4055-8450-b33c599c2c0d-4",
+  "checks": {
+    "fileAbsentUntilRealPermissionDecision": true,
+    "effectExactlyOnce": true,
+    "freshReplayNoStalePermission": true
+  }
+}

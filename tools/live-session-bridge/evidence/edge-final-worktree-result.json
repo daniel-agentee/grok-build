@@ -1,0 +1,18 @@
+{
+  "sessionId": "01a150c6-3db1-7372-a0cf-c22b13ac8d72",
+  "parentSessionId": "01a150c6-3c3f-75c3-aecd-3010dde25d75",
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "realGitWorktreeWithNativeSessionFork": true,
+    "rosterDisplayCwdDiffersFromActualExecutionCwd": true,
+    "displayCwdRejectedByNativeAtomicGuard": true,
+    "twoMobileClientsAttachedSameNativeWorktreeActor": true,
+    "approvedEditExecutedOnceOnlyInActualWorktree": true
+  },
+  "rosterDisplayCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/edge-worktree-fixture-1792356200",
+  "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/edge-worktree-fixture-1792356200/.worktrees/mobile-edge",
+  "residentActorId": "01a150c6-405d-7353-acdf-b53bd61c81d2",
+  "filename": "edge-worktree-1792356536088517000.txt",
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

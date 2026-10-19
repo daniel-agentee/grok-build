@@ -1,0 +1,12 @@
+{
+  "nativeVersion": "1.0.45",
+  "checks": {
+    "numericAndStringRPCIdsCorrelateSeparately": true
+  },
+  "ids": [
+    9,
+    "9"
+  ],
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

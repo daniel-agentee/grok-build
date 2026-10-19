@@ -1,0 +1,28 @@
+{
+  "sessionId": "01a15067-0f81-76e0-aeb4-4c00f40a9afb",
+  "nativeVersion": "1.0.62",
+  "checks": {
+    "twoRealRequestsIssued": true,
+    "twoSimultaneouslyOutstanding": false,
+    "bothExecutionsExactlyOnce": true,
+    "bothResolutionsBroadcastEverywhere": true
+  },
+  "toolCallIds": [
+    "call-c0de260d-9b30-42b9-b766-e5c604fae6f5-6",
+    "call-c0de260d-9b30-42b9-b766-e5c604fae6f5-7"
+  ],
+  "files": [
+    "edge-parallel-1792354139-0.txt",
+    "edge-parallel-1792354139-1.txt"
+  ],
+  "approvalSurface": "external clients",
+  "note": "Native child experiment required two parent spawn approvals followed by two child shell approvals. No true simultaneous outstanding requests observed; no Simulator child-approval claim.",
+  "childToolCallIds": [
+    "call-339a20a9-3ded-4795-bac4-f24bbad7de97-0",
+    "call-b8ad4780-62eb-4040-99e1-5a85403a1c79-0"
+  ],
+  "childRequestingSessionIds": [
+    "01a150a2-d145-71d1-b3f3-467272142e08",
+    "01a150a2-d144-7050-9177-6731d415952a"
+  ]
+}

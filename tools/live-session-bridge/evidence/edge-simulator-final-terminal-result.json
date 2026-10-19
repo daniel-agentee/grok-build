@@ -1,0 +1,12 @@
+{
+  "sessionId": "01a15067-0f81-76e0-aeb4-4c00f40a9afb",
+  "terminalSurface": "interactive stock Grok TUI in PTY 3313",
+  "phoneSurface": "actual iPhone 17 Simulator XCUITest",
+  "promptMarker": "EDGE-UI-8BCD3BC6",
+  "responseMarker": "ACK-EDGE-UI-8BCD3BC6",
+  "checks": {
+    "phonePromptVisibleInTerminalOutput": true,
+    "phoneAcknowledgementVisibleInTerminalOutput": true
+  },
+  "qualification": "Stock 1.0.62 runtime; final connected-indicator Simulator edge run."
+}

@@ -1,4 +1,5 @@
 //! Unit-level resume and close: request translation, kind resolution, and close ordering.
+//! Modified 2026-10-18: resident-only attachment and close-race regressions.
 //! Protocol behavior is asserted on the wire in `tests/acp_session_setup_wire.rs`.
 use crate::agent::mvp_agent::session_lifecycle::{
     CLOSE_INTAKE_WAIT, CLOSE_TOTAL_BUDGET, CloseOutcome,
@@ -116,6 +117,221 @@ fn resume_translation_does_not_rewrite_client_meta() {
         )),
         expected_load(json!({ "noReplay": false, "x.ai/restore_code": true })),
     );
+}
+
+fn resident_request(sid: &acp::SessionId, cwd: &std::path::Path) -> acp::LoadSessionRequest {
+    acp::LoadSessionRequest::new(sid.clone(), cwd.to_path_buf()).meta(meta_of(
+        json!({"x.ai/resident_only": true, "x.ai/restore_code": false}),
+    ))
+}
+
+#[test]
+fn resident_only_load_rejects_missing_actor_before_history_access() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("missing-live-actor");
+        let error = agent
+            .load_session_inner(resident_request(&sid, std::path::Path::new("/tmp")))
+            .await
+            .expect_err("a live-only attach must not initialize or restore history");
+        assert_eq!(
+            error.data,
+            Some(json!(super::super::session_setup::RESIDENT_ONLY_REFUSAL))
+        );
+        assert!(!agent.is_resident(&sid));
+    });
+}
+
+#[test]
+fn resident_only_load_reuses_the_exact_running_actor() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        agent.with_resident_mut(&sid, |handle| {
+            handle.initial_client_mcp_servers = mcp_servers();
+            handle.code_nav_enabled = true;
+            handle.model_id = acp::ModelId::new("live-model-choice");
+            handle
+                .context_window_selection
+                .store(65536, std::sync::atomic::Ordering::Relaxed);
+            handle.set_status_line_wanted(true);
+            handle.set_user_message_echo_wanted(true);
+        });
+        agent.set_turn_number(&sid, 91);
+        let before = agent.resident_handle(&sid).expect("new actor");
+        let loaded = agent
+            .load_session_inner(resident_request(&sid, cwd.path()))
+            .await
+            .expect("live attach");
+        assert_eq!(
+            loaded.meta.as_ref().unwrap()["x.ai/residentActorId"],
+            json!(before.resident_actor_id.to_string())
+        );
+        let after = agent.resident_handle(&sid).expect("same actor remains");
+        assert!(before.cmd_tx.same_channel(&after.cmd_tx));
+        assert_eq!(
+            after.initial_client_mcp_servers,
+            before.initial_client_mcp_servers
+        );
+        assert!(after.code_nav_enabled);
+        assert_eq!(after.model_id, before.model_id);
+        assert_eq!(
+            after
+                .context_window_selection
+                .load(std::sync::atomic::Ordering::Relaxed),
+            65536
+        );
+        assert!(
+            after
+                .client_caps
+                .status_line
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+        assert!(
+            after
+                .client_caps
+                .user_message_echo
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+        assert_eq!(agent.allocate_turn_number(&sid), 91);
+        agent.remove_session(&sid);
+    });
+}
+
+#[test]
+fn resident_only_actor_token_rejects_replacement_controls_before_await() {
+    use agent_client_protocol::Agent;
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("same-persisted-id-new-actor");
+        let (original, _tx, _rx) = super::make_live_session_handle(&sid, None);
+        let original_id = original.resident_actor_id;
+        assert_eq!(original.clone().resident_actor_id, original_id);
+        agent.insert_resident(&sid, original);
+        let metadata = meta_of(json!({"x.ai/residentActorId": original_id.to_string()}));
+        assert!(
+            agent
+                .resident_actor_target(&sid, Some(&metadata))
+                .unwrap()
+                .is_some()
+        );
+        let (replacement, _new_tx, mut replacement_rx) =
+            super::make_live_session_handle(&sid, None);
+        assert_ne!(replacement.resident_actor_id, original_id);
+        agent.insert_resident(&sid, replacement);
+        let mut load = resident_request(&sid, std::path::Path::new("/tmp"));
+        load.meta.as_mut().unwrap().extend(metadata.clone());
+        assert!(agent.load_session_inner(load).await.is_err());
+        assert!(
+            agent
+                .prompt(acp::PromptRequest::new(sid.clone(), vec![]).meta(metadata.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            agent
+                .cancel(acp::CancelNotification::new(sid.clone()).meta(metadata.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            agent
+                .set_session_model(
+                    acp::SetSessionModelRequest::new(sid.clone(), acp::ModelId::new("unused"))
+                        .meta(metadata)
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "stale controls cannot reach replacement actor"
+        );
+    });
+}
+
+#[test]
+fn resident_only_load_rejects_close_during_await_without_cold_restore() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        let (attach, reached, release) = super::with_pause_at(
+            super::AttachPause::BeforeResidentCheck,
+            agent.load_session_inner(resident_request(&sid, cwd.path())),
+        );
+        let close = async {
+            reached
+                .await
+                .expect("load has captured a live actor and awaited replay setup");
+            assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+            assert!(!agent.is_resident(&sid));
+            release.send(()).expect("release attach");
+        };
+        let (result, ()) = tokio::join!(attach, close);
+        assert_eq!(
+            result.expect_err("cannot restore after close").data,
+            Some(json!(super::super::session_setup::RESIDENT_ONLY_REFUSAL))
+        );
+        assert!(
+            !agent.is_resident(&sid),
+            "no replacement actor may be created"
+        );
+    });
+}
+
+#[test]
+fn resident_only_target_rejects_replacement_and_workspace_change() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("replaced-live-actor");
+        let (original, _tx, _rx) = super::make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, original);
+        let target = agent
+            .resident_only_attach_target(&resident_request(&sid, std::path::Path::new("/tmp")))
+            .expect("capture original");
+        assert!(
+            agent
+                .resident_only_attach_target(&resident_request(
+                    &sid,
+                    std::path::Path::new("/wrong")
+                ))
+                .is_err()
+        );
+        let (replacement, _new_tx, _new_rx) = super::make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, replacement);
+        assert!(
+            agent
+                .verify_resident_only_attach_target(&sid, target.as_ref())
+                .is_err()
+        );
+    });
+}
+
+#[test]
+fn resident_only_target_rejects_closed_actor_and_invalid_flag() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("exited-live-actor");
+        let (handle, _tx, rx) = super::make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, handle);
+        drop(rx);
+        let request = resident_request(&sid, std::path::Path::new("/tmp"));
+        assert!(agent.resident_only_attach_target(&request).is_err());
+        let invalid = request
+            .clone()
+            .meta(meta_of(json!({"x.ai/resident_only": "true"})));
+        assert!(agent.resident_only_attach_target(&invalid).is_err());
+        // Existing clients retain ordinary load behavior unless they opt in.
+        let legacy = request.meta(meta_of(json!({"x.ai/resident_only": false})));
+        assert!(
+            agent
+                .resident_only_attach_target(&legacy)
+                .unwrap()
+                .is_none()
+        );
+    });
 }
 /// A chat load rebuilds the session under the same id, so a close waiting on intake can find a live replacement with a client attached.
 /// Closing by id alone ends that replacement; this pins that it does not.

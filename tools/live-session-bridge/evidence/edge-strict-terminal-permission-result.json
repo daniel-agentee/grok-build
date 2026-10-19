@@ -1,0 +1,13 @@
+{
+  "nativeVersion": "1.0.45",
+  "sessionId": "01a150a3-00c6-75b2-9b04-80cddfb159ef",
+  "surface": "terminal",
+  "filename": "edge-strict-terminal-1792355056.txt",
+  "ack": "EDGE-STRICT-TERMINAL-DONE-1792355056",
+  "toolCallId": "call-3a00a7f0-c718-4028-a20e-029a82e93602-5",
+  "checks": {
+    "fileAbsentUntilRealPermissionDecision": true,
+    "effectExactlyOnce": true,
+    "freshReplayNoStalePermission": true
+  }
+}

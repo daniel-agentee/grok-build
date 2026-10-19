@@ -1,0 +1,62 @@
+{
+  "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+  "nativeVersion": "1.0.45",
+  "kind": "plan",
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "edge-104",
+    "result": {
+      "stopReason": "end_turn",
+      "_meta": {
+        "sessionId": "01a150de-fd8f-7d20-a68e-b28a5aa332e9",
+        "requestId": "e960bb61-9690-466c-b386-361827074ed8",
+        "promptId": "e960bb61-9690-466c-b386-361827074ed8",
+        "totalTokens": 127123,
+        "modelId": "grok-4.7-build-fast",
+        "inputTokens": 127056,
+        "outputTokens": 58,
+        "cachedReadTokens": 126848,
+        "reasoningTokens": 53,
+        "usage": {
+          "inputTokens": 504776,
+          "outputTokens": 1588,
+          "totalTokens": 506364,
+          "cachedReadTokens": 502528,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 1421,
+          "modelCalls": 4,
+          "apiDurationMs": 14407,
+          "costUsdTicks": 1803958400,
+          "modelUsage": {
+            "grok-4.7-build-fast": {
+              "inputTokens": 504776,
+              "outputTokens": 1588,
+              "totalTokens": 506364,
+              "cachedReadTokens": 502528,
+              "cacheCreationTokens": 0,
+              "reasoningTokens": 1421,
+              "modelCalls": 4,
+              "apiDurationMs": 14407,
+              "costUsdTicks": 1803958400
+            }
+          },
+          "numTurns": 4
+        }
+      }
+    }
+  },
+  "interactionMethods": [
+    "_x.ai/exit_plan_mode"
+  ],
+  "completed": true,
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "nativeToolResult": {
+    "type": "ExitPlanMode",
+    "PlanReady": {
+      "message": "Your plan has been approved. You can now start coding.",
+      "plan_content": "# Verify the existing shared session\n\nVerify the existing shared session and report completion. No files or commands are needed.\n",
+      "plan_file_path": "/Users/danielstojanovic/.grok/sessions/%2FUsers%2Fdanielstojanovic%2Fcode%2F_tools%2Fgrok-live-switching%2Fdisposable-project/01a150de-fd8f-7d20-a68e-b28a5aa332e9/plan.md"
+    }
+  },
+  "normalPermissionsAfterPlan": true
+}

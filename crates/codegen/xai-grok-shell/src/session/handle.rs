@@ -1,3 +1,4 @@
+// Modified 2026-10-18: identify resident actor incarnations across mobile reconnects.
 //! `SessionHandle`: the `Clone + Send` proxy for interacting with a session actor.
 //!
 //! Callers hold a `SessionHandle` and send `SessionCommand` messages via the internal channel.
@@ -51,6 +52,8 @@ impl Drop for WorkGuard {
 }
 #[derive(Clone)]
 pub struct SessionHandle {
+    /// Ephemeral identity; a cold restore of the same persisted session gets a new UUID.
+    pub resident_actor_id: uuid::Uuid,
     pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub(crate) persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     /// Shared with the actor so external cancellation can target subagents launched by the active turn only.

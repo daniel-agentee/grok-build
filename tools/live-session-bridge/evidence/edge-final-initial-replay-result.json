@@ -1,0 +1,14 @@
+{
+  "sessionId": "01a150c2-68a1-7f40-9a9b-ef146f772b08",
+  "nativeVersion": "1.0.45",
+  "agentInstanceId": "3192097e-7756-49b2-8d43-2f584398501e",
+  "residentActorId": "01a150c2-6b38-7592-8a41-117713a5ac43",
+  "checks": {
+    "actualTerminalSeedPromptReplayed": true,
+    "actualTerminalSeedAckReplayed": true,
+    "uniqueEventIds": true
+  },
+  "eventCount": 5,
+  "nativeSHA256": "3aca4aaf28022060a2c28a4c8e81656e9c772a6c194649649a1fa321574011e0",
+  "leaderSocket": "/Users/danielstojanovic/.grok/leader-mobile-actor-final.sock"
+}

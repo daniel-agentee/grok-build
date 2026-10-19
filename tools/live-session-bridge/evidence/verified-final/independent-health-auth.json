@@ -1,0 +1,16 @@
+{
+  "observer": "root independent verification",
+  "nativeSHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "endpoint": "http://127.0.0.1:18797",
+  "health": {
+    "transport": "grok-leader-ipc",
+    "protocol": 1,
+    "leaderAvailable": true
+  },
+  "wrongBearerHttpStatus": 401,
+  "checks": {
+    "nativeLeaderAvailable": true,
+    "wrongSecretRejected": true,
+    "bothWorkflowsActionlintPassed": true
+  }
+}

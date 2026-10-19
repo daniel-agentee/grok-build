@@ -1,4 +1,5 @@
 //! Fault injection for tests of the attach and recovery paths.
+//! Modified 2026-10-18: deterministic close-during-live-attach regression point.
 //! Environment-driven hooks ship in the binary and are inert unless their variable is set (one env
 //! read at the hook site). `#[cfg(test)]` pause points compile out: a task-local slot parks the
 //! attach future.
@@ -13,6 +14,7 @@ pub(crate) enum AttachPause {
     AfterSpawn,
     AfterInstall,
     BeforeRelease,
+    BeforeResidentCheck,
 }
 
 #[cfg(test)]
