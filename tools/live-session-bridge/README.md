@@ -1,7 +1,9 @@
 # Live Grok session bridge
 
 A small authenticated WebSocket transport for **one existing native Grok leader**.
-It creates no `MvpAgent`, model connection, session, or conversation history store.
+It creates no `MvpAgent`, model connection, or conversation history store.
+An explicit mobile **New session** request creates a fresh session on that existing
+leader, with the Mac's normal workspace trust and permission checks.
 The Terminal and iOS clients subscribe to the same resident session actor through
 Grok's existing local leader, and tools execute on the Mac in that actor's workspace.
 
@@ -30,9 +32,10 @@ Earlier live tests used installed stock **1.0.62 (1474f9cbdd91)**, SHA256
 Those results are historical and identified separately in the evidence. Stock
 1.0.62 demonstrably cold-restored a session when explicit close raced attachment;
 the final strict bridge refuses stock leaders that lack the new native capability.
-See [STRICT_LIVE_TEST_RESULTS.md](STRICT_LIVE_TEST_RESULTS.md) for final patched
-artifact acceptance, retained endpoints/session and reconnection commands. Any
-stock 1.0.62 results elsewhere in this directory are historical only.
+See [STRICT_LIVE_TEST_RESULTS.md](STRICT_LIVE_TEST_RESULTS.md) for historical
+D419 strict-attachment acceptance, retained endpoints/session and reconnection
+commands. The final bounded-runtime evidence is linked at the end of this README.
+Any stock 1.0.62 results elsewhere in this directory are historical only.
 
 Start the conversation using the provided pinned leader launcher below. Both
 Terminal and bridge must connect to that same patched native leader. An already
@@ -73,10 +76,14 @@ python3 tools/live-session-bridge/pin_build.py
 Then, from this directory:
 
 The reproducible build writes `target/debug/xai-grok-pager`; the launcher checks
-that output against the exact manifest hash. The separately preserved final
-demonstration executable is `target/verified-switching-final/xai-grok-pager` with
-the same hash. Use the immutable path when returning to the retained verification
-runtime, as shown in `STRICT_LIVE_TEST_RESULTS.md`.
+that output against the exact manifest hash. The session-feature verification
+copy is `target/verified-session-features-mcp-bounded/xai-grok-pager`.
+The earlier demonstration executable remains separately preserved at
+`target/verified-switching-final/xai-grok-pager`, SHA256
+`d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab`.
+Its original manifest and patch are retained as `evidence/d419-build-manifest.json`
+and `evidence/d419-resident-only-attach.patch`; its historical live evidence in
+`STRICT_LIVE_TEST_RESULTS.md` does not verify the newer MCP containment patch.
 
 ```sh
 python3 -m venv .venv
@@ -158,6 +165,87 @@ needed. `/health` probes bounded native registration and reports transport avail
 without session or credential data, including rejection of stale socket files.
 Select a **resident** session; the app must pass its actual absolute `cwd`.
 
+The phone may also create a fresh session by selecting an existing absolute Mac
+workspace directory. The request is native ACP `session/new` with `cwd`, empty
+`mcpServers`, and empty `_meta`; arbitrary configuration, permission overrides,
+caller-chosen session identity and injected tools are rejected. Directory
+symlinks are resolved to an existing readable/searchable directory before
+forwarding. This does not grant project trust or alter inherited policy.
+The leader returns a new `sessionId` and its actual `currentWorkingDirectory`.
+The phone must then perform the same strict resident-only `session/load` as for
+Terminal-created sessions, obtaining the resident actor UUID before controlling it.
+To use a phone-created session in Terminal, use its SID in the `--resume LIVE_SID`
+command above with that workspace and the same native leader socket.
+
+Only one unresolved create is forwarded per WebSocket connection. A lost response
+is **uncertain**, not evidence of failure: reconnect and inspect the live picker
+before deliberately creating another session. Neither bridge nor client should
+retry creation automatically. Disconnecting the phone does not cancel a create
+already accepted by the native leader.
+
+Mobile-created sessions have a dedicated bridge-owned native subscriber. The
+creator connection is retained before its SID is returned, so losing the sole
+phone viewer, including before the creation response arrives, cannot trigger
+native idle-session eviction. This owner only drains notifications; it never
+answers permissions, sends prompts, grants trust or cancels work. Approvals remain
+pending for a real client and replay when that client reconnects.
+
+Ownership is bounded to **eight mobile-created sessions per bridge process**,
+including pending creations. The ninth is rejected before another actor is
+created. A creation/authentication error, explicit native session-end event or
+leader connection failure releases its slot. Close a created session explicitly
+from the Mac's session controls to release it. Merely leaving the conversation
+or switching sessions does not close it. Existing Terminal-created sessions gain
+no extra lifetime owner. The bridge keeps no history copy and never reconnects an
+owner to a replacement actor.
+
+**Keep the bridge running for phone-created session continuity.** Bridge shutdown
+closes its owner connections without cancellation. Native Grok may then unload
+an idle mobile-only actor; a bridge restart cannot preserve that live actor, and
+strict mobile reattachment will refuse a saved SID whose actor has ended. Attach
+Terminal to a created SID before bridge maintenance when uninterrupted residency
+is required. Pending requests reserve their bounded slot until the native create
+settles, that native connection ends, or the absolute 30-second native reply
+deadline expires. A caller timeout never triggers another creation. If the native
+creation result is unknown, the bridge closes the caller's transport instead of
+returning a false definite rejection; the app requires checking Live sessions
+before another creation. The abandoned owner connection is closed and its slot
+released. Explicit native validation or authentication errors remain definite
+rejections on the existing phone connection.
+
+Native stdio MCP startup includes a bounded OS-launch phase. A process-wide limit
+of four launches leaves the session runtime's blocking workers available for
+prompt history and other controls. An identical launch in the same actor cannot
+retry while its earlier OS call remains unresolved. The existing configured MCP
+startup timeout covers admission and OS launch; failures identify occupied launch
+capacity or an OS-launch deadline. Timeout or caller cancellation retains the
+launch slot until the OS call returns, and a late child is still cleaned up by
+the native process-group guard. MCP configuration, sandboxing and tool approvals
+are preserved.
+
+This contains a reproduced macOS process-launch stall; it does not establish why
+macOS left those children in the fork/exec transition. Four unresolved launches
+can leave additional stdio MCP servers unavailable until the OS calls return or
+the leader is maintained. Their startup errors remain visible while conversation
+and approval controls continue. Graceful native shutdown can still wait for an
+OS-blocked launch; the launch deadline does not terminate that OS call. Do not
+treat restarting a lost actor as live session recovery.
+
+After attachment, raw ACP `_x.ai/commands/list` accepts the attached `sessionId` and optional
+exact execution `cwd`; the native actor returns its current command/skill catalog
+as `{commands:[{name,description,input?,_meta?}],tools?}`. A skill command has native
+metadata such as `scope`, `path`, `bareName`, and `qualifiedName`. Use its advertised
+`name` verbatim in a `session/prompt` text block, for example `/local:review args`;
+the native resolver handles namespace collisions, eligibility and permissions.
+The Rust extension handler's logical name is `x.ai/commands/list`, but ACP's codec
+adds the leading underscore on the JSON-RPC wire. The bridge accepts the exact
+native wire spelling only; the unprefixed form produces native Method not found.
+`available_commands_update` supplies live catalog changes; pull the catalog after
+attachment because historical catalog updates are omitted from native replay.
+The bridge exposes no skill installation/toggle/config endpoints. It does not
+expose `x.ai/skills/list`, whose implementation rescans disk and refreshes every
+session's skill baseline; the session catalog already includes invocable skills.
+
 Both leader and Terminal must start with `--permission-mode default` for normal
 permission prompts. The pinned CLI uses the spelling
 `default`. A leader started under `always-approve` can keep that mode in a resident
@@ -206,7 +294,8 @@ and strips caller-controlled leader client identity. The native agent captures t
 resident command channel before its first await and checks that channel again
 before the cold-load branch and immediately before successful completion. A
 missing, closed, or replaced actor fails, including explicit close during an
-attachment await. Mobile `session/new` and `session/resume` are rejected. A leader
+attachment await. Deliberate mobile `session/new` uses the constrained creation
+path above; `session/resume` remains rejected. A leader
 restart requires selecting a live session again; history alone is insufficient.
 The bridge binds subsequent prompt, cancel and model controls to the returned
 actor UUID. iOS retains that assertion across automatic reconnect. If the phone
@@ -353,3 +442,28 @@ only after its surviving phone-protocol client explicitly allows once):
 Repeat with `--signal kill` to cover an abruptly lost Terminal. Both runs launch
 and stop only their own extra interactive Terminal; the original Terminal and
 resident actor remain available.
+
+## Session creation and native skills verification, 2026-10-20
+
+The current immutable native artifact is
+`target/verified-session-features-mcp-bounded/xai-grok-pager`, SHA256
+`f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc`.
+The bridge directory passed **72 automated tests**, including the 17 pin/launcher
+checks. The bounded MCP launch patch passed **six focused native tests**, covering
+blocked launch/cancellation and actual child-process cleanup/scope. See
+[evidence/session-features-bounded-mcp-tests.txt](evidence/session-features-bounded-mcp-tests.txt),
+[evidence/session-features-bounded-native-build.txt](evidence/session-features-bounded-native-build.txt)
+and the sanitized
+[launch-starvation diagnosis](evidence/session-features-native-starvation-diagnosis.json).
+The underlying macOS process-creation stall remains unresolved; containment keeps
+history workers available, while four OS-blocked launches can delay subsequent
+stdio MCP availability and shutdown can still wait for blocked OS calls.
+
+The paired iOS app's separate
+[live manifest](../../../grok-build-ios/tools/session-features-smoke/evidence/native-bounded-live/live-manifest.json)
+records actual Simulator/native runs, exact app/native hashes, resident actor
+identity and result bundles. Its
+[demonstration](../../../grok-build-ios/DEMO.md)
+shows session creation, native skill arguments and lifecycle/shared-client proofs.
+Historical D419 and earlier physical-device results are labeled separately; signed
+installation alone is not new-feature physical-device coverage.

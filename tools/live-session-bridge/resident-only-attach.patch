@@ -1,3 +1,362 @@
+diff --git a/crates/codegen/xai-grok-mcp/src/servers.rs b/crates/codegen/xai-grok-mcp/src/servers.rs
+index db48d8e..09acfba 100644
+--- a/crates/codegen/xai-grok-mcp/src/servers.rs
++++ b/crates/codegen/xai-grok-mcp/src/servers.rs
+@@ -1,4 +1,5 @@
+ //! MCP server integration using the official rmcp SDK.
++// Modified 2026-10-20: bound MCP process launch to preserve live-session responsiveness.
+ 
+ use std::collections::HashMap;
+ use std::ffi::OsString;
+@@ -2671,6 +2672,73 @@ pub struct SafeTokioChildProcess {
+     transport: ResilientRwTransport<tokio::process::ChildStdout, tokio::process::ChildStdin>,
+ }
+ 
++// OS process creation can itself block before a Child exists (for example in
++// fork/exec on macOS). Keep those calls below the session runtime's 16-worker
++// blocking pool, across all resident sessions. A timed-out call must retain its
++// slot until the OS call actually returns; releasing on timeout would allow
++// retries to exhaust the pool again.
++static STDIO_SPAWN_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
++    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
++static STDIO_LAUNCHES: LazyLock<
++    std::sync::Mutex<HashMap<(String, u64), std::sync::Weak<tokio::sync::Semaphore>>>,
++> = LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
++
++fn stdio_launch_slot(cmd: &Command, server_name: &str) -> Arc<tokio::sync::Semaphore> {
++    use std::hash::{Hash, Hasher};
++    // Retain only a private fingerprint, never command arguments or environment
++    // values. Session-specific env overrides distinguish independent actors.
++    let mut identity = std::collections::hash_map::DefaultHasher::new();
++    let command = cmd.as_std();
++    command.get_program().hash(&mut identity);
++    command.get_current_dir().hash(&mut identity);
++    for arg in command.get_args() {
++        arg.hash(&mut identity);
++    }
++    for entry in command.get_envs() {
++        entry.hash(&mut identity);
++    }
++    let mut launches = STDIO_LAUNCHES.lock().expect("MCP launch registry poisoned");
++    launches.retain(|_, slot| slot.strong_count() > 0);
++    let key = (server_name.to_owned(), identity.finish());
++    if let Some(slot) = launches.get(&key).and_then(std::sync::Weak::upgrade) {
++        return slot;
++    }
++    let slot = Arc::new(tokio::sync::Semaphore::new(1));
++    launches.insert(key, Arc::downgrade(&slot));
++    slot
++}
++
++async fn bounded_stdio_spawn<T: Send + 'static>(
++    slots: Vec<Arc<tokio::sync::Semaphore>>,
++    timeout: std::time::Duration,
++    launch: impl FnOnce() -> std::io::Result<T> + Send + 'static,
++) -> std::io::Result<T> {
++    let deadline = tokio::time::Instant::now() + timeout;
++    let mut permits = Vec::with_capacity(slots.len());
++    for slot in slots {
++        let permit = tokio::time::timeout_at(deadline, slot.acquire_owned())
++            .await
++            .map_err(|_| {
++                std::io::Error::new(
++                    std::io::ErrorKind::TimedOut,
++                    "MCP process launch capacity remained occupied until the startup deadline",
++                )
++            })?
++            .map_err(|_| std::io::Error::other("MCP process launch capacity closed"))?;
++        permits.push(permit);
++    }
++    tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(move || {
++        let _permits = permits;
++        launch()
++    }))
++    .await
++    .map_err(|_| std::io::Error::new(
++        std::io::ErrorKind::TimedOut,
++        "MCP operating-system process launch exceeded the startup deadline; its launch slot remains reserved until it returns",
++    ))?
++    .map_err(|e| std::io::Error::other(format!("MCP spawn task failed: {e}")))?
++}
++
+ /// Holds a newly launched stdio child and its process group until ownership moves to [`SafeTokioChildProcess`].
+ /// If the launch is cancelled partway (the session is closing), this value is still dropped.
+ /// The caller sets `kill_on_drop(true)` so the child itself is also cleaned up on that path.
+@@ -2726,6 +2794,7 @@ impl SafeTokioChildProcess {
+         scope: Option<&ProcessScope>,
+         server_name: String,
+         event_writer: xai_grok_session_events::EventWriter,
++        startup_timeout: std::time::Duration,
+     ) -> std::io::Result<(Self, Option<ChildStderr>)> {
+         cmd.stdin(std::process::Stdio::piped())
+             .stdout(std::process::Stdio::piped())
+@@ -2734,27 +2803,33 @@ impl SafeTokioChildProcess {
+         // Launch the child on a background thread so the session thread is never blocked
+         // Take ownership of its group in that same step so the returned guard owns the child from the moment it exists
+         // See `SpawnGuard` for what happens if the launch is cancelled
+-        let mut guard = tokio::task::spawn_blocking(move || -> std::io::Result<SpawnGuard> {
+-            #[allow(clippy::disallowed_methods)] // group ownership is taken below, in this task
+-            let child = cmd.spawn()?;
+-            // Best effort: without a group we can still clean up the child itself.
+-            let process_group = match ProcessGroup::new() {
+-                Ok(mut group) => match group.attach(&child) {
+-                    Ok(()) => Some(Arc::new(group)),
++        let mut guard = bounded_stdio_spawn(
++            vec![
++                stdio_launch_slot(&cmd, &server_name),
++                STDIO_SPAWN_SLOTS.clone(),
++            ],
++            startup_timeout,
++            move || -> std::io::Result<SpawnGuard> {
++                #[allow(clippy::disallowed_methods)] // group ownership is taken below, in this task
++                let child = cmd.spawn()?;
++                // Best effort: without a group we can still clean up the child itself.
++                let process_group = match ProcessGroup::new() {
++                    Ok(mut group) => match group.attach(&child) {
++                        Ok(()) => Some(Arc::new(group)),
++                        Err(e) => {
++                            tracing::warn!("Failed to attach MCP child to process group: {e}");
++                            None
++                        }
++                    },
+                     Err(e) => {
+-                        tracing::warn!("Failed to attach MCP child to process group: {e}");
++                        tracing::warn!("Failed to create MCP child process group: {e}");
+                         None
+                     }
+-                },
+-                Err(e) => {
+-                    tracing::warn!("Failed to create MCP child process group: {e}");
+-                    None
+-                }
+-            };
+-            Ok(SpawnGuard::new(child, process_group))
+-        })
+-        .await
+-        .map_err(|e| std::io::Error::other(format!("MCP spawn task failed: {e}")))??;
++                };
++                Ok(SpawnGuard::new(child, process_group))
++            },
++        )
++        .await?;
+ 
+         // The guard stays active through the failures below, so any early exit still cleans up the whole group instead of leaking it
+         let child = guard.child_mut();
+@@ -4887,6 +4962,7 @@ pub async fn start_mcp_server(
+                 ctx.scope,
+                 name.clone(),
+                 ctx.event_writer.clone(),
++                std::time::Duration::from_secs(startup_timeout),
+             )
+             .await;
+             spawn_child_span
+diff --git a/crates/codegen/xai-grok-mcp/src/servers_tests.rs b/crates/codegen/xai-grok-mcp/src/servers_tests.rs
+index 5a4984c..704ef91 100644
+--- a/crates/codegen/xai-grok-mcp/src/servers_tests.rs
++++ b/crates/codegen/xai-grok-mcp/src/servers_tests.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-20: test bounded MCP process launch and retained cleanup ownership.
+ use super::*;
+ use rmcp::ServiceExt;
+ use std::path::PathBuf;
+@@ -240,6 +241,7 @@ fn safe_stdio_child_drop_without_entered_runtime_reaps_child() {
+             None,
+             "test".to_string(),
+             xai_grok_session_events::EventWriter::noop(),
++            std::time::Duration::from_secs(5),
+         )
+         .await
+         .expect("spawn test child");
+@@ -285,6 +287,7 @@ async fn scope_kill_all_reaps_enrolled_mcp_child_while_owner_wedged() {
+         Some(&scope),
+         "wedge-test".to_string(),
+         xai_grok_session_events::EventWriter::noop(),
++        std::time::Duration::from_secs(5),
+     )
+     .await
+     .expect("spawn enrolled MCP child");
+@@ -5069,6 +5072,7 @@ async fn spawn_into_a_closed_scope_fails_fast() {
+         Some(&scope),
+         "closed-scope".to_string(),
+         xai_grok_session_events::EventWriter::noop(),
++        std::time::Duration::from_secs(5),
+     )
+     .await;
+ 
+@@ -5758,3 +5762,173 @@ async fn completed_tool_call_sends_no_cancellation() {
+     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+     assert!(cancellations(&received).is_empty());
+ }
++
++// A blocked OS spawn must not occupy every worker used by prompt persistence.
++#[test]
++fn bounded_stdio_spawn_preserves_history_worker_and_retains_timed_out_slot() {
++    use std::time::Duration;
++    let rt = tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .max_blocking_threads(2)
++        .build()
++        .unwrap();
++    let slots = Arc::new(tokio::sync::Semaphore::new(1));
++    let (release, blocked) = std::sync::mpsc::channel();
++    rt.block_on(async {
++        let first_slots = slots.clone();
++        let first = tokio::spawn(async move {
++            bounded_stdio_spawn(vec![first_slots], Duration::from_millis(100), move || {
++                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
++                Ok(())
++            })
++            .await
++        });
++        tokio::time::timeout(Duration::from_secs(2), async {
++            while slots.available_permits() != 0 {
++                tokio::task::yield_now().await;
++            }
++        })
++        .await
++        .unwrap();
++        // This is the same blocking-pool operation the session prompt history uses.
++        let history = tempfile::NamedTempFile::new().unwrap();
++        let path = history.path().to_owned();
++        tokio::time::timeout(
++            Duration::from_secs(2),
++            tokio::task::spawn_blocking(move || std::fs::write(path, b"distinctive prompt\n")),
++        )
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
++        let error = first.await.unwrap().unwrap_err();
++        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
++        assert!(
++            error
++                .to_string()
++                .contains("operating-system process launch")
++        );
++        assert_eq!(
++            slots.available_permits(),
++            0,
++            "timeout must not release an unresolved OS launch"
++        );
++        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let launched = started.clone();
++        let error =
++            bounded_stdio_spawn(vec![slots.clone()], Duration::from_millis(30), move || {
++                launched.store(true, std::sync::atomic::Ordering::SeqCst);
++                Ok(())
++            })
++            .await
++            .unwrap_err();
++        assert!(error.to_string().contains("capacity remained occupied"));
++        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
++        release.send(()).unwrap();
++        tokio::time::timeout(Duration::from_secs(2), async {
++            while slots.available_permits() != 1 {
++                tokio::task::yield_now().await;
++            }
++        })
++        .await
++        .unwrap();
++        bounded_stdio_spawn(vec![slots], Duration::from_secs(2), || Ok(()))
++            .await
++            .unwrap();
++    });
++}
++
++#[tokio::test]
++async fn bounded_stdio_spawn_drops_late_result_after_timeout() {
++    use std::time::Duration;
++    struct LateResult(std::sync::mpsc::Sender<()>);
++    impl Drop for LateResult {
++        fn drop(&mut self) {
++            let _ = self.0.send(());
++        }
++    }
++    let slots = Arc::new(tokio::sync::Semaphore::new(1));
++    let (release, blocked) = std::sync::mpsc::channel();
++    let (dropped, observed) = std::sync::mpsc::channel();
++    let result = bounded_stdio_spawn(vec![slots.clone()], Duration::from_millis(30), move || {
++        blocked.recv_timeout(Duration::from_secs(10)).unwrap();
++        Ok(LateResult(dropped))
++    })
++    .await;
++    assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::TimedOut));
++    assert_eq!(slots.available_permits(), 0);
++    release.send(()).unwrap();
++    tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(2)))
++        .await
++        .unwrap()
++        .expect("late spawn guard must be dropped for cleanup");
++}
++
++#[tokio::test]
++async fn bounded_stdio_spawn_cancellation_blocks_same_identity_but_not_other_launches() {
++    use std::time::Duration;
++    let mut command = Command::new("/usr/bin/true");
++    command.env("GROK_SESSION_ID", "blocked-launch-test");
++    let same = stdio_launch_slot(&command, "blocked-test");
++    assert!(Arc::ptr_eq(
++        &same,
++        &stdio_launch_slot(&command, "blocked-test")
++    ));
++    let global = Arc::new(tokio::sync::Semaphore::new(4));
++    let (release, blocked) = std::sync::mpsc::channel();
++    let first_slot = same.clone();
++    let first_global = global.clone();
++    let first = tokio::spawn(async move {
++        bounded_stdio_spawn(
++            vec![first_slot, first_global],
++            Duration::from_secs(5),
++            move || {
++                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
++                Ok(())
++            },
++        )
++        .await
++    });
++    tokio::time::timeout(Duration::from_secs(2), async {
++        while global.available_permits() != 3 {
++            tokio::task::yield_now().await;
++        }
++    })
++    .await
++    .unwrap();
++    first.abort();
++    assert!(first.await.unwrap_err().is_cancelled());
++    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let launched = started.clone();
++    let error = bounded_stdio_spawn(
++        vec![stdio_launch_slot(&command, "blocked-test"), global.clone()],
++        Duration::from_millis(30),
++        move || {
++            launched.store(true, std::sync::atomic::Ordering::SeqCst);
++            Ok(())
++        },
++    )
++    .await
++    .unwrap_err();
++    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
++    assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
++    assert_eq!(
++        global.available_permits(),
++        3,
++        "unresolved retry must not consume spare global capacity"
++    );
++    command.env("GROK_SESSION_ID", "independent-launch-test");
++    let other = stdio_launch_slot(&command, "blocked-test");
++    assert!(!Arc::ptr_eq(&same, &other));
++    bounded_stdio_spawn(vec![other, global], Duration::from_secs(2), || Ok(()))
++        .await
++        .unwrap();
++    release.send(()).unwrap();
++    tokio::time::timeout(Duration::from_secs(2), async {
++        while same.available_permits() != 1 {
++            tokio::task::yield_now().await;
++        }
++    })
++    .await
++    .unwrap();
++}
 diff --git a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs b/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
 index 543bdf1..47290c8 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs

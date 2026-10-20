@@ -1,0 +1,28 @@
+
+running 3 tests
+test servers::tests::bounded_stdio_spawn_drops_late_result_after_timeout ... ok
+test servers::tests::bounded_stdio_spawn_cancellation_blocks_same_identity_but_not_other_launches ... ok
+test servers::tests::bounded_stdio_spawn_preserves_history_worker_and_retains_timed_out_slot ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 279 filtered out; finished in 0.15s
+
+
+
+running 1 test
+test servers::tests::safe_stdio_child_drop_without_entered_runtime_reaps_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 281 filtered out; finished in 0.02s
+
+
+
+running 1 test
+test servers::tests::scope_kill_all_reaps_enrolled_mcp_child_while_owner_wedged ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 281 filtered out; finished in 0.02s
+
+
+
+running 1 test
+test servers::tests::spawn_into_a_closed_scope_fails_fast ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 281 filtered out; finished in 0.03s

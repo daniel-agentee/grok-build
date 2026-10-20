@@ -1,4 +1,5 @@
 //! MCP server integration using the official rmcp SDK.
+// Modified 2026-10-20: bound MCP process launch to preserve live-session responsiveness.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -2671,6 +2672,73 @@ pub struct SafeTokioChildProcess {
     transport: ResilientRwTransport<tokio::process::ChildStdout, tokio::process::ChildStdin>,
 }
 
+// OS process creation can itself block before a Child exists (for example in
+// fork/exec on macOS). Keep those calls below the session runtime's 16-worker
+// blocking pool, across all resident sessions. A timed-out call must retain its
+// slot until the OS call actually returns; releasing on timeout would allow
+// retries to exhaust the pool again.
+static STDIO_SPAWN_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(4)));
+static STDIO_LAUNCHES: LazyLock<
+    std::sync::Mutex<HashMap<(String, u64), std::sync::Weak<tokio::sync::Semaphore>>>,
+> = LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn stdio_launch_slot(cmd: &Command, server_name: &str) -> Arc<tokio::sync::Semaphore> {
+    use std::hash::{Hash, Hasher};
+    // Retain only a private fingerprint, never command arguments or environment
+    // values. Session-specific env overrides distinguish independent actors.
+    let mut identity = std::collections::hash_map::DefaultHasher::new();
+    let command = cmd.as_std();
+    command.get_program().hash(&mut identity);
+    command.get_current_dir().hash(&mut identity);
+    for arg in command.get_args() {
+        arg.hash(&mut identity);
+    }
+    for entry in command.get_envs() {
+        entry.hash(&mut identity);
+    }
+    let mut launches = STDIO_LAUNCHES.lock().expect("MCP launch registry poisoned");
+    launches.retain(|_, slot| slot.strong_count() > 0);
+    let key = (server_name.to_owned(), identity.finish());
+    if let Some(slot) = launches.get(&key).and_then(std::sync::Weak::upgrade) {
+        return slot;
+    }
+    let slot = Arc::new(tokio::sync::Semaphore::new(1));
+    launches.insert(key, Arc::downgrade(&slot));
+    slot
+}
+
+async fn bounded_stdio_spawn<T: Send + 'static>(
+    slots: Vec<Arc<tokio::sync::Semaphore>>,
+    timeout: std::time::Duration,
+    launch: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut permits = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let permit = tokio::time::timeout_at(deadline, slot.acquire_owned())
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "MCP process launch capacity remained occupied until the startup deadline",
+                )
+            })?
+            .map_err(|_| std::io::Error::other("MCP process launch capacity closed"))?;
+        permits.push(permit);
+    }
+    tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(move || {
+        let _permits = permits;
+        launch()
+    }))
+    .await
+    .map_err(|_| std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "MCP operating-system process launch exceeded the startup deadline; its launch slot remains reserved until it returns",
+    ))?
+    .map_err(|e| std::io::Error::other(format!("MCP spawn task failed: {e}")))?
+}
+
 /// Holds a newly launched stdio child and its process group until ownership moves to [`SafeTokioChildProcess`].
 /// If the launch is cancelled partway (the session is closing), this value is still dropped.
 /// The caller sets `kill_on_drop(true)` so the child itself is also cleaned up on that path.
@@ -2726,6 +2794,7 @@ impl SafeTokioChildProcess {
         scope: Option<&ProcessScope>,
         server_name: String,
         event_writer: xai_grok_session_events::EventWriter,
+        startup_timeout: std::time::Duration,
     ) -> std::io::Result<(Self, Option<ChildStderr>)> {
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -2734,27 +2803,33 @@ impl SafeTokioChildProcess {
         // Launch the child on a background thread so the session thread is never blocked
         // Take ownership of its group in that same step so the returned guard owns the child from the moment it exists
         // See `SpawnGuard` for what happens if the launch is cancelled
-        let mut guard = tokio::task::spawn_blocking(move || -> std::io::Result<SpawnGuard> {
-            #[allow(clippy::disallowed_methods)] // group ownership is taken below, in this task
-            let child = cmd.spawn()?;
-            // Best effort: without a group we can still clean up the child itself.
-            let process_group = match ProcessGroup::new() {
-                Ok(mut group) => match group.attach(&child) {
-                    Ok(()) => Some(Arc::new(group)),
+        let mut guard = bounded_stdio_spawn(
+            vec![
+                stdio_launch_slot(&cmd, &server_name),
+                STDIO_SPAWN_SLOTS.clone(),
+            ],
+            startup_timeout,
+            move || -> std::io::Result<SpawnGuard> {
+                #[allow(clippy::disallowed_methods)] // group ownership is taken below, in this task
+                let child = cmd.spawn()?;
+                // Best effort: without a group we can still clean up the child itself.
+                let process_group = match ProcessGroup::new() {
+                    Ok(mut group) => match group.attach(&child) {
+                        Ok(()) => Some(Arc::new(group)),
+                        Err(e) => {
+                            tracing::warn!("Failed to attach MCP child to process group: {e}");
+                            None
+                        }
+                    },
                     Err(e) => {
-                        tracing::warn!("Failed to attach MCP child to process group: {e}");
+                        tracing::warn!("Failed to create MCP child process group: {e}");
                         None
                     }
-                },
-                Err(e) => {
-                    tracing::warn!("Failed to create MCP child process group: {e}");
-                    None
-                }
-            };
-            Ok(SpawnGuard::new(child, process_group))
-        })
-        .await
-        .map_err(|e| std::io::Error::other(format!("MCP spawn task failed: {e}")))??;
+                };
+                Ok(SpawnGuard::new(child, process_group))
+            },
+        )
+        .await?;
 
         // The guard stays active through the failures below, so any early exit still cleans up the whole group instead of leaking it
         let child = guard.child_mut();
@@ -4887,6 +4962,7 @@ pub async fn start_mcp_server(
                 ctx.scope,
                 name.clone(),
                 ctx.event_writer.clone(),
+                std::time::Duration::from_secs(startup_timeout),
             )
             .await;
             spawn_child_span

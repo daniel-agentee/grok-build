@@ -6,7 +6,7 @@
   "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
   "cargo_version": "cargo 1.94.0 (85eff7c80 2026-01-15)",
   "cargo_lock_sha256": "73f15eb527021f73f585dad1e6903208e35c4cdca1a15b73d9a4b8c8432da692",
-  "patch_sha256": "27bc4517a3c4e4e73d66d2f9c4404465d134ee88819e37c2d0cb752daf245f4b",
+  "patch_sha256": "63010285ee1d42819181274f2c39143bd8a0bb90db176f0539ae80f889f30d3a",
   "build_command": [
     "cargo",
     "build",
@@ -22,8 +22,8 @@
     "CARGO_INCREMENTAL": "0"
   },
   "binary": "target/debug/xai-grok-pager",
-  "binary_sha256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
-  "version_output": "grok 1.0.45 (2bdd1d6a6369) [alpha]",
+  "binary_sha256": "f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc",
+  "version_output": "grok 1.0.45 (24b498ce6a7f) [alpha]",
   "native_test_environment": {
     "CARGO_PROFILE_DEV_DEBUG": "0",
     "CARGO_PROFILE_TEST_DEBUG": "0",
@@ -42,7 +42,7 @@
     "--",
     "--nocapture"
   ],
-  "artifact_checkout_commit": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+  "artifact_checkout_commit": "24b498ce6a7f648cfe64b59a770fdf14076ee18a",
   "native_interaction_test_command": [
     "cargo",
     "test",
@@ -54,5 +54,23 @@
     "disconnected_interaction_response",
     "--",
     "--nocapture"
-  ]
+  ],
+  "session_features_binary_copy": "target/verified-session-features-mcp-bounded/xai-grok-pager",
+  "native_mcp_spawn_test_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "xai-grok-mcp",
+    "bounded_stdio_spawn",
+    "--",
+    "--nocapture"
+  ],
+  "native_mcp_cleanup_test_filters": [
+    "safe_stdio_child_drop_without_entered_runtime_reaps_child",
+    "scope_kill_all_reaps_enrolled_mcp_child_while_owner_wedged",
+    "spawn_into_a_closed_scope_fails_fast"
+  ],
+  "native_mcp_test_evidence": "evidence/session-features-bounded-mcp-tests.txt"
 }

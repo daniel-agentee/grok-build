@@ -1,0 +1,1070 @@
+diff --git a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs b/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
+index 543bdf1..47290c8 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
+ //! Applies a model switch to a session, the ungated path.
+ //! `set_session_model` enforces the `allowed_models` gate before delegating here.
+ //! Internal callers (`new_session`, `load_session`) call `apply` directly.
+@@ -33,6 +34,7 @@ pub(crate) async fn apply(
+     context_window: SwitchContextWindow,
+     config_notice: ConfigNotice,
+ ) -> Result<acp::SetSessionModelResponse, acp::Error> {
++    let actor_target = agent.resident_actor_target(&args.session_id, args.meta.as_ref())?;
+     tracing::info!("Received set session model request {args:?}");
+     xai_grok_telemetry::unified_log::info(
+         "model changed",
+@@ -50,7 +52,11 @@ pub(crate) async fn apply(
+         .await
+         .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+     let _config_guard = agent.config_mutation_lock(&session_id).lock_owned().await;
+-    let handle = agent.resident_handle(&session_id).unwrap_or(handle);
++    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
++    let handle = actor_target
++        .as_ref()
++        .cloned()
++        .unwrap_or_else(|| agent.resident_handle(&session_id).unwrap_or(handle));
+     let model = agent.resolve_model_id(&model_id)?;
+     let use_concise = model.info().use_concise;
+     let session_default = handle
+@@ -198,6 +204,7 @@ pub(crate) async fn apply(
+         );
+         pending_rebuild_definition = None;
+     }
++    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
+     let did_rebuild = if let Some(def) = pending_rebuild_definition {
+         let (rebuild_tx, rebuild_rx) = oneshot::channel();
+         let _ = handle
+@@ -236,6 +243,7 @@ pub(crate) async fn apply(
+     } else {
+         false
+     };
++    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
+     let model_unchanged = previous_model_id == model_id.0;
+     let (tx, rx) = oneshot::channel();
+     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
+@@ -255,6 +263,7 @@ pub(crate) async fn apply(
+     let updated_model = rx
+         .await
+         .map_err(|_| acp::Error::internal_error().data("failed to set session model"))?;
++    agent.verify_resident_only_attach_target(&session_id, actor_target.as_ref())?;
+     agent.with_resident_mut(&session_id, |handle| {
+         handle.model_id = model_id.clone();
+         handle.reasoning_effort = applied_effort;
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
+index d689b2a..5f64405 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: advertise the resident-only live attachment contract.
+ #![cfg_attr(rustfmt, rustfmt::skip)]
+ #![allow(unused_imports)]
+ use super::*;
+@@ -610,6 +611,8 @@ impl acp::Agent for MvpAgent {
+                     "agentVersion": xai_grok_version::VERSION,
+                     "agentId": agent_id(),
+                     "agentInstanceId": agent_instance_id(),
++                    "x.ai/residentOnlyAttach": true,
++                    "x.ai/residentActorIdentity": true,
+                     "hostname": hostname.to_string_lossy().to_string(),
+                     "modelState": init_model_state,
+                     "mcpServers": mcp_servers,
+@@ -1034,6 +1037,7 @@ impl acp::Agent for MvpAgent {
+         mut arguments: acp::PromptRequest,
+     ) -> Result<acp::PromptResponse, acp::Error> {
+         use crate::session::plan_mode::PromptMode;
++        let actor_target = self.resident_actor_target(&arguments.session_id, arguments.meta.as_ref())?;
+         if let Some(meta) = arguments.meta.as_ref() {
+             xai_grok_otel::link_current_span_to_meta(
+                 &serde_json::Value::Object(meta.clone()),
+@@ -1050,10 +1054,11 @@ impl acp::Agent for MvpAgent {
+             Some(arguments.session_id.0.as_ref()),
+             None,
+         );
+-        let handle = self
+-            .session_handle_waiting_for_load(&arguments.session_id)
+-            .await
+-            .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
++        let handle = match actor_target.as_ref() {
++            Some(target) => target.clone(),
++            None => self.session_handle_waiting_for_load(&arguments.session_id).await
++                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?,
++        };
+         if let Some(deny) = self.models_manager.prompt_block_message().await {
+             self.send_model_auto_switched(
+                     &arguments.session_id,
+@@ -1067,6 +1072,7 @@ impl acp::Agent for MvpAgent {
+         let latched_model = self
+             .session_registry
+             .unavailable_model(&arguments.session_id);
++        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
+         if let Some(unavailable_model) = latched_model {
+             let models = self.models_manager.models();
+             let available = self.models_manager.available();
+@@ -1097,7 +1103,7 @@ impl acp::Agent for MvpAgent {
+                         acp::SetSessionModelRequest::new(
+                             arguments.session_id.clone(),
+                             restore_model_id.clone(),
+-                        ),
++                        ).meta(arguments.meta.clone().unwrap_or_default()),
+                         crate::agent::handlers::model_switch::SwitchEffort::Preserve,
+                         SwitchContextWindow::Preserve,
+                         crate::agent::handlers::model_switch::ConfigNotice::Send,
+@@ -1142,6 +1148,7 @@ impl acp::Agent for MvpAgent {
+         }
+         let dispatch_lock = self.dispatch_lock(&arguments.session_id);
+         let dispatch_guard = dispatch_lock.lock().await;
++        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
+         crate::agent::mvp_agent::test_hooks::park_forever_if_blackholed(
+                 &arguments.session_id,
+             )
+@@ -1171,6 +1178,7 @@ impl acp::Agent for MvpAgent {
+             .and_then(|v| v.as_str())
+             .map(|s| s.to_string())
+             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
++        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
+         let turn_number = self.allocate_turn_number(&arguments.session_id);
+         tracing::Span::current().record("turn_number", turn_number);
+         tracing::info!("Setting up prompt tracing");
+@@ -1388,6 +1396,7 @@ impl acp::Agent for MvpAgent {
+             .as_ref()
+             .map(|ctx| ctx.artifact_upload_context());
+         let traceparent = xai_grok_otel::current_traceparent();
++        self.verify_resident_only_attach_target(&arguments.session_id, actor_target.as_ref())?;
+         let dispatch_result: Result<(), acp::Error> = if send_now {
+             handle
+                 .cmd_tx
+@@ -1876,8 +1885,12 @@ impl acp::Agent for MvpAgent {
+         }
+     }
+     async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
++        let actor_target = self.resident_actor_target(&args.session_id, args.meta.as_ref())?;
+         tracing::info!("Received cancel request {args:?}");
+-        let handle = self.session_handle_waiting_for_load(&args.session_id).await;
++        let handle = match actor_target.as_ref() {
++            Some(target) => Some(target.clone()),
++            None => self.session_handle_waiting_for_load(&args.session_id).await,
++        };
+         let cancel_trigger = args
+             .meta
+             .as_ref()
+@@ -1924,6 +1937,7 @@ impl acp::Agent for MvpAgent {
+             };
+             let dispatch_lock = self.dispatch_lock(&args.session_id);
+             let _dispatch_guard = dispatch_lock.lock().await;
++            self.verify_resident_only_attach_target(&args.session_id, actor_target.as_ref())?;
+             let user_initiated = cancel_trigger
+                 .as_ref()
+                 .is_none_or(crate::session::CancelTrigger::is_user_gesture);
+@@ -1967,6 +1981,7 @@ impl acp::Agent for MvpAgent {
+         &self,
+         args: acp::SetSessionModelRequest,
+     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
++        self.resident_actor_target(&args.session_id, args.meta.as_ref())?;
+         self.set_model_gated(args).await
+     }
+     async fn set_session_config_option(
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs
+index 061460d..7942588 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs
+@@ -1,4 +1,5 @@
+ //! ACP [session setup]: the four methods that create, attach to, and free a session.
++//! Modified 2026-10-18: resident-only attachment cannot cold-restore a closed actor.
+ //! Split from `acp_agent.rs`, whose trait impl delegates all four.
+ //!
+ //! [session setup]: https://agentclientprotocol.com/protocol/v1/session-setup
+@@ -16,6 +17,8 @@ pub(super) const RESUME_REFUSES_EXTRA_DIRS: &str =
+     "session/resume does not support additionalDirectories";
+ const TOOL_OVERRIDES_ECHO_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+ const BACKGROUND_TASKS_SNAPSHOT_ACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
++pub(super) const RESIDENT_ONLY_REFUSAL: &str =
++    "live attachment target is no longer resident; select a running session";
+ async fn read_applied_tool_overrides(
+     cmd_tx: &tokio::sync::mpsc::UnboundedSender<SessionCommand>,
+ ) -> Option<xai_grok_sampling_types::ToolOverrides> {
+@@ -932,6 +935,9 @@ impl MvpAgent {
+         op: AttachOperation,
+     ) -> Result<acp::LoadSessionResponse, acp::Error> {
+         let attach_started_at = std::time::Instant::now();
++        // Capture the actor before any await. A roster check in another RPC is
++        // insufficient: close may remove the actor between discovery and load.
++        let resident_only_target = self.resident_only_attach_target(&arguments)?;
+         let load_guard = self.begin_session_load(&arguments.session_id);
+         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
+         let live_cwd = AbsPathBuf::new(arguments.cwd.clone())
+@@ -964,7 +970,11 @@ impl MvpAgent {
+             meta: request_meta,
+             ..
+         } = arguments;
+-        let policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
++        let mut policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
++        if resident_only_target.is_some() {
++            // A live attachment is observation, never a checkout under a running turn.
++            policy.restore_code = false;
++        }
+         let SessionWorkspace {
+             cwd,
+             remote_settings,
+@@ -1093,7 +1103,9 @@ impl MvpAgent {
+                 None
+             }
+         };
+-        self.set_turn_number(&session_id, summary.next_trace_turn);
++        if resident_only_target.is_none() {
++            self.set_turn_number(&session_id, summary.next_trace_turn);
++        }
+         tracing::info!(
+             session_id = %session_id.0,
+             next_trace_turn = summary.next_trace_turn,
+@@ -1152,7 +1164,7 @@ impl MvpAgent {
+                 .emit_local_background_tasks
+                 .store(false, std::sync::atomic::Ordering::Release);
+         }
+-        let interrupted_turn = if self.is_resident(&session_id) {
++        let interrupted_turn = if resident_only_target.is_some() || self.is_resident(&session_id) {
+             None
+         } else {
+             self.record_interrupted_turn(
+@@ -1177,8 +1189,16 @@ impl MvpAgent {
+                 gateway_backed,
+             )
+             .await?;
+-        self.attach_status_line(&session_id, request_meta.as_ref(), init);
+-        self.attach_user_message_echo(&session_id, request_meta.as_ref(), init);
++        if resident_only_target.is_none()
++            || Self::resolve_status_line_capability(request_meta.as_ref(), init)
++        {
++            self.attach_status_line(&session_id, request_meta.as_ref(), init);
++        }
++        if resident_only_target.is_none()
++            || Self::resolve_user_message_echo_capability(request_meta.as_ref(), init)
++        {
++            self.attach_user_message_echo(&session_id, request_meta.as_ref(), init);
++        }
+         let ClientCaps {
+             code_nav: client_code_nav_enabled,
+             terminal: client_terminal,
+@@ -1191,7 +1211,13 @@ impl MvpAgent {
+             .and_then(|v| v.as_str())
+             .map(|s| s.to_string())
+             .or_else(|| summary.prompt_display_cwd.clone());
++        #[cfg(test)]
++        super::test_hooks::pause_at(super::test_hooks::AttachPause::BeforeResidentCheck).await;
++        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
+         let restored_from_disk = if !self.is_resident(&session_id) {
++            if resident_only_target.is_some() {
++                return Err(acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL));
++            }
+             tracing::info!(
+                 session_id = %session_id.0,
+                 "load_session: spawning new session actor (session not in memory)"
+@@ -1300,25 +1326,26 @@ impl MvpAgent {
+                 "load_session: reconnecting to existing session, updating MCP servers"
+             );
+             let attach_hints = explicit_startup_hints(request_meta.as_ref());
+-            self.with_resident_mut(&session_id, |handle| {
+-                handle.initial_client_mcp_servers = initial_client_mcp_servers.clone();
+-                if let Some(hints) = attach_hints {
+-                    let _ =
+-                        handle
+-                            .cmd_tx
+-                            .send(crate::session::SessionCommand::UpdateAttachPolicy {
++            if resident_only_target.is_none() {
++                self.with_resident_mut(&session_id, |handle| {
++                    handle.initial_client_mcp_servers = initial_client_mcp_servers.clone();
++                    if let Some(hints) = attach_hints {
++                        let _ = handle.cmd_tx.send(
++                            crate::session::SessionCommand::UpdateAttachPolicy {
+                                 startup_hints: Box::new(hints),
+-                            });
+-                }
+-                let (tx, _rx) = tokio::sync::oneshot::channel();
+-                let _ = handle
+-                    .cmd_tx
+-                    .send(crate::session::SessionCommand::UpdateMcpServers {
+-                        mcp_servers,
+-                        client_seed: Some(initial_client_mcp_servers),
+-                        respond_to: tx,
+-                    });
+-            });
++                            },
++                        );
++                    }
++                    let (tx, _rx) = tokio::sync::oneshot::channel();
++                    let _ = handle
++                        .cmd_tx
++                        .send(crate::session::SessionCommand::UpdateMcpServers {
++                            mcp_servers,
++                            client_seed: Some(initial_client_mcp_servers),
++                            respond_to: tx,
++                        });
++                });
++            }
+             false
+         };
+         if gateway_backed {
+@@ -1335,7 +1362,7 @@ impl MvpAgent {
+             self.emit_background_tasks_snapshot_and_wait(&session_id)
+                 .await;
+         }
+-        {
++        if resident_only_target.is_none() {
+             let init_meta = self
+                 .initialize_request
+                 .get()
+@@ -1348,7 +1375,9 @@ impl MvpAgent {
+                 );
+             }
+         }
+-        if let Some(hooks) = crate::extensions::hooks::reconnect_client_hooks(request_meta.as_ref())
++        if resident_only_target.is_none()
++            && let Some(hooks) =
++                crate::extensions::hooks::reconnect_client_hooks(request_meta.as_ref())
+             && let Some(handle) = self.resident_handle(&session_id)
+         {
+             handle.set_client_hooks(hooks);
+@@ -1359,27 +1388,29 @@ impl MvpAgent {
+                 .as_ref()
+                 .and_then(|p| std::fs::metadata(p).ok())
+                 .is_some_and(|m| m.len() > 0);
+-        self.refresh_reconnect_session_state(
+-            &session_id,
+-            client_code_nav_enabled,
+-            session_yolo_mode,
+-            session_auto_mode,
+-        );
+-        self.maybe_spawn_interactive_trust_prompt(
+-            &session_id,
+-            cwd.as_path(),
+-            remote_settings.as_ref(),
+-        );
+-        self.heal_orphaned_subagents(&session_id, &unfinished_subagents)
+-            .await;
+-        self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
+-            .await;
++        if resident_only_target.is_none() {
++            self.refresh_reconnect_session_state(
++                &session_id,
++                client_code_nav_enabled,
++                session_yolo_mode,
++                session_auto_mode,
++            );
++            self.maybe_spawn_interactive_trust_prompt(
++                &session_id,
++                cwd.as_path(),
++                remote_settings.as_ref(),
++            );
++            self.heal_orphaned_subagents(&session_id, &unfinished_subagents)
++                .await;
++            self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
++                .await;
++        }
+         let (model_state, response_meta) = self
+             .build_attach_response_meta(&session_id, &summary, persist_data, code_restore_info)
+             .await;
+         xai_grok_telemetry::unified_log::info("session loaded", Some(session_id.0.as_ref()), None);
+         let config_options = self.acp_config_options(Some(&session_id), &model_state);
+-        let response = acp::LoadSessionResponse::new()
++        let mut response = acp::LoadSessionResponse::new()
+             .models(Some(model_state))
+             .config_options(Some(config_options))
+             .meta(response_meta.as_object().cloned());
+@@ -1387,7 +1418,7 @@ impl MvpAgent {
+             let _ = handle.cmd_tx.send(SessionCommand::AdvertiseCommands {
+                 trigger: crate::session::AdvertiseTrigger::SessionLoad,
+             });
+-            if restored.awaiting_plan_approval {
++            if resident_only_target.is_none() && restored.awaiting_plan_approval {
+                 let _ = handle.cmd_tx.send(SessionCommand::RestorePlanApproval);
+             }
+         }
+@@ -1417,8 +1448,86 @@ impl MvpAgent {
+             attach_started_at.elapsed(),
+             restored_from_disk,
+         );
++        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
++        if let Some(target) = resident_only_target.as_ref() {
++            response.meta.get_or_insert_with(Default::default).insert(
++                "x.ai/residentActorId".into(),
++                serde_json::json!(target.resident_actor_id.to_string()),
++            );
++        }
+         Ok(response)
+     }
++
++    /// Opt-in load contract: reuse this exact live actor or return an error,
++    /// never create a replacement from persisted conversation history.
++    pub(super) fn resident_only_attach_target(
++        &self,
++        request: &acp::LoadSessionRequest,
++    ) -> Result<Option<crate::session::SessionHandle>, acp::Error> {
++        let required = match request
++            .meta
++            .as_ref()
++            .and_then(|m| m.get("x.ai/resident_only"))
++        {
++            None | Some(serde_json::Value::Bool(false)) => false,
++            Some(serde_json::Value::Bool(true)) => true,
++            _ => {
++                return Err(acp::Error::invalid_params().data("x.ai/resident_only must be boolean"));
++            }
++        };
++        let asserted_actor =
++            self.resident_actor_target(&request.session_id, request.meta.as_ref())?;
++        if !required && asserted_actor.is_none() {
++            return Ok(None);
++        }
++        let target = self
++            .resident_handle(&request.session_id)
++            .filter(|handle| !handle.cmd_tx.is_closed())
++            .ok_or_else(|| acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL))?;
++        if std::path::Path::new(&target.info.cwd) != request.cwd.as_path() {
++            return Err(acp::Error::invalid_params().data("live attachment workspace differs"));
++        }
++        Ok(Some(target))
++    }
++
++    /// Optional actor assertion for mobile controls. Capture before any await;
++    /// callers keep this handle and recheck after waits, never look up a successor.
++    pub(crate) fn resident_actor_target(
++        &self,
++        session_id: &acp::SessionId,
++        meta: Option<&acp::Meta>,
++    ) -> Result<Option<crate::session::SessionHandle>, acp::Error> {
++        let Some(value) = meta.and_then(|m| m.get("x.ai/residentActorId")) else {
++            return Ok(None);
++        };
++        let expected = value.as_str().ok_or_else(|| {
++            acp::Error::invalid_params().data("x.ai/residentActorId must be a UUID string")
++        })?;
++        self.resident_handle(session_id)
++            .filter(|h| !h.cmd_tx.is_closed() && h.resident_actor_id.to_string() == expected)
++            .map(Some)
++            .ok_or_else(|| {
++                acp::Error::invalid_params()
++                    .data("live session actor changed; select a running session")
++            })
++    }
++
++    pub(crate) fn verify_resident_only_attach_target(
++        &self,
++        session_id: &acp::SessionId,
++        expected: Option<&crate::session::SessionHandle>,
++    ) -> Result<(), acp::Error> {
++        let Some(expected) = expected else {
++            return Ok(());
++        };
++        if self.resident_handle(session_id).is_some_and(|current| {
++            !current.cmd_tx.is_closed() && current.cmd_tx.same_channel(&expected.cmd_tx)
++        }) {
++            Ok(())
++        } else {
++            Err(acp::Error::invalid_params().data(RESIDENT_ONLY_REFUSAL))
++        }
++    }
+     /// Refuses a cwd that is neither a grok worktree nor the session's own, so it cannot detach a real checkout.
+     async fn restore_session_code(
+         &self,
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/test_hooks.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/test_hooks.rs
+index e411a9c..50f0815 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/test_hooks.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/test_hooks.rs
+@@ -1,4 +1,5 @@
+ //! Fault injection for tests of the attach and recovery paths.
++//! Modified 2026-10-18: deterministic close-during-live-attach regression point.
+ //! Environment-driven hooks ship in the binary and are inert unless their variable is set (one env
+ //! read at the hook site). `#[cfg(test)]` pause points compile out: a task-local slot parks the
+ //! attach future.
+@@ -13,6 +14,7 @@ pub(crate) enum AttachPause {
+     AfterSpawn,
+     AfterInstall,
+     BeforeRelease,
++    BeforeResidentCheck,
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
+index 6c560d9..8583d72 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
+ use super::system_prompt::{
+     RequestedSystemPrompt, read_session_or_init_meta_str, requested_system_prompt,
+ };
+@@ -1224,6 +1225,7 @@ pub(super) fn make_test_handle(
+         hunk_cancel,
+     );
+     crate::session::SessionHandle {
++        resident_actor_id: uuid::Uuid::now_v7(),
+         context_window_selection: Default::default(),
+         cmd_tx,
+         persistence_tx,
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/session_resume_close_tests.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/session_resume_close_tests.rs
+index 7c3128c..fd96eae 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/session_resume_close_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/tests/session_resume_close_tests.rs
+@@ -1,4 +1,5 @@
+ //! Unit-level resume and close: request translation, kind resolution, and close ordering.
++//! Modified 2026-10-18: resident-only attachment and close-race regressions.
+ //! Protocol behavior is asserted on the wire in `tests/acp_session_setup_wire.rs`.
+ use crate::agent::mvp_agent::session_lifecycle::{
+     CLOSE_INTAKE_WAIT, CLOSE_TOTAL_BUDGET, CloseOutcome,
+@@ -117,6 +118,221 @@ fn resume_translation_does_not_rewrite_client_meta() {
+         expected_load(json!({ "noReplay": false, "x.ai/restore_code": true })),
+     );
+ }
++
++fn resident_request(sid: &acp::SessionId, cwd: &std::path::Path) -> acp::LoadSessionRequest {
++    acp::LoadSessionRequest::new(sid.clone(), cwd.to_path_buf()).meta(meta_of(
++        json!({"x.ai/resident_only": true, "x.ai/restore_code": false}),
++    ))
++}
++
++#[test]
++fn resident_only_load_rejects_missing_actor_before_history_access() {
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let sid = acp::SessionId::new("missing-live-actor");
++        let error = agent
++            .load_session_inner(resident_request(&sid, std::path::Path::new("/tmp")))
++            .await
++            .expect_err("a live-only attach must not initialize or restore history");
++        assert_eq!(
++            error.data,
++            Some(json!(super::super::session_setup::RESIDENT_ONLY_REFUSAL))
++        );
++        assert!(!agent.is_resident(&sid));
++    });
++}
++
++#[test]
++fn resident_only_load_reuses_the_exact_running_actor() {
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let cwd = tempfile::tempdir().unwrap();
++        let sid = super::new_root_session(&agent, cwd.path()).await;
++        agent.with_resident_mut(&sid, |handle| {
++            handle.initial_client_mcp_servers = mcp_servers();
++            handle.code_nav_enabled = true;
++            handle.model_id = acp::ModelId::new("live-model-choice");
++            handle
++                .context_window_selection
++                .store(65536, std::sync::atomic::Ordering::Relaxed);
++            handle.set_status_line_wanted(true);
++            handle.set_user_message_echo_wanted(true);
++        });
++        agent.set_turn_number(&sid, 91);
++        let before = agent.resident_handle(&sid).expect("new actor");
++        let loaded = agent
++            .load_session_inner(resident_request(&sid, cwd.path()))
++            .await
++            .expect("live attach");
++        assert_eq!(
++            loaded.meta.as_ref().unwrap()["x.ai/residentActorId"],
++            json!(before.resident_actor_id.to_string())
++        );
++        let after = agent.resident_handle(&sid).expect("same actor remains");
++        assert!(before.cmd_tx.same_channel(&after.cmd_tx));
++        assert_eq!(
++            after.initial_client_mcp_servers,
++            before.initial_client_mcp_servers
++        );
++        assert!(after.code_nav_enabled);
++        assert_eq!(after.model_id, before.model_id);
++        assert_eq!(
++            after
++                .context_window_selection
++                .load(std::sync::atomic::Ordering::Relaxed),
++            65536
++        );
++        assert!(
++            after
++                .client_caps
++                .status_line
++                .load(std::sync::atomic::Ordering::Relaxed)
++        );
++        assert!(
++            after
++                .client_caps
++                .user_message_echo
++                .load(std::sync::atomic::Ordering::Relaxed)
++        );
++        assert_eq!(agent.allocate_turn_number(&sid), 91);
++        agent.remove_session(&sid);
++    });
++}
++
++#[test]
++fn resident_only_actor_token_rejects_replacement_controls_before_await() {
++    use agent_client_protocol::Agent;
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let sid = acp::SessionId::new("same-persisted-id-new-actor");
++        let (original, _tx, _rx) = super::make_live_session_handle(&sid, None);
++        let original_id = original.resident_actor_id;
++        assert_eq!(original.clone().resident_actor_id, original_id);
++        agent.insert_resident(&sid, original);
++        let metadata = meta_of(json!({"x.ai/residentActorId": original_id.to_string()}));
++        assert!(
++            agent
++                .resident_actor_target(&sid, Some(&metadata))
++                .unwrap()
++                .is_some()
++        );
++        let (replacement, _new_tx, mut replacement_rx) =
++            super::make_live_session_handle(&sid, None);
++        assert_ne!(replacement.resident_actor_id, original_id);
++        agent.insert_resident(&sid, replacement);
++        let mut load = resident_request(&sid, std::path::Path::new("/tmp"));
++        load.meta.as_mut().unwrap().extend(metadata.clone());
++        assert!(agent.load_session_inner(load).await.is_err());
++        assert!(
++            agent
++                .prompt(acp::PromptRequest::new(sid.clone(), vec![]).meta(metadata.clone()))
++                .await
++                .is_err()
++        );
++        assert!(
++            agent
++                .cancel(acp::CancelNotification::new(sid.clone()).meta(metadata.clone()))
++                .await
++                .is_err()
++        );
++        assert!(
++            agent
++                .set_session_model(
++                    acp::SetSessionModelRequest::new(sid.clone(), acp::ModelId::new("unused"))
++                        .meta(metadata)
++                )
++                .await
++                .is_err()
++        );
++        assert!(
++            replacement_rx.try_recv().is_err(),
++            "stale controls cannot reach replacement actor"
++        );
++    });
++}
++
++#[test]
++fn resident_only_load_rejects_close_during_await_without_cold_restore() {
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let cwd = tempfile::tempdir().unwrap();
++        let sid = super::new_root_session(&agent, cwd.path()).await;
++        let (attach, reached, release) = super::with_pause_at(
++            super::AttachPause::BeforeResidentCheck,
++            agent.load_session_inner(resident_request(&sid, cwd.path())),
++        );
++        let close = async {
++            reached
++                .await
++                .expect("load has captured a live actor and awaited replay setup");
++            assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
++            assert!(!agent.is_resident(&sid));
++            release.send(()).expect("release attach");
++        };
++        let (result, ()) = tokio::join!(attach, close);
++        assert_eq!(
++            result.expect_err("cannot restore after close").data,
++            Some(json!(super::super::session_setup::RESIDENT_ONLY_REFUSAL))
++        );
++        assert!(
++            !agent.is_resident(&sid),
++            "no replacement actor may be created"
++        );
++    });
++}
++
++#[test]
++fn resident_only_target_rejects_replacement_and_workspace_change() {
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let sid = acp::SessionId::new("replaced-live-actor");
++        let (original, _tx, _rx) = super::make_live_session_handle(&sid, None);
++        agent.insert_resident(&sid, original);
++        let target = agent
++            .resident_only_attach_target(&resident_request(&sid, std::path::Path::new("/tmp")))
++            .expect("capture original");
++        assert!(
++            agent
++                .resident_only_attach_target(&resident_request(
++                    &sid,
++                    std::path::Path::new("/wrong")
++                ))
++                .is_err()
++        );
++        let (replacement, _new_tx, _new_rx) = super::make_live_session_handle(&sid, None);
++        agent.insert_resident(&sid, replacement);
++        assert!(
++            agent
++                .verify_resident_only_attach_target(&sid, target.as_ref())
++                .is_err()
++        );
++    });
++}
++
++#[test]
++fn resident_only_target_rejects_closed_actor_and_invalid_flag() {
++    super::run_local_for_bridge_test(|| async {
++        let agent = super::build_minimal_agent_for_tests();
++        let sid = acp::SessionId::new("exited-live-actor");
++        let (handle, _tx, rx) = super::make_live_session_handle(&sid, None);
++        agent.insert_resident(&sid, handle);
++        drop(rx);
++        let request = resident_request(&sid, std::path::Path::new("/tmp"));
++        assert!(agent.resident_only_attach_target(&request).is_err());
++        let invalid = request
++            .clone()
++            .meta(meta_of(json!({"x.ai/resident_only": "true"})));
++        assert!(agent.resident_only_attach_target(&invalid).is_err());
++        // Existing clients retain ordinary load behavior unless they opt in.
++        let legacy = request.meta(meta_of(json!({"x.ai/resident_only": false})));
++        assert!(
++            agent
++                .resident_only_attach_target(&legacy)
++                .unwrap()
++                .is_none()
++        );
++    });
++}
+ /// A chat load rebuilds the session under the same id, so a close waiting on intake can find a live replacement with a client attached.
+ /// Closing by id alone ends that replacement; this pins that it does not.
+ #[test]
+diff --git a/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs b/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
+index 77d7988..4bea2a7 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
+ #![cfg_attr(rustfmt, rustfmt::skip)]
+ use super::*;
+ use crate::session::SessionThread;
+@@ -221,6 +222,7 @@ fn wedged_child_handle() -> (
+     );
+     let (signals_handle, signals_actor) = crate::session::signals::SessionSignalsActor::new();
+     let handle = SessionHandle {
++        resident_actor_id: uuid::Uuid::now_v7(),
+         context_window_selection: Default::default(),
+         cmd_tx,
+         persistence_tx,
+diff --git a/crates/codegen/xai-grok-shell/src/leader/server.rs b/crates/codegen/xai-grok-shell/src/leader/server.rs
+index 8b22b9a..affd05f 100644
+--- a/crates/codegen/xai-grok-shell/src/leader/server.rs
++++ b/crates/codegen/xai-grok-shell/src/leader/server.rs
+@@ -1,3 +1,5 @@
++//! Modified 2026-10-18: renderer disconnects cannot reject shared interactions.
++
+ use std::collections::{HashMap, HashSet};
+ use std::path::{Path, PathBuf};
+ use std::sync::Arc;
+@@ -516,6 +518,40 @@ fn is_interaction_request(json: &serde_json::Value) -> bool {
+         )
+     )
+ }
++/// A renderer dropping its response channel is not a user's answer. During a
++/// graceful TUI exit the gateway can report this failure before its IPC socket
++/// closes. Forwarding it would let the disappearing renderer reject a shared
++/// interaction still visible to other subscribers. Leave it pending for those
++/// subscribers (or replay on reconnect); explicit cancellation and denial still
++/// pass through, as do failures unrelated to a cached interaction.
++fn is_disconnected_interaction_response(
++    json: &serde_json::Value,
++    interaction_requests: &HashMap<String, HashMap<String, Arc<str>>>,
++) -> bool {
++    if json.get("method").is_some() || json.get("result").is_some() {
++        return false;
++    }
++    let Some(id) = json.get("id").filter(|id| !id.is_null()) else {
++        return false;
++    };
++    let Some(error) = json.get("error").and_then(|error| {
++        serde_json::from_value::<agent_client_protocol::Error>(error.clone()).ok()
++    }) else {
++        return false;
++    };
++    if error.code != agent_client_protocol::ErrorCode::InternalError
++        || xai_acp_lib::acp_channel_failure(&error).is_none()
++    {
++        return false;
++    }
++    interaction_requests.values().any(|requests| {
++        requests.values().any(|payload| {
++            serde_json::from_str::<serde_json::Value>(payload)
++                .ok()
++                .is_some_and(|request| request.get("id") == Some(id))
++        })
++    })
++}
+ /// Extract the `tool_call_id` an interaction reverse-request carries. The leader caches it (keyed by id) for replay-on-attach and evicts it on `InteractionResolved`.
+ /// The ext-methods (`ask_user_question` / `exit_plan_mode`) carry it directly under (inner) `params`; `request_permission` nests it under `toolCall`.
+ /// Tolerant of the gateway wrapper (via `interaction_inner_params`) and camel/snake spelling.
+@@ -1794,6 +1830,15 @@ pub async fn run_leader_server(
+                 ServerEvent::Message(id, ClientMessage::Acp { payload }) => {
+                     let mut json: Option<serde_json::Value> = serde_json::from_str(&payload).ok();
+                     let mut payload_mutated = false;
++                    if json.as_ref().is_some_and(|json| {
++                        is_disconnected_interaction_response(json, &interaction_requests)
++                    }) {
++                        debug!(
++                            client_id = id.0,
++                            "Ignored renderer channel failure for a pending shared interaction"
++                        );
++                        continue;
++                    }
+                     if !*ready_rx.borrow() {
+                         if let Some(error_payload) =
+                             json.as_ref().and_then(make_leader_starting_error)
+diff --git a/crates/codegen/xai-grok-shell/src/leader/server_tests.rs b/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
+index 59c8d57..7415fc5 100644
+--- a/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
+@@ -1,3 +1,5 @@
++//! Modified 2026-10-18: shared interactions survive dropped renderer channels.
++
+ use std::time::Duration;
+ 
+ use super::*;
+@@ -4270,6 +4272,193 @@ async fn pending_interaction_survives_disconnect_and_replays_on_reconnect() {
+     cancel.cancel();
+ }
+ 
++/// Obtain the real gateway error produced by a disappearing renderer, rather
++/// than relying on a hand-written replica of its JSON discriminator.
++async fn renderer_channel_failure(recv_failed: bool) -> agent_client_protocol::Error {
++    let (tx, mut rx) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
++    let request = agent_client_protocol::ExtRequest::new(
++        "x.ai/ask_user_question",
++        serde_json::value::to_raw_value(&serde_json::json!({}))
++            .unwrap()
++            .into(),
++    );
++    if recv_failed {
++        let pending = tokio::spawn(async move { xai_acp_lib::acp_send(request, &tx).await });
++        drop(rx.recv().await.expect("renderer receives reverse-request"));
++        pending.await.unwrap().unwrap_err()
++    } else {
++        drop(rx);
++        xai_acp_lib::acp_send(request, &tx).await.unwrap_err()
++    }
++}
++
++#[tokio::test]
++async fn disconnected_interaction_response_only_filters_typed_pending_transport_failures() {
++    let requests = HashMap::from([(
++        "sess-int".to_string(),
++        HashMap::from([("tc-int".to_string(), Arc::from(r#"{"id":801}"#))]),
++    )]);
++    for recv_failed in [false, true] {
++        let failure =
++            serde_json::json!({"id":801,"error":renderer_channel_failure(recv_failed).await});
++        assert!(is_disconnected_interaction_response(&failure, &requests));
++        for id in [
++            serde_json::json!("801"),
++            serde_json::json!(802),
++            serde_json::Value::Null,
++        ] {
++            let mut other = failure.clone();
++            other["id"] = id;
++            assert!(!is_disconnected_interaction_response(&other, &requests));
++        }
++        for (key, value) in [
++            ("method", serde_json::json!("x.ai/ask_user_question")),
++            ("result", serde_json::json!({})),
++        ] {
++            let mut other = failure.clone();
++            other[key] = value;
++            assert!(!is_disconnected_interaction_response(&other, &requests));
++        }
++        let mut semantic = failure.clone();
++        semantic["error"]["code"] = serde_json::json!(-32602);
++        assert!(!is_disconnected_interaction_response(&semantic, &requests));
++    }
++    for response in [
++        serde_json::json!({"id":801,"result":{"outcome":{"outcome":"cancelled"}}}),
++        serde_json::json!({"id":801,"error":{"code":-32603,"message":"semantic error"}}),
++        serde_json::json!({"id":801,"error":{"code":-32603,"message":"unknown","data":{"xaiAcpChannelFailure":"timeout"}}}),
++    ] {
++        assert!(!is_disconnected_interaction_response(&response, &requests));
++    }
++}
++
++#[tokio::test]
++async fn disconnected_interaction_response_preserves_other_subscriber_and_reconnect() {
++    for (index, method) in [
++        "session/request_permission",
++        "x.ai/ask_user_question",
++        "x.ai/exit_plan_mode",
++        "x.ai/mcp/elicit",
++    ]
++    .iter()
++    .enumerate()
++    {
++        let temp = TempDir::new().unwrap();
++        let (sock_path, cancel, response_tx, mut acp_rx) =
++            setup_persistent_server_with_agent(&temp).await;
++        let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "terminal").await;
++        load_session(&mut writer_a, "sess-int").await;
++        complete_load(&mut acp_rx, &response_tx).await;
++        let _ = next_acp_payload(&mut reader_a).await;
++        let (mut reader_b, mut writer_b) = connect_and_register(&sock_path, "phone").await;
++        load_session(&mut writer_b, "sess-int").await;
++        complete_load(&mut acp_rx, &response_tx).await;
++        let _ = next_acp_payload(&mut reader_b).await;
++
++        let request = serde_json::json!({"jsonrpc":"2.0","id":801,"method":method,
++            "params":{"sessionId":"sess-int","toolCallId":"tc-int","toolCall":{"toolCallId":"tc-int"}}});
++        response_tx.send(request.to_string()).unwrap();
++        assert!(
++            next_acp_payload_matching(&mut reader_a, method)
++                .await
++                .is_some()
++        );
++        assert!(
++            next_acp_payload_matching(&mut reader_b, method)
++                .await
++                .is_some()
++        );
++
++        // Graceful shutdown drops the renderer's oneshot before closing IPC.
++        let failure = serde_json::json!({"jsonrpc":"2.0","id":801,
++            "error":renderer_channel_failure(index % 2 == 0).await});
++        write_message(
++            &mut writer_a,
++            &ClientMessage::Acp {
++                payload: failure.to_string(),
++            },
++        )
++        .await
++        .unwrap();
++        assert!(
++            tokio::time::timeout(Duration::from_millis(60), acp_rx.recv())
++                .await
++                .is_err(),
++            "renderer transport failure must not answer the shared interaction"
++        );
++        // The seam must not swallow unrelated transport failures or semantic
++        // errors from a real renderer that is still handling the interaction.
++        let mut unrelated = failure.clone();
++        unrelated["id"] = serde_json::json!(802);
++        let semantic = serde_json::json!({"jsonrpc":"2.0","id":801,
++            "error":{"code":-32603,"message":"semantic failure"}});
++        for response in [unrelated, semantic] {
++            write_message(
++                &mut writer_a,
++                &ClientMessage::Acp {
++                    payload: response.to_string(),
++                },
++            )
++            .await
++            .unwrap();
++            let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
++                .await
++                .unwrap()
++                .unwrap();
++            assert_eq!(
++                serde_json::from_str::<serde_json::Value>(&forwarded).unwrap(),
++                response
++            );
++        }
++        drop(reader_a);
++        drop(writer_a);
++
++        if index % 2 == 1 {
++            // Even the last subscriber disappearing must retain the request.
++            drop(reader_b);
++            drop(writer_b);
++            let (mut reader_c, mut writer_c) =
++                connect_and_register(&sock_path, "reconnected-phone").await;
++            load_session(&mut writer_c, "sess-int").await;
++            complete_load(&mut acp_rx, &response_tx).await;
++            assert!(
++                next_acp_payload_matching(&mut reader_c, method)
++                    .await
++                    .is_some()
++            );
++            reader_b = reader_c;
++            writer_b = writer_c;
++        }
++
++        // Real answers still pass through exactly once, including explicit denial.
++        let answer = serde_json::json!({"jsonrpc":"2.0","id":801,"result":{
++            "outcome":{"outcome":"selected","optionId":if index % 2 == 0 {"allow_once"} else {"reject_once"}}}});
++        write_message(
++            &mut writer_b,
++            &ClientMessage::Acp {
++                payload: answer.to_string(),
++            },
++        )
++        .await
++        .unwrap();
++        let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(
++            serde_json::from_str::<serde_json::Value>(&forwarded).unwrap(),
++            answer
++        );
++        assert!(
++            tokio::time::timeout(Duration::from_millis(60), acp_rx.recv())
++                .await
++                .is_err()
++        );
++        drop(reader_b);
++        cancel.cancel();
++    }
++}
++
+ /// An interaction raised while the session has NO subscriber must still be cached, so the FIRST client to attach gets the modal replayed.
+ /// That happens when a dashboard-started session hits `ask_user_question` before anyone enters it.
+ /// It also happens when a reverse-request races ahead of the `session/new`/`session/load` response that registers the subscriber. Regression for the "entered the session, modal never appears, turn stuck Waiting" bug: the cache insert used to require a subscriber.
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs
+index 323fe32..886927c 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: preserve exact live actor identity for mobile attachment and controls.
+ //! Session bring-up for `acp_session`: `spawn_session_actor` and the per-session OS thread (`SessionThread` / `spawn_session_on_thread`).
+ //! Also holds the MCP auto-restart wiring (`SessionRestartActions`).
+ //!
+@@ -2435,6 +2436,7 @@ pub(crate) async fn spawn_session_actor(
+         let _ = session_done_tx.send(());
+     });
+     let handle = SessionHandle {
++        resident_actor_id: uuid::Uuid::now_v7(),
+         cmd_tx,
+         persistence_tx: persistence.tx.clone(),
+         current_prompt_id,
+diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
+index 8faa60b..6c90db4 100644
+--- a/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/session/acp_session_tests/tool_layer_images_bridge_tests.rs
+@@ -1,4 +1,6 @@
+ //! Wiring tests for MCP tool-layer images through `handle_bridge_tool_success`.
++//! Modified 2026-10-18: import the trait required by the existing image fixture.
++use base64::Engine as _;
+ use super::support::*;
+ use super::*;
+ use xai_grok_sampling_types::{ContentPart, ConversationItem};
+diff --git a/crates/codegen/xai-grok-shell/src/session/handle.rs b/crates/codegen/xai-grok-shell/src/session/handle.rs
+index 17a1e77..e711b0e 100644
+--- a/crates/codegen/xai-grok-shell/src/session/handle.rs
++++ b/crates/codegen/xai-grok-shell/src/session/handle.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-10-18: identify resident actor incarnations across mobile reconnects.
+ //! `SessionHandle`: the `Clone + Send` proxy for interacting with a session actor.
+ //!
+ //! Callers hold a `SessionHandle` and send `SessionCommand` messages via the internal channel.
+@@ -51,6 +52,8 @@ impl Drop for WorkGuard {
+ }
+ #[derive(Clone)]
+ pub struct SessionHandle {
++    /// Ephemeral identity; a cold restore of the same persisted session gets a new UUID.
++    pub resident_actor_id: uuid::Uuid,
+     pub cmd_tx: mpsc::UnboundedSender<SessionCommand>,
+     pub(crate) persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
+     /// Shared with the actor so external cancellation can target subagents launched by the active turn only.

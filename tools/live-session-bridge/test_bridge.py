@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from aiohttp import ClientSession, WSServerHandshakeError, WSMsgType, web
 
@@ -31,10 +32,12 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.actor_identity_supported = True
         self.answer_roster = True
         self.answer_load = True
+        self.owner_auth_error = False
         self.drop_registration = False
         self.leader_writers = []
         self.server = await asyncio.start_unix_server(self.leader, path=self.socket)
-        self.runner = web.AppRunner(bridge.make_app(bridge.Bridge(self.socket, "x" * 40, "1.0.45")))
+        self.bridge = bridge.Bridge(self.socket, "x" * 40, "1.0.45")
+        self.runner = web.AppRunner(bridge.make_app(self.bridge))
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await site.start()
@@ -95,6 +98,13 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                             ),
                         },
                     )
+                elif value.get("method") == "authenticate" and value.get("id") == bridge.INTERNAL_PREFIX + "owner-auth":
+                    auth_response = {"jsonrpc": "2.0", "id": value["id"], "result": {}}
+                    if self.owner_auth_error:
+                        auth_response = {"jsonrpc": "2.0", "id": value["id"], "error": {"code": -32000, "message": "Sign in on Mac"}}
+                    await bridge.write_frame(writer, {
+                        "type": "acp", "payload": json.dumps(auth_response),
+                    })
                 elif value.get("method") == bridge.ROSTER_METHOD:
                     if not self.answer_roster:
                         continue
@@ -194,6 +204,15 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await bridge.write_frame(
             self.leader_writers[-1], {"type": "acp", "payload": json.dumps(value)}
         )
+
+    async def next_forward(self, method):
+        async with asyncio.timeout(2):
+            while True:
+                frame = await self.seen.get()
+                if frame.get("type") == "acp":
+                    value = json.loads(frame["payload"])
+                    if value.get("method") == method:
+                        return value
 
     async def assert_session_ended(self, ws):
         event = await ws.receive_json()
@@ -632,6 +651,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             {"id": 1, "result": {}, "error": {}},
             {"id": 1},
             {"method": "session/load", "params": {"sessionId": "live-1", "cwd": "/workspace"}},
+            {"method": "session/new", "params": {"cwd": self.temp.name}},
             {"method": "session/prompt", "params": {"sessionId": "live-1"}},
         ]
         for value in invalid:
@@ -786,6 +806,314 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await ws.send_json(cancel)
         cancel["params"]["_meta"] = {"x.ai/residentActorId": "actor-1"}
         self.assertEqual(json.loads((await self.seen.get())["payload"]), cancel)
+        await ws.close()
+
+    async def test_new_session_uses_mac_workspace_and_requires_strict_load_before_control(self):
+        ws = await self.connect()
+        request = {
+            "jsonrpc": "2.0", "id": "create", "method": "session/new",
+            "params": {"cwd": self.temp.name, "mcpServers": [], "_meta": {}},
+        }
+        await ws.send_json(request)
+        forwarded = await self.next_forward("session/new")
+        self.assertEqual(forwarded["params"]["cwd"], str(Path(self.temp.name).resolve()))
+        self.assertEqual(forwarded["params"]["_meta"], {})
+        await self.emit_native({"jsonrpc": "2.0", "id": "create", "result": {"sessionId": "new-1"}})
+        self.assertEqual((await ws.receive_json())["result"]["sessionId"], "new-1")
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": "prompt", "method": "session/prompt",
+            "params": {"sessionId": "new-1", "prompt": []},
+        })
+        self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_new_session_rejects_missing_relative_non_directory_and_inaccessible_workspaces(self):
+        ws = await self.connect()
+        file = Path(self.temp.name) / "file.txt"
+        file.write_text("fixture")
+        for cwd in [None, 42, "", ".", "~/project", self.temp.name + "/missing", str(file), "/bad\x00path"]:
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": cwd},
+            })
+            self.assertIn("error", await ws.receive_json(), repr(cwd))
+        with patch.object(bridge.os, "access", return_value=False):
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+            })
+            self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_new_session_cannot_override_permissions_tools_identity_or_configuration(self):
+        ws = await self.connect()
+        for extra in [
+            {"_meta": {"yoloMode": True}}, {"_meta": {"autoMode": True}},
+            {"_meta": {"sessionId": "chosen-id"}}, {"_meta": {"systemPromptOverride": "override"}},
+            {"mcpServers": [{"command": "replacement"}]}, {"sessionId": "chosen-id"},
+            {"permissionMode": "always-approve"}, {"_meta": None}, {"mcpServers": None},
+        ]:
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {"cwd": self.temp.name, **extra},
+            })
+            self.assertIn("error", await ws.receive_json(), extra)
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_new_session_allows_only_one_pending_create_and_releases_on_reply(self):
+        ws = await self.connect()
+        async def create(identifier):
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": identifier, "method": "session/new",
+                "params": {"cwd": self.temp.name},
+            })
+        await create(1)
+        await self.next_forward("session/new")
+        await create(2)
+        self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty())
+        await self.emit_native({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "fixture"}})
+        self.assertIn("error", await ws.receive_json())
+        await create(3)
+        self.assertEqual((await self.next_forward("session/new"))["id"], 3)
+        await ws.close()
+
+    async def test_new_session_requires_initialize_with_resident_capability(self):
+        ws = await self.client.ws_connect(self.url, headers={"Authorization": "Bearer " + "x" * 40})
+        await self.seen.get()
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_unrelated_reply_cannot_release_pending_creation_and_disconnect_sends_no_cancel(self):
+        ws = await self.connect()
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 7, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        await self.next_forward("session/new")
+        # The JSON string "7" cannot complete the numeric request 7.
+        await self.emit_native({"jsonrpc": "2.0", "id": "7", "result": {"sessionId": "unrelated"}})
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 8, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+        await asyncio.wait_for(self.closed.wait(), 1)
+        self.assertTrue(self.seen.empty())
+
+    async def test_catalog_uses_attached_session_and_actual_execution_workspace(self):
+        self.roster[0]["cwd"] = "/display-project"
+        self.execution_cwd = "/project/.worktree/live"
+        ws = await self.connect()
+        await self.load(ws, cwd=self.execution_cwd)
+        await ws.receive_json()
+        await self.seen.get()
+        await self.seen.get()
+        for params in [{"sessionId": "live-1"}, {"sessionId": "live-1", "cwd": self.execution_cwd}]:
+            request = {"jsonrpc": "2.0", "id": 8, "method": "_x.ai/commands/list", "params": params}
+            await ws.send_json(request)
+            self.assertEqual(json.loads((await asyncio.wait_for(self.seen.get(), 1))["payload"]), request)
+            await self.emit_native({"jsonrpc": "2.0", "id": 8, "result": {"commands": []}})
+            self.assertEqual((await ws.receive_json())["result"]["commands"], [])
+        await ws.close()
+
+    async def create_owned_fixture(self, ws, identifier=1):
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": identifier, "method": "session/new",
+            "params": {"cwd": self.temp.name},
+        })
+        await self.next_forward("session/new")
+        owner = next(owner for owner in self.bridge.owners if not owner.result.done())
+        native_writer = self.leader_writers[-1]
+        response = {"jsonrpc": "2.0", "id": identifier, "result": {"sessionId": "mobile-owned"}}
+        await bridge.write_frame(native_writer, {"type": "acp", "payload": json.dumps(response)})
+        self.assertEqual(await ws.receive_json(), response)
+        return owner, native_writer
+
+    async def test_mobile_owner_survives_idle_phone_detach_and_drains_without_answering_permissions(self):
+        ws = await self.connect()
+        owner, native_writer = await self.create_owned_fixture(ws)
+        await ws.close()
+        await asyncio.wait_for(self.closed.wait(), 1)
+        self.assertFalse(owner.task.done())
+        self.assertEqual(len(self.bridge.owners), 1)
+        permission = {
+            "jsonrpc": "2.0", "id": "pending-permission", "method": "session/request_permission",
+            "params": {"sessionId": "mobile-owned", "options": []},
+        }
+        await bridge.write_frame(native_writer, {"type": "acp", "payload": json.dumps(permission)})
+        for index in range(12):
+            # Exceeds normal socket buffers; a non-draining owner would stall.
+            await asyncio.wait_for(bridge.write_frame(native_writer, {
+                "type": "acp", "payload": json.dumps({
+                    "jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "mobile-owned", "sequence": index, "text": "x" * 262144,
+                    },
+                }),
+            }), 2)
+        self.assertTrue(self.seen.empty(), "Owner must never answer approvals or cancel work")
+        await bridge.write_frame(native_writer, {"type": "acp", "payload": json.dumps({
+            "jsonrpc": "2.0", "method": "_x.ai/sessions/changed", "params": {"removed": ["mobile-owned"]},
+        })})
+        await asyncio.wait_for(owner.task, 2)
+        self.assertEqual(len(self.bridge.owners), 0)
+        self.assertTrue(self.seen.empty())
+
+    async def test_pending_creation_survives_phone_loss_before_response(self):
+        ws = await self.connect()
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        await self.next_forward("session/new")
+        owner = next(iter(self.bridge.owners))
+        native_writer = self.leader_writers[-1]
+        await ws.close()
+        await asyncio.wait_for(self.closed.wait(), 1)
+        await bridge.write_frame(native_writer, {"type": "acp", "payload": json.dumps({
+            "jsonrpc": "2.0", "id": 1, "result": {"sessionId": "created-after-detach"},
+        })})
+        await asyncio.wait_for(asyncio.shield(owner.result), 2)
+        self.assertEqual(owner.session_id, "created-after-detach")
+        self.assertFalse(owner.task.done())
+        self.assertTrue(self.seen.empty())
+
+    async def test_owner_capacity_rejects_before_create_and_native_end_releases_slot(self):
+        with patch.object(bridge, "MAX_OWNED_SESSIONS", 1):
+            ws = await self.connect()
+            owner, native_writer = await self.create_owned_fixture(ws)
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {"cwd": self.temp.name},
+            })
+            failure = await ws.receive_json()
+            self.assertIn("limit", failure["error"]["message"])
+            self.assertTrue(self.seen.empty())
+            await bridge.write_frame(native_writer, {"type": "acp", "payload": json.dumps({
+                "jsonrpc": "2.0", "method": "x.ai/sessions/changed", "params": {"removed": ["mobile-owned"]},
+            })})
+            await asyncio.wait_for(owner.task, 2)
+            self.assertEqual(len(self.bridge.owners), 0)
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 3, "method": "session/new", "params": {"cwd": self.temp.name},
+            })
+            self.assertEqual((await self.next_forward("session/new"))["id"], 3)
+            await ws.close()
+
+    async def test_owner_leader_eof_releases_slot_and_never_reconnects_or_restores(self):
+        ws = await self.connect()
+        owner, native_writer = await self.create_owned_fixture(ws)
+        native_writer.close()
+        await native_writer.wait_closed()
+        await asyncio.wait_for(owner.task, 2)
+        self.assertEqual(len(self.bridge.owners), 0)
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_creator_eof_before_result_is_transport_uncertainty_not_definite_rejection(self):
+        ws = await self.connect()
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        await self.next_forward("session/new")
+        owner = next(iter(self.bridge.owners))
+        native_writer = self.leader_writers[-1]
+        native_writer.close()
+        await native_writer.wait_closed()
+        response = await asyncio.wait_for(ws.receive(), 2)
+        self.assertEqual(response.type, WSMsgType.CLOSE)
+        self.assertEqual(response.data, 1011)
+        await asyncio.wait_for(owner.task, 2)
+        self.assertIsNone(owner.result.result())
+        self.assertEqual(len(self.bridge.owners), 0)
+        self.assertTrue(self.seen.empty(), "An unknown outcome must never be retried")
+
+    async def test_creation_result_deadline_releases_slot_and_reports_uncertainty(self):
+        with patch.object(bridge, "CREATION_RESPONSE_TIMEOUT", 0.05):
+            ws = await self.connect()
+            await ws.send_json({
+                "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+            })
+            await self.next_forward("session/new")
+            owner = next(iter(self.bridge.owners))
+            response = await asyncio.wait_for(ws.receive(), 2)
+            self.assertEqual(response.type, WSMsgType.CLOSE)
+            self.assertEqual(response.data, 1011)
+            await asyncio.wait_for(owner.task, 2)
+            self.assertEqual(len(self.bridge.owners), 0)
+            self.assertTrue(self.seen.empty())
+
+    async def test_explicit_native_creation_error_remains_definite_and_releases_owner(self):
+        ws = await self.connect()
+        request = {"jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name}}
+        await ws.send_json(request)
+        await self.next_forward("session/new")
+        owner = next(iter(self.bridge.owners))
+        failure = bridge.rpc_error(request, "Workspace rejected")
+        await bridge.write_frame(self.leader_writers[-1], {"type": "acp", "payload": json.dumps(failure)})
+        self.assertEqual(await ws.receive_json(), failure)
+        self.assertFalse(ws.closed)
+        await asyncio.wait_for(owner.task, 2)
+        self.assertEqual(len(self.bridge.owners), 0)
+        await ws.close()
+
+    async def test_ordinary_attachment_has_no_bridge_lifetime_owner(self):
+        ws = await self.connect()
+        await self.load(ws)
+        await ws.receive_json()
+        await self.seen.get()
+        await self.seen.get()
+        self.assertEqual(len(self.bridge.owners), 0)
+        await ws.close()
+
+    async def test_creation_auth_failure_releases_owner_without_creating_actor(self):
+        ws = await self.connect()
+        self.owner_auth_error = True
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": {"cwd": self.temp.name},
+        })
+        response = await ws.receive_json()
+        self.assertIn("error", response)
+        await asyncio.gather(*(owner.task for owner in tuple(self.bridge.owners)))
+        self.assertEqual(len(self.bridge.owners), 0)
+        while not self.seen.empty():
+            frame = await self.seen.get()
+            if frame.get("type") == "acp":
+                self.assertNotEqual(json.loads(frame["payload"]).get("method"), "session/new")
+        await ws.close()
+
+    async def test_bridge_shutdown_closes_owner_without_cancel_or_cold_restore(self):
+        ws = await self.connect()
+        owner, _ = await self.create_owned_fixture(ws)
+        await self.bridge.cleanup(None)
+        self.assertTrue(owner.task.done())
+        self.assertEqual(len(self.bridge.owners), 0)
+        self.assertEqual(len(self.bridge.creations), 0)
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_catalog_cannot_discover_arbitrary_workspaces_or_change_configuration(self):
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": 8, "method": "_x.ai/commands/list", "params": {"sessionId": "live-1"}})
+        self.assertIn("error", await ws.receive_json())
+        await self.load(ws)
+        await ws.receive_json()
+        await self.seen.get()
+        await self.seen.get()
+        for params in [
+            {}, {"cwd": "/workspace"}, {"sessionId": "other"},
+            {"sessionId": "live-1", "cwd": "/other"}, {"sessionId": "live-1", "kind": "chat"},
+            {"sessionId": "live-1", "refresh": True}, {"sessionId": "live-1", "_meta": {}},
+        ]:
+            await ws.send_json({"jsonrpc": "2.0", "id": 8, "method": "_x.ai/commands/list", "params": params})
+            self.assertIn("error", await ws.receive_json(), params)
+        for method in ["x.ai/skills/list", "x.ai/skills/toggle", "x.ai/skills/add", "x.ai/commands/list"]:
+            await ws.send_json({"jsonrpc": "2.0", "id": 8, "method": method, "params": {"sessionId": "live-1"}})
+            self.assertIn("error", await ws.receive_json(), method)
+        self.assertTrue(self.seen.empty())
         await ws.close()
 
     async def test_out_of_order_replies_allow_identifier_reuse_after_completion(self):

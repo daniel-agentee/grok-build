@@ -1,6 +1,6 @@
 """Authenticated ACP WebSocket transport for an existing Grok leader.
 
-No agent, model connection, history store, or session is created by this bridge.
+The existing leader owns every session, including explicitly requested new ones.
 The leader remains responsible for execution, queuing, replay, and approvals.
 """
 
@@ -26,6 +26,8 @@ PROTOCOL = 1
 PREFLIGHT_TIMEOUT = 15
 MAX_PENDING_LOADS = 4
 MAX_PENDING_REQUESTS = 128
+MAX_OWNED_SESSIONS = 8
+CREATION_RESPONSE_TIMEOUT = 30
 ROSTER_METHOD = "_x.ai/sessions/list"
 INTERNAL_PREFIX = "grok-mobile-preflight:"
 READ_METHODS = {
@@ -41,6 +43,7 @@ READ_METHODS = {
     "_x.ai/models/list",
     "x.ai/workspaces/list",
     "_x.ai/workspaces/list",
+    "_x.ai/commands/list",
 }
 SESSION_METHODS = {"session/prompt", "session/cancel", "session/set_model"}
 INITIALIZE_META_KEYS = {"clientIdentifier", "clientUserMessageEcho"}
@@ -49,6 +52,7 @@ EMPTY_PARAM_METHODS = READ_METHODS - {
     "authenticate",
     "x.ai/session/info",
     "_x.ai/session/info",
+    "_x.ai/commands/list",
 }
 LOAD_META_KEYS = {
     "x.ai/residentActorId",
@@ -192,7 +196,7 @@ def valid_rpc(value: dict[str, Any]) -> bool:
             and bool(value["method"])
             and "result" not in value
             and "error" not in value
-            and (value["method"] not in ("session/load", "session/prompt") or "id" in value)
+            and (value["method"] not in ("session/new", "session/load", "session/prompt") or "id" in value)
         )
     return "id" in value and (("result" in value) != ("error" in value))
 
@@ -205,9 +209,114 @@ def unwrap_result(response: dict[str, Any]) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
+class SessionOwner:
+    """One bounded native subscriber for a deliberately mobile-created actor.
+
+    The creator connection, rather than a second late attachment, owns the actor
+    before its SID is exposed. A lost phone/response therefore cannot race idle
+    eviction. It never answers permission requests or reconnects a dead actor.
+    """
+
+    def __init__(self, bridge: Bridge, request: dict[str, Any]):
+        self.bridge = bridge
+        self.request = request
+        self.session_id: str | None = None
+        # None is an uncertain native outcome, never a definite RPC rejection.
+        self.result: asyncio.Future[dict[str, Any] | None] = asyncio.get_running_loop().create_future()
+        self.task = asyncio.create_task(self.run())
+
+    async def run(self) -> None:
+        writer = None
+        creation_dispatched = False
+        try:
+            reader, writer = await connect_leader(
+                self.bridge.socket, self.bridge.version, require_capability=True
+            )
+            auth_id = INTERNAL_PREFIX + "owner-auth"
+            await write_frame(writer, {"type": "acp", "payload": json.dumps({
+                "jsonrpc": "2.0", "id": auth_id, "method": "authenticate",
+                "params": {"methodId": "cached_token"},
+            })})
+            async with asyncio.timeout(30):
+                while True:
+                    frame = await read_frame(reader)
+                    if frame.get("type") != "acp":
+                        continue
+                    auth = json.loads(frame["payload"], parse_constant=reject_nonfinite)
+                    if auth.get("id") == auth_id and "method" not in auth:
+                        if "error" in auth:
+                            self.result.set_result({**auth, "id": self.request["id"]})
+                            return
+                        break
+            creation_dispatched = True
+            creation_deadline = asyncio.get_running_loop().time() + CREATION_RESPONSE_TIMEOUT
+            await write_frame(writer, {"type": "acp", "payload": json.dumps(self.request)})
+            while True:
+                if self.result.done():
+                    frame = await read_frame(reader)
+                else:
+                    async with asyncio.timeout_at(creation_deadline):
+                        frame = await read_frame(reader)
+                if frame.get("type") in {"shutdown", "shutting_down"}:
+                    return
+                if frame.get("type") != "acp":
+                    continue
+                value = json.loads(frame["payload"], parse_constant=reject_nonfinite)
+                if not isinstance(value, dict):
+                    raise ValueError("Invalid owner frame")
+                if (
+                    not self.result.done() and "method" not in value
+                    and request_key(value) == request_key(self.request)
+                ):
+                    if "error" in value:
+                        self.result.set_result(value)
+                        return
+                    sid = unwrap_result(value).get("sessionId")
+                    if not isinstance(sid, str) or not sid:
+                        raise ValueError("Native create omitted session identity")
+                    self.session_id = sid
+                    self.result.set_result(value)
+                method = value.get("method", "")
+                params = value.get("params", {})
+                if isinstance(method, str) and method.startswith("_"):
+                    method = method[1:]
+                    if isinstance(params, dict) and isinstance(params.get("method"), str):
+                        method, params = params["method"], params.get("params", {})
+                if (
+                    method == "x.ai/sessions/changed" and isinstance(params, dict)
+                    and isinstance(params.get("removed"), list)
+                    and self.session_id in params["removed"]
+                ):
+                    return
+        except (OSError, ValueError, TypeError, KeyError, asyncio.TimeoutError,
+                asyncio.IncompleteReadError):
+            # No raw exception text: native transport failures can carry URLs.
+            pass
+        finally:
+            if not self.result.done():
+                self.result.set_result(None if creation_dispatched else rpc_error(
+                    self.request,
+                    "Session creation connection ended before creation; reconnect and try again",
+                ))
+            if writer is not None:
+                writer.close()
+                with suppress(ConnectionError):
+                    await writer.wait_closed()
+            self.bridge.owners.discard(self)
+
+
 class Bridge:
     def __init__(self, socket: Path, secret: str, version: str):
         self.socket, self.secret, self.version = socket, secret, version
+        self.owners: set[SessionOwner] = set()
+        self.creations: set[asyncio.Task] = set()
+
+    async def cleanup(self, app: web.Application) -> None:
+        owners = tuple(self.owners)
+        for owner in owners:
+            owner.task.cancel()
+        await asyncio.gather(*(owner.task for owner in owners), return_exceptions=True)
+        await asyncio.gather(*tuple(self.creations), return_exceptions=True)
 
     async def health(self, request: web.Request) -> web.Response:
         available = False
@@ -245,10 +354,13 @@ class Bridge:
         await ws.prepare(request)
         pending: dict[str, tuple[dict[str, Any], asyncio.TimerHandle]] = {}
         loading: dict[str, str] = {}
+        loading_workspaces: dict[str, str] = {}
+        creating: set[str] = set()
         inflight: set[str] = set()
         initializing: set[str] = set()
         resident_only_supported = False
         attached: dict[str, str] = {}
+        attached_workspaces: dict[str, str] = {}
         attachment_ended = False
         counter = 0
 
@@ -349,14 +461,17 @@ class Bridge:
                         params["_meta"]["x.ai/resident_only"] = True
                         params["_meta"].pop("x.ai/leaderClientId", None)
                         loading[request_key(preflight)] = params["sessionId"]
+                        loading_workspaces[request_key(preflight)] = params["cwd"]
                         await forward(preflight)
                     continue
                 loaded_session = loading.pop(request_key(value), None) if is_response else None
+                loaded_workspace = loading_workspaces.pop(request_key(value), None) if is_response else None
                 if loaded_session and "error" not in value:
                     actor_id = unwrap_result(value).get("_meta", {}).get("x.ai/residentActorId")
                     if not isinstance(actor_id, str) or not actor_id:
                         raise ValueError("Leader omitted resident actor identity")
                     attached[loaded_session] = actor_id
+                    attached_workspaces[loaded_session] = loaded_workspace
                 # Late preflight replies are bridge-private too.
                 if str(value.get("id", "")).startswith(INTERNAL_PREFIX):
                     continue
@@ -413,11 +528,87 @@ class Bridge:
                 if "sessionId" in params and not isinstance(params["sessionId"], str):
                     await ws.send_json(rpc_error(value, "Session identity must be a string"))
                     continue
-                if method and method not in READ_METHODS | SESSION_METHODS | {"session/load"}:
+                if method and method not in READ_METHODS | SESSION_METHODS | {"session/load", "session/new"}:
                     await ws.send_json(
                         rpc_error(value, "Method is not available on the live-session bridge")
                     )
                     continue
+                if method == "session/new":
+                    if not resident_only_supported:
+                        await ws.send_json(rpc_error(
+                            value, "Initialize the compatible live leader before creating a session"
+                        ))
+                        continue
+                    if (
+                        params.keys() - {"cwd", "mcpServers", "_meta"}
+                        or params.get("mcpServers", []) != []
+                        or params.get("_meta", {}) != {}
+                    ):
+                        await ws.send_json(rpc_error(
+                            value, "New sessions must preserve Mac tools and permission settings"
+                        ))
+                        continue
+                    try:
+                        cwd = params.get("cwd")
+                        if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+                            raise ValueError()
+                        workspace = Path(cwd).resolve(strict=True)
+                        if not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK):
+                            raise ValueError()
+                    except (OSError, RuntimeError, ValueError):
+                        await ws.send_json(rpc_error(
+                            value, "Choose an existing, accessible absolute Mac workspace directory"
+                        ))
+                        continue
+                    if creating:
+                        await ws.send_json(rpc_error(
+                            value, "A session creation is already pending; wait or reconnect and select its result"
+                        ))
+                        continue
+                    if len(self.owners) >= MAX_OWNED_SESSIONS:
+                        await ws.send_json(rpc_error(
+                            value, "Mobile session limit reached; close a created session from the Mac before creating another"
+                        ))
+                        continue
+                    params["cwd"] = str(workspace)
+                    creating.add(request_key(value))
+                    inflight.add(request_key(value))
+                    # A successful create is deliberately not an attachment proof.
+                    # The client must strict-load its returned SID before control.
+                    owner = SessionOwner(self, value)
+                    self.owners.add(owner)
+
+                    async def deliver_creation(owner=owner, key=request_key(value)):
+                        try:
+                            response = await owner.result
+                            if not ws.closed:
+                                with suppress(ConnectionError, RuntimeError):
+                                    if response is None:
+                                        # A normal RPC error means definite rejection to clients.
+                                        # Losing the creator reply requires transport uncertainty
+                                        # so clients reconcile discovery before another creation.
+                                        await ws.close(code=1011, message=b"Session creation outcome uncertain")
+                                    else:
+                                        await ws.send_json(response)
+                        finally:
+                            creating.discard(key)
+                            inflight.discard(key)
+
+                    delivery = asyncio.create_task(deliver_creation())
+                    self.creations.add(delivery)
+                    delivery.add_done_callback(self.creations.discard)
+                    continue
+                if method == "_x.ai/commands/list":
+                    sid = params.get("sessionId")
+                    if (
+                        params.keys() - {"sessionId", "cwd"}
+                        or sid not in attached
+                        or ("cwd" in params and params["cwd"] != attached_workspaces.get(sid))
+                    ):
+                        await ws.send_json(rpc_error(
+                            value, "Read commands for an attached session in its actual workspace"
+                        ))
+                        continue
                 if method == "initialize":
                     meta = params.get("_meta", {})
                     capabilities = params.get("clientCapabilities", {})
@@ -589,6 +780,7 @@ class Bridge:
 
 def make_app(bridge: Bridge) -> web.Application:
     app = web.Application()
+    app.on_cleanup.append(bridge.cleanup)
     app.router.add_get("/health", bridge.health)
     app.router.add_get("/ws", bridge.websocket)
     return app

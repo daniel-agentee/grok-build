@@ -1,0 +1,23 @@
+{
+  "runtimeBinarySHA256": "d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab",
+  "firstStalledSID": "01a15905-072b-7d93-abac-37529fa6432f",
+  "secondStalledSID": "01a1590c-b55a-7e83-96f6-e90d5b434792",
+  "nativePID": 72143,
+  "facts": [
+    "First actor logged third prompt queued before history append, no promotion",
+    "First actor history contains only two earlier prompts",
+    "Sample shows16 MCP process-spawn blocking workers associated with first actor creation, parked at std Unix Command spawn read(exec handshake)",
+    "Per-session Tokio blocking pool max16; queued prompt history awaits spawn_blocking",
+    "Second fresh actor also stalled its third real prompt; initial two native prompts completed",
+    "No app fixture MCP config changes",
+    "Harmless same setsid+piped stdio32 concurrent /usr/bin/true launches passed33ms",
+    "Native cached jemalloc harmless32 concurrent launches passed45ms",
+    "Actual PATH uv,node,bun --version32 each passed231ms91ms49ms"
+  ],
+  "unresolved": "Reason actual configured MCP child remains in fork/exec transition; sampling child itself waits, no child userspace stack yet",
+  "implementedContainment": "Process-wide4 in-flight native MCP OS launches; per-identical-launch lane prevents cancelled or timed-out retry; permits remain inside blocking closure until OS returns. Existing configured startup deadline covers admission and launch. Late SpawnGuard cleanup, MCP configuration, sandbox and approvals preserved.",
+  "verification": {
+    "focusedNativeTestsPassed": 6,
+    "liveVerification": "Six final Simulator/native tests passed with immutable F0DC binary f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc and final71 app source9260e636889e0b9d3b5a3880bf1e93c896356b1d95f270c3c6e8200f036243e2: creation/three native turns/skills90.417s; sole-phone idle/pending-permission disconnect52.854s; sole-phone active/background/termination53.560s; actual Terminal one-time approval34.227s; independent Terminal context recall visible on phone10.649s; near-simultaneous submissions48.539s. Original actor01a15920-9e75-7bf2-8f34-486761a04c4f retained; controlled files each execute once, zero duplicate event IDs and zero pending approvals. The initial active test had a harness completion-timing assertion failure; corrected rerun retains completion/Stop/approval/once-only assertions. Exact artifacts, failed-round disclosure and authoritative replay are separately recorded in ../../../grok-build-ios/tools/session-features-smoke/evidence/native-bounded-live/live-manifest.json and replay-proof.json. These results verify containment in this live run; they do not resolve the underlying macOS process-creation condition. Four OS-blocked launches can still delay stdio MCP availability and shutdown may wait for OS-blocked calls."
+  }
+}

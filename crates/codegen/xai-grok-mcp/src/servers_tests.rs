@@ -1,3 +1,4 @@
+// Modified 2026-10-20: test bounded MCP process launch and retained cleanup ownership.
 use super::*;
 use rmcp::ServiceExt;
 use std::path::PathBuf;
@@ -240,6 +241,7 @@ fn safe_stdio_child_drop_without_entered_runtime_reaps_child() {
             None,
             "test".to_string(),
             xai_grok_session_events::EventWriter::noop(),
+            std::time::Duration::from_secs(5),
         )
         .await
         .expect("spawn test child");
@@ -285,6 +287,7 @@ async fn scope_kill_all_reaps_enrolled_mcp_child_while_owner_wedged() {
         Some(&scope),
         "wedge-test".to_string(),
         xai_grok_session_events::EventWriter::noop(),
+        std::time::Duration::from_secs(5),
     )
     .await
     .expect("spawn enrolled MCP child");
@@ -5069,6 +5072,7 @@ async fn spawn_into_a_closed_scope_fails_fast() {
         Some(&scope),
         "closed-scope".to_string(),
         xai_grok_session_events::EventWriter::noop(),
+        std::time::Duration::from_secs(5),
     )
     .await;
 
@@ -5757,4 +5761,174 @@ async fn completed_tool_call_sends_no_cancellation() {
     ));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(cancellations(&received).is_empty());
+}
+
+// A blocked OS spawn must not occupy every worker used by prompt persistence.
+#[test]
+fn bounded_stdio_spawn_preserves_history_worker_and_retains_timed_out_slot() {
+    use std::time::Duration;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(2)
+        .build()
+        .unwrap();
+    let slots = Arc::new(tokio::sync::Semaphore::new(1));
+    let (release, blocked) = std::sync::mpsc::channel();
+    rt.block_on(async {
+        let first_slots = slots.clone();
+        let first = tokio::spawn(async move {
+            bounded_stdio_spawn(vec![first_slots], Duration::from_millis(100), move || {
+                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while slots.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // This is the same blocking-pool operation the session prompt history uses.
+        let history = tempfile::NamedTempFile::new().unwrap();
+        let path = history.path().to_owned();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || std::fs::write(path, b"distinctive prompt\n")),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        let error = first.await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            error
+                .to_string()
+                .contains("operating-system process launch")
+        );
+        assert_eq!(
+            slots.available_permits(),
+            0,
+            "timeout must not release an unresolved OS launch"
+        );
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let launched = started.clone();
+        let error =
+            bounded_stdio_spawn(vec![slots.clone()], Duration::from_millis(30), move || {
+                launched.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("capacity remained occupied"));
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while slots.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        bounded_stdio_spawn(vec![slots], Duration::from_secs(2), || Ok(()))
+            .await
+            .unwrap();
+    });
+}
+
+#[tokio::test]
+async fn bounded_stdio_spawn_drops_late_result_after_timeout() {
+    use std::time::Duration;
+    struct LateResult(std::sync::mpsc::Sender<()>);
+    impl Drop for LateResult {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let slots = Arc::new(tokio::sync::Semaphore::new(1));
+    let (release, blocked) = std::sync::mpsc::channel();
+    let (dropped, observed) = std::sync::mpsc::channel();
+    let result = bounded_stdio_spawn(vec![slots.clone()], Duration::from_millis(30), move || {
+        blocked.recv_timeout(Duration::from_secs(10)).unwrap();
+        Ok(LateResult(dropped))
+    })
+    .await;
+    assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::TimedOut));
+    assert_eq!(slots.available_permits(), 0);
+    release.send(()).unwrap();
+    tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(2)))
+        .await
+        .unwrap()
+        .expect("late spawn guard must be dropped for cleanup");
+}
+
+#[tokio::test]
+async fn bounded_stdio_spawn_cancellation_blocks_same_identity_but_not_other_launches() {
+    use std::time::Duration;
+    let mut command = Command::new("/usr/bin/true");
+    command.env("GROK_SESSION_ID", "blocked-launch-test");
+    let same = stdio_launch_slot(&command, "blocked-test");
+    assert!(Arc::ptr_eq(
+        &same,
+        &stdio_launch_slot(&command, "blocked-test")
+    ));
+    let global = Arc::new(tokio::sync::Semaphore::new(4));
+    let (release, blocked) = std::sync::mpsc::channel();
+    let first_slot = same.clone();
+    let first_global = global.clone();
+    let first = tokio::spawn(async move {
+        bounded_stdio_spawn(
+            vec![first_slot, first_global],
+            Duration::from_secs(5),
+            move || {
+                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
+                Ok(())
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while global.available_permits() != 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let launched = started.clone();
+    let error = bounded_stdio_spawn(
+        vec![stdio_launch_slot(&command, "blocked-test"), global.clone()],
+        Duration::from_millis(30),
+        move || {
+            launched.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        global.available_permits(),
+        3,
+        "unresolved retry must not consume spare global capacity"
+    );
+    command.env("GROK_SESSION_ID", "independent-launch-test");
+    let other = stdio_launch_slot(&command, "blocked-test");
+    assert!(!Arc::ptr_eq(&same, &other));
+    bounded_stdio_spawn(vec![other, global], Duration::from_secs(2), || Ok(()))
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while same.available_permits() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
