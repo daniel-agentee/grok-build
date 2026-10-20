@@ -1727,15 +1727,6 @@ impl AppView {
             }
         }
     }
-    /// Mic is live (the [`VoiceState::Recording`] state).
-    pub fn voice_listening(&self) -> bool {
-        self.voice_state.listening()
-    }
-    /// Whether the in-flight session is owned by a hold-press (so its key release ends it).
-    /// `/voice` and toggle-style starts leave this false.
-    pub fn voice_hold_owned(&self) -> bool {
-        self.voice_state.hold()
-    }
     /// Surfaces where bare **Space** may start hold-to-talk without stealing
     /// typed spaces from a non-empty prompt (or Space-to-toggle in modals).
     ///
@@ -1787,83 +1778,6 @@ impl AppView {
                 }
             }
             ActiveView::Welcome => true,
-        }
-    }
-    /// The prompt box that owns in-flight dictation, if any.
-    pub fn voice_recording_target(&self) -> Option<VoiceTarget> {
-        self.voice_state.target()
-    }
-    /// The live partial transcript shown in the prompt overlay, if any.
-    pub fn voice_interim(&self) -> Option<&str> {
-        self.voice_state.interim()
-    }
-    /// Best-effort one-shot command into the voice pipeline (no-op if it isn't up).
-    fn voice_send(&self, cmd: xai_grok_voice::VoiceCommand) {
-        if let Some(tx) = &self.voice_cmd_tx
-            && tx.try_send(cmd).is_err()
-        {
-            tracing::trace!("voice command dropped: pipeline channel full or closed");
-        }
-    }
-    /// Open the mic now (pipeline already up) and enter [`VoiceState::Recording`] bound to `target`.
-    /// `hold` marks a Ctrl+Space hold-press start.
-    pub(crate) fn voice_begin_recording(&mut self, target: VoiceTarget, hold: bool) {
-        self.voice_send(xai_grok_voice::VoiceCommand::PttPress);
-        self.voice_state = VoiceState::Recording {
-            hold,
-            target,
-            interim: None,
-        };
-    }
-    /// Set the live interim transcript.
-    /// No-op unless recording, so a late event after a stop can't repopulate the overlay.
-    pub(crate) fn voice_set_interim(&mut self, text: String) -> bool {
-        if let VoiceState::Recording { interim, .. } = &mut self.voice_state {
-            *interim = Some(text);
-            true
-        } else {
-            false
-        }
-    }
-    /// Clear the interim in place, keeping the current state.
-    /// Called when a final commits (or yields empty) so the overlay drops the partial without a teardown.
-    pub(crate) fn voice_clear_interim(&mut self) {
-        match &mut self.voice_state {
-            VoiceState::Recording { interim, .. } | VoiceState::Stopping { interim, .. } => {
-                *interim = None;
-            }
-            VoiceState::Idle | VoiceState::ColdStart { .. } => {}
-        }
-    }
-    /// Explicit stop (Esc / Ctrl+Space / `[stop]`): release the mic but keep the target and last interim so a trailing STT final still lands.
-    /// Always allowed (never leaves a hot mic). No-op unless recording.
-    pub(crate) fn voice_stop_keeping_final(&mut self) {
-        let VoiceState::Recording {
-            target, interim, ..
-        } = &mut self.voice_state
-        else {
-            return;
-        };
-        let target = *target;
-        let interim = interim.take();
-        self.voice_send(xai_grok_voice::VoiceCommand::PttRelease);
-        self.voice_state = VoiceState::Stopping { target, interim };
-    }
-    /// Hard teardown (submit / error / kill-switch / navigate-away): release the mic and forget the session (no trailing final, no queued start).
-    pub(crate) fn voice_reset(&mut self) {
-        if self.voice_state.listening() {
-            self.voice_send(xai_grok_voice::VoiceCommand::PttRelease);
-        }
-        self.voice_state = VoiceState::Idle;
-    }
-    /// Ctrl+Space hold release: end only a session a Ctrl+Space hold started.
-    /// Cancel a queued hold cold-start, or stop a live hold recording (keeping its trailing final).
-    /// A `/voice` / toggle session (`hold` false) is left untouched, so a Ctrl+Space release can neither cancel nor stop it.
-    pub(crate) fn voice_hold_release(&mut self) {
-        match self.voice_state {
-            VoiceState::ColdStart { hold: true, .. } => self.voice_reset(),
-            VoiceState::Recording { hold: true, .. } => self.voice_stop_keeping_final(),
-            _ => {}
         }
     }
     /// Whether the active view still owns the bound dictation `target`: the box dictation started in is the one currently on screen and selected.
@@ -1957,7 +1871,7 @@ impl AppView {
         }
         self.import_claude_modal.is_some()
             || self.voice_listening()
-            || self.voice_state.pending_cold_start()
+            || self.voice_state.is_pending_cold_start()
     }
     /// Commit interim on real send keys only (not multiline bare Enter).
     fn maybe_commit_voice_interim_before_submit_key(&mut self, key: &crossterm::event::KeyEvent) {

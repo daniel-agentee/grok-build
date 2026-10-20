@@ -149,8 +149,8 @@ impl AgentView {
     /// to advertise `Esc` instead of `Ctrl+C` for CancelTurn. Composed from
     /// the same predicates input routing uses, so the hint cannot claim Esc
     /// while a higher-priority consumer (dropdown, search, viewer/modal,
-    /// agents/persona modal, needs-input overlay, queued-prompt or inline
-    /// edit, subagent-view close, selection/link/goal/rewind/btw/jump,
+    /// agents/persona modal, needs-input overlay, queued-prompt,
+    /// subagent-view close, selection/link/goal/rewind/btw/jump,
     /// latent composer mode) would steal the press. Conservative on purpose:
     /// when false, the cancel hint still names Esc because there is no
     /// alternate keyboard cancel gesture.
@@ -179,7 +179,6 @@ impl AgentView {
         };
         pane_clear
             && matches!(self.prompt_mode, crate::app::queue_edit::PromptMode::Normal)
-            && self.inline_edit.is_none()
             && self.surface() == ViewSurface::Root
             && self.agents_modal.is_none()
             && self.persona_detail.is_none()
