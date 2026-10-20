@@ -1518,6 +1518,65 @@
         assert_eq!(agent.scrollback.len(), scroll_before);
     }
 
+    /// Keep bash suppression through command execution, then switch to the model wait as soon as final output is applied.
+    #[test]
+    fn bash_execute_completion_starts_model_wait_activity() {
+        use crate::acp::tracker::{TurnActivity, WaitingReason};
+
+        let mut app = make_app_with_agent("sess-1");
+        let id = AgentId(0);
+        {
+            let agent = app.agents.get_mut(&id).unwrap();
+            agent.bash_turn = true;
+            agent.session.state = AgentState::TurnRunning;
+            agent.session.current_prompt_id = Some("b1".to_string());
+            agent.note_self_originated_prompt("b1");
+        }
+
+        let send_update = |app: &mut AppView, update| {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            handle(
+                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                    request: acp_fixtures::session_notification("sess-1", update)
+                        .meta(serde_json::json!({ "promptId": "b1" }).as_object().cloned()),
+                    response_tx: tx,
+                }),
+                app,
+            );
+        };
+        let tool_id = acp::ToolCallId::new("bash-mode-1");
+        let mut bash_meta = serde_json::Map::new();
+        bash_meta.insert("bash_mode".into(), serde_json::Value::Bool(true));
+        send_update(
+            &mut app,
+            acp::SessionUpdate::ToolCall(
+                acp::ToolCall::new(tool_id.clone(), "Execute `printf hi`")
+                    .kind(acp::ToolKind::Execute)
+                    .status(acp::ToolCallStatus::InProgress)
+                    .meta(Some(bash_meta)),
+            ),
+        );
+        send_update(
+            &mut app,
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                tool_id,
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(acp::ToolCallStatus::Completed))
+                    .raw_output(Some(serde_json::json!({
+                        "type": "Bash",
+                        "output_for_prompt": "hi",
+                    }))),
+            )),
+        );
+
+        let agent = app.agents.get(&id).unwrap();
+        assert!(!agent.bash_turn, "final execute output begins the model phase");
+        assert!(matches!(
+            agent.resolve_turn_activity(),
+            Some(TurnActivity::Waiting(WaitingReason::Model))
+        ));
+    }
+
     /// The gate buffers a promoted turn's stream while the previous turn is still current; the adoption flushes it.
     #[test]
     fn fifo_handoff_buffers_instant_bash_turn_and_flushes_on_adoption() {

@@ -609,12 +609,19 @@ impl SessionActor {
                 self.signals_handle().record_edit_and_retry();
             }
         }
+        let mut bash_prompt_index = None;
         if policy.authority != InputAuthority::ModelAuthoredUntrusted
             && let Some(bash_command) = Self::extract_bash_command(&prompt_blocks)
         {
-            return self
+            match self
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
-                .await;
+                .await?
+            {
+                super::tool_dispatch::DirectBashCommandOutcome::ContinueToModel {
+                    prompt_index,
+                } => bash_prompt_index = Some(prompt_index),
+                super::tool_dispatch::DirectBashCommandOutcome::End(result) => return result,
+            }
         }
         let mut pending_skill_information: Option<String> = None;
         let original_prompt_text = prompt_blocks.iter().fold(String::new(), |mut acc, b| {
@@ -885,7 +892,10 @@ impl SessionActor {
             session_id: self.session_info.id.0.to_string(),
             turn_number: turn_idx,
         });
-        let current_prompt_index = self.chat_state_handle.get_prompt_index().await;
+        let current_prompt_index = match bash_prompt_index {
+            Some(prompt_index) => prompt_index,
+            None => self.chat_state_handle.get_prompt_index().await,
+        };
         xai_grok_telemetry::session_ctx::begin_prompt_id();
         let mut chunk_meta = serde_json::Map::new();
         chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
@@ -906,7 +916,9 @@ impl SessionActor {
             }
             acc
         });
-        let prompt_block = if policy.authority != InputAuthority::ModelAuthoredUntrusted {
+        let prompt_block = if bash_prompt_index.is_none()
+            && policy.authority != InputAuthority::ModelAuthoredUntrusted
+        {
             let prompt_gate_verdict = self
                 .dispatch_prompt_submit_hook(
                     xai_grok_hooks::event::HookPayload::UserPromptSubmit {
@@ -943,6 +955,8 @@ impl SessionActor {
             if let Some(ack) = persist_ack.take() {
                 let _ = ack.send(());
             }
+        } else if bash_prompt_index.is_some() {
+            // Bash mode already echoed, persisted, and committed the command history item.
         } else {
             self.chat_state_handle.increment_prompt_index();
             *self.tool_context.prompt_index.lock().await = current_prompt_index;

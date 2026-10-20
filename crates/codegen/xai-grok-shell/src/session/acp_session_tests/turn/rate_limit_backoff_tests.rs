@@ -85,6 +85,17 @@ pub(super) async fn actor_under_test(
     retry_policy: xai_grok_sampler::RetryPolicy,
     transient_retry_enabled: bool,
 ) -> (Arc<SessionActor>, CapturedRetries) {
+    actor_under_test_with_terminal(server, session, retry_policy, transient_retry_enabled, None)
+        .await
+}
+
+pub(super) async fn actor_under_test_with_terminal(
+    server: &MockInferenceServer,
+    session: SessionKind,
+    retry_policy: xai_grok_sampler::RetryPolicy,
+    transient_retry_enabled: bool,
+    terminal: Option<Arc<dyn crate::terminal::AsyncTerminalRunner>>,
+) -> (Arc<SessionActor>, CapturedRetries) {
     let sampler_max_retries = retry_policy.max_retries;
     let sampling_cfg = xai_grok_sampler::SamplerConfig {
         base_url: server.url(),
@@ -105,7 +116,21 @@ pub(super) async fn actor_under_test(
     let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     drain_persistence(persistence_rx);
 
-    let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    let mut actor = match terminal {
+        Some(terminal) => {
+            create_test_actor_with_terminal(
+                0,
+                256_000,
+                85,
+                gateway_tx,
+                persistence_tx,
+                terminal,
+            )
+            .await
+            .0
+        }
+        None => create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await,
+    };
     actor.sampler_handle = sampler_handle;
     actor.startup_hints.is_subagent = matches!(session, SessionKind::Subagent);
     actor.transient_retry_enabled = transient_retry_enabled;
@@ -514,6 +539,161 @@ async fn run_burst(n: usize, cap: usize) -> BurstMetrics {
         }
     }
     BurstMetrics { completed, failed }
+}
+
+struct ImmediateBashTerminal {
+    output: String,
+    signal: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl crate::terminal::AsyncTerminalRunner for ImmediateBashTerminal {
+    async fn run(
+        &self,
+        _request: crate::terminal::runner::TerminalRunRequest,
+    ) -> Result<crate::terminal::runner::TerminalRunResult, crate::terminal::runner::TerminalError>
+    {
+        Ok(crate::terminal::runner::TerminalRunResult {
+            combined_output: self.output.clone(),
+            exit_code: Some(0),
+            truncated: false,
+            signal: self.signal.clone(),
+            timed_out: false,
+        })
+    }
+}
+
+fn bash_prompt_blocks(command: &str) -> Vec<acp::ContentBlock> {
+    let meta = serde_json::to_value(crate::extensions::prompt_meta::PromptBlockMeta::bash(
+        command,
+    ))
+    .expect("bash prompt metadata serializes")
+    .as_object()
+    .cloned();
+    vec![acp::ContentBlock::Text(
+        acp::TextContent::new(format!("!{command}")).meta(meta),
+    )]
+}
+
+#[test]
+fn bash_turn_foreground_command_reaches_model_loop() {
+    super::transient_retry_loop_tests::on_session_stack(|| {
+        super::transient_retry_loop_tests::run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            let output = (0..12)
+                .map(|line| format!("BASH_OUTPUT_LINE_{line:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (actor, _retries) = actor_under_test_with_terminal(
+                &server,
+                SessionKind::Main,
+                super::transient_retry_loop_tests::sampler_surfaces_5xx(),
+                true,
+                Some(Arc::new(ImmediateBashTerminal {
+                    output,
+                    signal: None,
+                })),
+            )
+            .await;
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(30),
+                actor.handle_prompt(
+                    "bash-turn-foreground",
+                    bash_prompt_blocks("printf output"),
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            .await
+            .expect("foreground bash turn should reach model inference");
+            assert!(result.is_ok(), "model turn should complete: {result:?}");
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                1,
+                "a foreground bash command must submit one model request"
+            );
+
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let human_user_items = conversation
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        xai_grok_sampling_types::ConversationItem::User(user)
+                            if user.synthetic_reason == xai_grok_sampling_types::SyntheticReason::Human
+                    )
+                })
+                .count();
+            assert_eq!(human_user_items, 1, "bash history is the only user turn");
+
+            let request_body = serde_json::to_string(&server.request_bodies())
+                .expect("mock request bodies serialize");
+            assert!(
+                request_body.contains("BASH_OUTPUT_LINE_02"),
+                "the model context must contain the last ten output lines"
+            );
+            assert!(
+                !request_body.contains("BASH_OUTPUT_LINE_00"),
+                "the model context must not contain the full output dump"
+            );
+        });
+    });
+}
+
+#[test]
+fn bash_turn_backgrounded_command_skips_model_loop() {
+    super::transient_retry_loop_tests::on_session_stack(|| {
+        super::transient_retry_loop_tests::run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            let (actor, _retries) = actor_under_test_with_terminal(
+                &server,
+                SessionKind::Main,
+                super::transient_retry_loop_tests::sampler_surfaces_5xx(),
+                true,
+                Some(Arc::new(ImmediateBashTerminal {
+                    output: "started background task".to_string(),
+                    signal: Some("backgrounded".to_string()),
+                })),
+            )
+            .await;
+
+            let result = actor
+                .handle_prompt(
+                    "bash-turn-backgrounded",
+                    bash_prompt_blocks("sleep 30"),
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            assert!(result.is_ok());
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                0,
+                "backgrounded bash commands must not submit a model request"
+            );
+        });
+    });
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]

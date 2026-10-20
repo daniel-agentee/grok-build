@@ -136,6 +136,15 @@ fn is_replay_bash_execute(update: &acp::SessionUpdate) -> bool {
         .and_then(|v| v.as_bool())
         == Some(true)
 }
+fn is_finished_bash_execute_update(update: &acp::SessionUpdate) -> bool {
+    let acp::SessionUpdate::ToolCallUpdate(update) = update else {
+        return false;
+    };
+    update.fields.raw_output.is_some()
+        && update.fields.status.as_ref().is_some_and(|status| {
+            status == &acp::ToolCallStatus::Completed || status == &acp::ToolCallStatus::Failed
+        })
+}
 /// Any live update stamped with the awaited prompt id proves the shell accepted it, whichever branch applies it.
 fn ack_prompt_from_update(view: &mut AgentView, meta: &NotificationMeta) {
     if !meta.is_replay {
@@ -316,6 +325,12 @@ fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         }
                         let had_activity_before = agent.session.tracker.activity().is_some();
                         let update = notif.request.update;
+                        let bash_execution_finished = agent.bash_turn
+                            && !meta.is_replay
+                            && !agent.session.loading_replay
+                            && meta.prompt_id.as_deref()
+                                == agent.session.current_prompt_id.as_deref()
+                            && is_finished_bash_execute_update(&update);
                         let (is_visible_kind, is_bash) = if meta.is_replay {
                             (
                                 crate::acp::tracker::is_agent_output_update(&update),
@@ -337,6 +352,10 @@ fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
                                 .session
                                 .handle_update(update, &meta, &mut agent.scrollback)
                         };
+                        if bash_execution_finished {
+                            // The execute block now has its final output; this prompt's next activity is model inference.
+                            agent.bash_turn = false;
+                        }
                         if meta.is_replay
                             && let Some(pid) = meta.prompt_id.as_ref()
                         {

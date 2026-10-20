@@ -7,6 +7,11 @@ use super::*;
 const BASH_MODE_FINAL_OUTPUT_LINES: usize = 10;
 const BASH_MODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+pub(super) enum DirectBashCommandOutcome {
+    ContinueToModel { prompt_index: usize },
+    End(PromptTurnResult),
+}
+
 /// Phase 2: dispatch a tool call through [`WorkspaceOps::call_tool`].
 ///
 /// Agent sessions always use local workspace ops (in-process toolset).
@@ -177,7 +182,7 @@ impl SessionActor {
         _prompt_id: &str,
         command: String,
         prompt_blocks: &[acp::ContentBlock],
-    ) -> PromptTurnResult {
+    ) -> Result<DirectBashCommandOutcome, acp::Error> {
         tracing::info!("Handling direct bash command");
 
         // Send user message chunks to scrollback (so the user sees their command)
@@ -336,9 +341,35 @@ impl SessionActor {
             command, history_output, exit_code
         );
 
-        // Add to chat history as a user message only
-        self.chat_state_handle
-            .push_user_message(ConversationItem::user(&user_message));
+        let prompt_index = if is_backgrounded {
+            None
+        } else {
+            let prompt_index = self.chat_state_handle.get_prompt_index().await;
+            self.chat_state_handle.increment_prompt_index();
+            *self.tool_context.prompt_index.lock().await = prompt_index;
+            self.tool_context
+                .active_message_parent_prompt_index
+                .store(prompt_index, std::sync::atomic::Ordering::Release);
+            self.file_state_tracker.begin_prompt(prompt_index).await;
+            let prompt_text = prompt_blocks.iter().fold(String::new(), |mut acc, block| {
+                if let acp::ContentBlock::Text(text) = block {
+                    acc.push_str(&text.text);
+                }
+                acc
+            });
+            let trimmed_prompt_text = prompt_text.trim().to_string();
+            if !trimmed_prompt_text.is_empty() {
+                self.chat_state_handle.cache_prompt_text(trimmed_prompt_text);
+            }
+            Some(prompt_index)
+        };
+
+        // The existing command-history item is also the user turn the model answers.
+        let mut user_chat = ConversationItem::user(&user_message);
+        if let Some(prompt_index) = prompt_index {
+            user_chat.set_prompt_index(prompt_index);
+        }
+        self.chat_state_handle.push_user_message(user_chat);
 
         self.chat_state_handle.flush();
 
@@ -346,7 +377,12 @@ impl SessionActor {
         self.disk_full_acp_error(flush_error.as_ref())?;
 
         let total_tokens = self.chat_state_handle.get_total_tokens().await;
-        ok_end_turn(total_tokens, None)
+        match prompt_index {
+            Some(prompt_index) => {
+                Ok(DirectBashCommandOutcome::ContinueToModel { prompt_index })
+            }
+            None => Ok(DirectBashCommandOutcome::End(ok_end_turn(total_tokens, None))),
+        }
     }
 }
 
