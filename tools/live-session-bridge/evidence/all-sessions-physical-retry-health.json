@@ -1,0 +1,118 @@
+{
+  "capturedAtUTC": "2026-10-21T09:47:50.499850+00:00",
+  "endpoint": "192.168.178.92:18809",
+  "verificationKind": "physical_retry_prerequisite_readonly_native_health",
+  "priorOriginalActorStatus": "ended before retry after Mac restart; not reloaded from saved history",
+  "priorOriginalSessionId": "01a15d1b-1076-7a80-893c-5b707434c0d8",
+  "priorOriginalActorId": "01a15d1b-124c-70c0-82c3-fc42b26461bc",
+  "macUptimeAtDetection": "13 minutes",
+  "runtime": {
+    "managerPid": 73927,
+    "nativePid": 73976,
+    "bridgePid": 77346,
+    "socket": "/Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock"
+  },
+  "runtimePersistence": "Detached processes started with start_new_session=True and redirected files, matching repository launcher mechanism; owner PPID1. No reboot auto-start is claimed.",
+  "nativeBinarySha256": "27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8",
+  "health": {
+    "transport": "grok-leader-ipc",
+    "protocol": 1,
+    "leaderAvailable": true
+  },
+  "fixtureRows": [
+    {
+      "role": "PRIMARY",
+      "sessionId": "01a15dda-c15f-7153-82c2-e753bfc93cc9",
+      "actorId": "01a15dda-c3ee-71c3-a808-4c1e8eb90018",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-primary-20261021",
+      "title": "PHONE-RETRY PRIMARY A29C",
+      "activity": "idle",
+      "resident": true
+    },
+    {
+      "role": "SECONDARY",
+      "sessionId": "01a15dda-c98e-75d2-8164-3dc619d5c147",
+      "actorId": "01a15dda-caf1-7943-8def-9b11ed796663",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-secondary-20261021",
+      "title": "PHONE-RETRY SECONDARY A29C",
+      "activity": "idle",
+      "resident": true
+    },
+    {
+      "role": "SAVED",
+      "sessionId": "01a15dda-cfb9-7db2-97dc-262ade031b50",
+      "actorId": "01a15dda-d0ef-7852-94e2-9e6eb13afbe5",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-saved-20261021",
+      "title": "PHONE-RETRY SAVED A29C",
+      "activity": "dormant",
+      "resident": false
+    }
+  ],
+  "freshPrimaryActorUnchangedStrictLoad": true,
+  "priorOriginalNotResident": true,
+  "sourceLeaderId": "312847200ec858b5831a0a22",
+  "savedResumeBlocked": false,
+  "reachableCounts": {
+    "live": 4,
+    "saved": 114,
+    "readOnlyLive": 2
+  },
+  "availableSourceCount": 2,
+  "readOnlyExampleSessionId": "468b08ce-337d-4d21-83bc-b807b1953a40",
+  "wrongSecretHttpStatus": 401,
+  "passed": true,
+  "createdFreshFixtureActors": 3,
+  "modelPromptsSent": 0,
+  "interactiveTerminalBeforePhysicalUITest": {
+    "pid": 81944,
+    "tty": "ttys017",
+    "sessionId": "01a15dda-c15f-7153-82c2-e753bfc93cc9",
+    "samePrimaryActorStrictlyProven": "01a15dda-c3ee-71c3-a808-4c1e8eb90018",
+    "launch": "Dedicated executable Terminal.command opened through Terminal.app; --leader --resume primarySID --permission-mode default --cwd fixture workspace",
+    "nativeConnectionEvidence": "Terminal PID81944 FD24 endpoint0xbd3b460ba4ac43d1 connects to0xfb65fca941908c43, which is leader PID73976 FD29 on the dedicated fixture socket.",
+    "terminalProcess": "81944 81259 ttys017  S+   /Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/target/verified-all-sessions-20261021/xai-grok-pager --leader --no-auto-update --leader-socket /Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock --permission-mode default --cwd /Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-primary-20261021 --resume 01a15dda-c15f-7153-82c2-e753bfc93cc9"
+  },
+  "readOnlyLegacyProtocolEvidence": {
+    "rows": [
+      {
+        "sessionId": "468b08ce-337d-4d21-83bc-b807b1953a40",
+        "resident": true,
+        "activity": "idle",
+        "bridgeLeaderId": "e72d7ca14c8cd29d724a8b13",
+        "bridgeAttachSupported": false,
+        "bridgeAttachUnsupportedReason": "upgrade_required",
+        "residentActorId": null
+      },
+      {
+        "sessionId": "01a15dcf-acf7-7972-82a0-53e8f7fa3d2b",
+        "resident": true,
+        "activity": "idle",
+        "bridgeLeaderId": "e72d7ca14c8cd29d724a8b13",
+        "bridgeAttachSupported": false,
+        "bridgeAttachUnsupportedReason": "upgrade_required",
+        "residentActorId": null
+      },
+      {
+        "sessionId": "01a14a97-c9a2-7d53-b55a-52837754af35",
+        "resident": false,
+        "activity": "dormant",
+        "bridgeLeaderId": "312847200ec858b5831a0a22",
+        "bridgeAttachSupported": true,
+        "bridgeAttachUnsupportedReason": null,
+        "residentActorId": null
+      }
+    ],
+    "readonlySources": [
+      {
+        "bridgeLeaderId": "e72d7ca14c8cd29d724a8b13",
+        "bridgeLeaderLabel": "Mac \u00b7 bob",
+        "available": true,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": false,
+        "error": "upgrade_required"
+      }
+    ],
+    "bobStrictAttachHandshakeSupported": false,
+    "bobStrictAttachHandshakeError": "Pinned leader lacks resident-only attachment capability"
+  }
+}

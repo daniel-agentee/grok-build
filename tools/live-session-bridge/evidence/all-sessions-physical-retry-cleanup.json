@@ -1,0 +1,36 @@
+{
+  "deletedOnlyExactOwnedFixtureSessionIds": [
+    "01a15dda-c15f-7153-82c2-e753bfc93cc9",
+    "01a15dda-c98e-75d2-8164-3dc619d5c147",
+    "01a15dda-cfb9-7db2-97dc-262ade031b50"
+  ],
+  "deletedOwnedSessionsAbsentFromNativeRoster": true,
+  "ownedTerminalAgentStoppedAfterAudit": true,
+  "terminalPid": 81944,
+  "compatibleLeaderPreserved": 73976,
+  "authenticatedBridgePreserved": 77346,
+  "detachedManagerPreserved": 73927,
+  "health": {
+    "transport": "grok-leader-ipc",
+    "protocol": 1,
+    "leaderAvailable": true
+  },
+  "savedResumeBlocked": false,
+  "reachableCounts": {
+    "live": 2,
+    "saved": 113,
+    "readOnlyLive": 2
+  },
+  "availableSourceCount": 2,
+  "compatibleSourceAvailable": true,
+  "wrongSecretHttpStatus": 401,
+  "capturedAtUTC": "2026-10-21T09:54:26.609608+00:00",
+  "endpoint": "192.168.178.92:18809",
+  "passed": true,
+  "scope": "Only disposable retry sessions and their Terminal were removed; compatible serving native leader, authenticated bridge, detached manager, and all user actors remain.",
+  "retainedProcesses": [
+    "73927     1 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /Users/danielstojanovic/.grok/mobile-bridge/physical-retry-20261021/owner.py",
+    "73976 73927 /Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/target/verified-all-sessions-20261021/xai-grok-pager --permission-mode default --leader-socket /Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock agent leader --no-auto-update --no-exit-on-disconnect --relay-on-demand",
+    "77346 73927 /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/tools/live-session-bridge/bridge.py --leader-socket /Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock --secret-file /Users/danielstojanovic/.grok/mobile-bridge.secret --host 192.168.178.92 --port 18809"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "testKind": "actual physical iPhone UI roster and no-prompt attachment/recovery",
+  "continuityScope": "Fresh disposable native actors created after Mac restart, concurrently attached by real Terminal.app; earlier original actor ended across restart and was not cold-resumed.",
+  "physicalTests": {
+    "roster": {
+      "passed": true,
+      "durationSeconds": 21.924
+    },
+    "attachBackgroundForegroundTerminateRelaunch": {
+      "passed": true,
+      "durationSeconds": 35.244
+    }
+  },
+  "mobileAppTerminatedBeforeAfterAudit": true,
+  "before": {
+    "capturedAtUTC": "2026-10-21T09:51:03.334633+00:00",
+    "phase": "before-physical-ui",
+    "sessions": [
+      {
+        "role": "PRIMARY",
+        "sessionId": "01a15dda-c15f-7153-82c2-e753bfc93cc9",
+        "residentActorId": "01a15dda-c3ee-71c3-a808-4c1e8eb90018",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0
+      },
+      {
+        "role": "SECONDARY",
+        "sessionId": "01a15dda-c98e-75d2-8164-3dc619d5c147",
+        "residentActorId": "01a15dda-caf1-7943-8def-9b11ed796663",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0
+      }
+    ],
+    "passed": true
+  },
+  "after": {
+    "capturedAtUTC": "2026-10-21T09:52:57.357519+00:00",
+    "phase": "after-physical-ui",
+    "sessions": [
+      {
+        "role": "PRIMARY",
+        "sessionId": "01a15dda-c15f-7153-82c2-e753bfc93cc9",
+        "residentActorId": "01a15dda-c3ee-71c3-a808-4c1e8eb90018",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-primary-20261021",
+        "replayEventIdCount": 11,
+        "duplicateReplayEventIds": 0
+      },
+      {
+        "role": "SECONDARY",
+        "sessionId": "01a15dda-c98e-75d2-8164-3dc619d5c147",
+        "residentActorId": "01a15dda-caf1-7943-8def-9b11ed796663",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-secondary-20261021",
+        "replayEventIdCount": 6,
+        "duplicateReplayEventIds": 0
+      }
+    ],
+    "passed": true
+  },
+  "interactiveTerminalAfter": {
+    "pid": 81944,
+    "tty": "ttys017",
+    "nativeLeaderPid": 73976,
+    "connectedToSameLeader": true,
+    "transportEvidence": "Terminal PID81944 FD24 endpoint0xbd3b460ba4ac43d1 peer0xfb65fca941908c43 equals native leader PID73976 FD29 on leader-mobile-physical-retry-20261021.sock.",
+    "process": "81944 81259 ttys017  S+   /Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/target/verified-all-sessions-20261021/xai-grok-pager --leader --no-auto-update --leader-socket /Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock --permission-mode default --cwd /Users/danielstojanovic/code/_tools/grok-live-switching/physical-retry-primary-20261021 --resume 01a15dda-c15f-7153-82c2-e753bfc93cc9"
+  },
+  "userModelPromptsSubmittedByTest": 0,
+  "limitations": "Physical retry deliberately submitted no prompts; it proves real native actor attachment and lifecycle recovery, not physical bidirectional model/tool/approval turns. Those require separate previously captured coverage.",
+  "passed": true
+}
