@@ -1,0 +1,246 @@
+{
+  "scope": "Final signed iPhone build physical roster and no-prompt session recovery after stale-source notice fix. Native source and authentication guards unchanged.",
+  "physicalRun": {
+    "tests": 2,
+    "durationSeconds": 55.922,
+    "failures": 0,
+    "skipped": 0,
+    "mobileAppTerminatedAtEnd": true
+  },
+  "before": {
+    "capturedAtUTC": "2026-10-21T09:56:48.521138+00:00",
+    "phase": "before-final-physical-ui",
+    "sessions": [
+      {
+        "role": "PRIMARY",
+        "sessionId": "01a15de3-a53c-79a2-9f3f-9019adadf6f6",
+        "residentActorId": "01a15de3-a714-7530-a144-e01ec206d4fa",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-final-primary-20261021",
+        "replayEventIdCount": 5,
+        "duplicateReplayEventIds": 0
+      },
+      {
+        "role": "SECONDARY",
+        "sessionId": "01a15de3-ab91-73b2-8545-9178c8fdd965",
+        "residentActorId": "01a15de3-acf9-7ad1-8c80-e1c6eb422ecb",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-final-secondary-20261021",
+        "replayEventIdCount": 4,
+        "duplicateReplayEventIds": 0
+      }
+    ],
+    "passed": true
+  },
+  "after": {
+    "capturedAtUTC": "2026-10-21T10:01:06.280850+00:00",
+    "phase": "after-final-physical-ui",
+    "sessions": [
+      {
+        "role": "PRIMARY",
+        "sessionId": "01a15de3-a53c-79a2-9f3f-9019adadf6f6",
+        "residentActorId": "01a15de3-a714-7530-a144-e01ec206d4fa",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-final-primary-20261021",
+        "replayEventIdCount": 9,
+        "duplicateReplayEventIds": 0
+      },
+      {
+        "role": "SECONDARY",
+        "sessionId": "01a15de3-ab91-73b2-8545-9178c8fdd965",
+        "residentActorId": "01a15de3-acf9-7ad1-8c80-e1c6eb422ecb",
+        "strictIdentityUnchanged": true,
+        "userTextChunks": 0,
+        "assistantTextChunks": 0,
+        "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/physical-final-secondary-20261021",
+        "replayEventIdCount": 5,
+        "duplicateReplayEventIds": 0
+      }
+    ],
+    "passed": true
+  },
+  "sourceNoticeBaseline": {
+    "sourceCount": 16,
+    "availableSourceCount": 2,
+    "safeStaleUnavailableCount": 14,
+    "unavailableWarningCount": 0,
+    "ownershipUnknownTrueCount": 0,
+    "ownershipUnknownMetadataMissingCount": 0,
+    "savedResumeBlocked": false,
+    "reachableCounts": {
+      "live": 4,
+      "saved": 114,
+      "readOnlyLive": 2
+    },
+    "sourcesSanitized": [
+      {
+        "bridgeLeaderId": "312847200ec858b5831a0a22",
+        "available": true,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": null
+      },
+      {
+        "bridgeLeaderId": "e72d7ca14c8cd29d724a8b13",
+        "available": true,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": false,
+        "error": "upgrade_required"
+      },
+      {
+        "bridgeLeaderId": "eb8f5a5aab81cd034ee266a9",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "710ebb08f64c4c7d2db1f9c9",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "d3e8709519e6ac2cf11bb2a9",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "52a56303403d8c839483d642",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "1ec9d3f75646bada4c529c19",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "72b1079f93316fbdabd4dff1",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "a6855b383251c4a9694aa460",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "f2a23b17c7db1d08eb8f2535",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "be9e7c1426c1262a5e8e0c4c",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "2333beb726dfabb13617a0cf",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "4a3ebdbadce0fc71b814ae5d",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "6bba41f683d4d4f9c23ba16a",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "14588dc78de8ca17224a359f",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      },
+      {
+        "bridgeLeaderId": "d7a4ec5501127cfb17007adc",
+        "available": false,
+        "ownershipUnknown": false,
+        "bridgeAttachSupported": true,
+        "error": "source_unavailable"
+      }
+    ]
+  },
+  "interactiveTerminal": {
+    "pid": 38646,
+    "tty": "ttys017",
+    "nativeLeaderPid": 73976,
+    "sessionId": "01a15de3-a53c-79a2-9f3f-9019adadf6f6",
+    "liveBeforeAndAfterPhysicalRun": true,
+    "peerProof": "Terminal PID38646 FD24 endpoint0x8c6934c0b3048f98 peer0x9b8d6108c28947ce equals native leader73976 FD53 on leader-mobile-physical-retry-20261021.sock.",
+    "afterProcess": "38646 37784 ttys017  S+   /Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/target/verified-all-sessions-20261021/xai-grok-pager --leader --no-auto-update --leader-socket /Users/danielstojanovic/.grok/leader-mobile-physical-retry-20261021.sock --permission-mode default --cwd /Users/danielstojanovic/code/_tools/grok-live-switching/physical-final-primary-20261021 --resume 01a15de3-a53c-79a2-9f3f-9019adadf6f6"
+  },
+  "userModelPromptsSubmitted": 0,
+  "provenance": "Fresh disposable PHONE-FINAL actors; prior original actor ended across Mac reboot. No persisted original actor was cold-restored.",
+  "limitations": "Physical run proves roster, correct notice, live native attachment and app lifecycle recovery without model/tool/approval turns. Other acceptance coverage is documented separately.",
+  "passed": true,
+  "cleanup": {
+    "deletedOnlyExactOwnedFixtureSessionIds": [
+      "01a15de3-a53c-79a2-9f3f-9019adadf6f6",
+      "01a15de3-ab91-73b2-8545-9178c8fdd965",
+      "01a15de3-b34d-7282-ad63-774b807ab8d7"
+    ],
+    "exactOwnedFixturesAbsent": true,
+    "ownedTerminalStopped": 38646,
+    "nativeServingLeaderPreserved": 73976,
+    "authenticatedBridgePreserved": 77346,
+    "servingDetachedManagerPreserved": 73927,
+    "ownedFixtureOnlyManagerStopped": 32747,
+    "userStaleSocketsRemoved": 0
+  },
+  "finalDeployment": {
+    "capturedAtUTC": "2026-10-21T10:02:29.113815+00:00",
+    "endpoint": "192.168.178.92:18809",
+    "health": {
+      "transport": "grok-leader-ipc",
+      "protocol": 1,
+      "leaderAvailable": true
+    },
+    "reachableCounts": {
+      "live": 2,
+      "saved": 114,
+      "readOnlyLive": 2
+    },
+    "availableSourceCount": 2,
+    "safeStaleUnavailableCount": 14,
+    "unavailableWarningCount": 0,
+    "ownershipUnknownTrueCount": 0,
+    "savedResumeBlocked": false,
+    "compatibleServingSourceAvailable": true,
+    "userBobActorsNotAttachedPromptedApprovedOrRestarted": true,
+    "wrongSecretHttpStatus": 401
+  },
+  "finalized": true
+}
