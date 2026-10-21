@@ -460,6 +460,7 @@ impl MvpAgent {
             yolo,
             activity: self.resident_activity(id),
             resident: true,
+            resident_actor_id: self.resident_handle(id).map(|h| h.resident_actor_id.to_string()),
             last_change_unix_ms: chrono::Utc::now().timestamp_millis(),
             origin: crate::agent::roster::RosterOrigin::Local,
         })

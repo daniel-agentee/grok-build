@@ -357,6 +357,26 @@ index 5a4984c..704ef91 100644
 +    .await
 +    .unwrap();
 +}
+diff --git a/crates/codegen/xai-grok-pager/src/app/roster.rs b/crates/codegen/xai-grok-pager/src/app/roster.rs
+index 4b01593..4e0d814 100644
+--- a/crates/codegen/xai-grok-pager/src/app/roster.rs
++++ b/crates/codegen/xai-grok-pager/src/app/roster.rs
+@@ -105,6 +105,7 @@ mod tests {
+             activity: agent::RosterActivity::Working,
+             last_turn_summary: Some("Fixed the roster merge".to_string()),
+             resident: true,
++        resident_actor_id: None,
+             last_change_unix_ms: 1_725_000_000_123,
+             origin: agent::RosterOrigin::Local,
+         }
+@@ -185,6 +186,7 @@ mod tests {
+             activity: agent::RosterActivity::Idle,
+             last_turn_summary: None,
+             resident: false,
++        resident_actor_id: None,
+             last_change_unix_ms: 1_762_000_000_000,
+             origin: agent::RosterOrigin::Local,
+         };
 diff --git a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs b/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
 index 543bdf1..47290c8 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/handlers/model_switch.rs
@@ -524,6 +544,18 @@ index d689b2a..5f64405 100644
          self.set_model_gated(args).await
      }
      async fn set_session_config_option(
+diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs
+index 56bbc94..7851bf7 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_lifecycle.rs
+@@ -460,6 +460,7 @@ impl MvpAgent {
+             yolo,
+             activity: self.resident_activity(id),
+             resident: true,
++            resident_actor_id: self.resident_handle(id).map(|h| h.resident_actor_id.to_string()),
+             last_change_unix_ms: chrono::Utc::now().timestamp_millis(),
+             origin: crate::agent::roster::RosterOrigin::Local,
+         })
 diff --git a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs b/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs
 index 061460d..7942588 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/mvp_agent/session_setup.rs
@@ -1093,6 +1125,36 @@ index 7c3128c..fd96eae 100644
  /// A chat load rebuilds the session under the same id, so a close waiting on intake can find a live replacement with a client attached.
  /// Closing by id alone ends that replacement; this pins that it does not.
  #[test]
+diff --git a/crates/codegen/xai-grok-shell/src/agent/roster.rs b/crates/codegen/xai-grok-shell/src/agent/roster.rs
+index f1c8761..532513a 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/roster.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/roster.rs
+@@ -72,6 +72,9 @@ pub struct RosterEntry {
+     pub last_turn_summary: Option<String>,
+     /// `true` while a resident actor hosts the session (vs. read from disk).
+     pub resident: bool,
++    /// Incarnation identity for resident actors; absent for on-disk history.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub resident_actor_id: Option<String>,
+     /// Best-effort last-change timestamp (unix millis). Used for sort order.
+     pub last_change_unix_ms: i64,
+     pub origin: RosterOrigin,
+@@ -145,6 +148,7 @@ pub(crate) fn merge_roster(
+         activity: RosterActivity::Dormant,
+         last_turn_summary: summary.last_turn_summary.clone(),
+         resident: false,
++        resident_actor_id: None,
+         last_change_unix_ms: summary.last_change_unix_ms(),
+         origin: RosterOrigin::Local,
+     }));
+@@ -188,6 +192,7 @@ mod merge_roster_tests {
+             activity,
+             last_turn_summary: None,
+             resident: true,
++            resident_actor_id: Some(format!("actor-{id}")),
+             last_change_unix_ms,
+             origin: RosterOrigin::Local,
+         }
 diff --git a/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs b/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
 index 77d7988..4bea2a7 100644
 --- a/crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
@@ -1110,6 +1172,26 @@ index 77d7988..4bea2a7 100644
          context_window_selection: Default::default(),
          cmd_tx,
          persistence_tx,
+diff --git a/crates/codegen/xai-grok-shell/src/leader/roster_merge_tests.rs b/crates/codegen/xai-grok-shell/src/leader/roster_merge_tests.rs
+index e263516..4433107 100644
+--- a/crates/codegen/xai-grok-shell/src/leader/roster_merge_tests.rs
++++ b/crates/codegen/xai-grok-shell/src/leader/roster_merge_tests.rs
+@@ -21,6 +21,7 @@ fn row(session_id: &str) -> RosterEntry {
+         activity: RosterActivity::Idle,
+         last_turn_summary: None,
+         resident: false,
++        resident_actor_id: None,
+         last_change_unix_ms: 1_762_000_000_000,
+         origin: RosterOrigin::Local,
+     }
+@@ -39,6 +40,7 @@ fn live_row(session_id: &str) -> RosterEntry {
+         activity: RosterActivity::Working,
+         last_turn_summary: None,
+         resident: true,
++        resident_actor_id: None,
+         last_change_unix_ms: 7,
+         origin: RosterOrigin::Local,
+     }
 diff --git a/crates/codegen/xai-grok-shell/src/leader/server.rs b/crates/codegen/xai-grok-shell/src/leader/server.rs
 index 8b22b9a..affd05f 100644
 --- a/crates/codegen/xai-grok-shell/src/leader/server.rs
@@ -1178,7 +1260,7 @@ index 8b22b9a..affd05f 100644
                          if let Some(error_payload) =
                              json.as_ref().and_then(make_leader_starting_error)
 diff --git a/crates/codegen/xai-grok-shell/src/leader/server_tests.rs b/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
-index 59c8d57..7415fc5 100644
+index 59c8d57..0e2e0d6 100644
 --- a/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
 +++ b/crates/codegen/xai-grok-shell/src/leader/server_tests.rs
 @@ -1,3 +1,5 @@
@@ -1381,6 +1463,22 @@ index 59c8d57..7415fc5 100644
  /// An interaction raised while the session has NO subscriber must still be cached, so the FIRST client to attach gets the modal replayed.
  /// That happens when a dashboard-started session hits `ask_user_question` before anyone enters it.
  /// It also happens when a reverse-request races ahead of the `session/new`/`session/load` response that registers the subscriber. Regression for the "entered the session, modal never appears, turn stuck Waiting" bug: the cache insert used to require a subscriber.
+@@ -4461,6 +4650,7 @@ async fn roster_merge_round_trips_namespaced_ids_and_broadcasts_changes() {
+         activity: RosterActivity::Idle,
+         last_turn_summary: None,
+         resident: false,
++        resident_actor_id: None,
+         last_change_unix_ms: 1,
+         origin: RosterOrigin::Local,
+     };
+@@ -4497,6 +4687,7 @@ async fn roster_merge_round_trips_namespaced_ids_and_broadcasts_changes() {
+         session_id: "live".to_owned(),
+         session_kind: None,
+         resident: true,
++        resident_actor_id: None,
+         ..cursor_row.clone()
+     };
+     let body: serde_json::Value = serde_json::from_str(
 diff --git a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs b/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs
 index 323fe32..886927c 100644
 --- a/crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs

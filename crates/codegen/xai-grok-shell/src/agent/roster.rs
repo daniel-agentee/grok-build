@@ -72,6 +72,9 @@ pub struct RosterEntry {
     pub last_turn_summary: Option<String>,
     /// `true` while a resident actor hosts the session (vs. read from disk).
     pub resident: bool,
+    /// Incarnation identity for resident actors; absent for on-disk history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_actor_id: Option<String>,
     /// Best-effort last-change timestamp (unix millis). Used for sort order.
     pub last_change_unix_ms: i64,
     pub origin: RosterOrigin,
@@ -145,6 +148,7 @@ pub(crate) fn merge_roster(
         activity: RosterActivity::Dormant,
         last_turn_summary: summary.last_turn_summary.clone(),
         resident: false,
+        resident_actor_id: None,
         last_change_unix_ms: summary.last_change_unix_ms(),
         origin: RosterOrigin::Local,
     }));
@@ -188,6 +192,7 @@ mod merge_roster_tests {
             activity,
             last_turn_summary: None,
             resident: true,
+            resident_actor_id: Some(format!("actor-{id}")),
             last_change_unix_ms,
             origin: RosterOrigin::Local,
         }

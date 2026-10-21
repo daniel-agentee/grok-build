@@ -1,0 +1,41 @@
+   Compiling xai-grok-tools-api v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-tools-api)
+   Compiling xai-tool-runtime v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-tool-runtime)
+   Compiling xai-computer-hub-core v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-core)
+   Compiling xai-computer-hub-sdk v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-sdk)
+   Compiling xai-grok-tools v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-tools)
+   Compiling xai-grok-workspace-daemon v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace-daemon)
+   Compiling xai-computer-hub-mcp-adapter v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/common/xai-computer-hub-mcp-adapter)
+   Compiling xai-grok-workspace-client v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace-client)
+   Compiling xai-grok-hooks v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-hooks)
+   Compiling xai-grok-mcp v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-mcp)
+   Compiling xai-grok-announcements v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-announcements)
+   Compiling xai-grok-agent v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-agent)
+   Compiling xai-grok-workspace v0.1.220-alpha.4 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-workspace)
+   Compiling xai-grok-plugin-marketplace v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-plugin-marketplace)
+   Compiling xai-grok-subagent-resolution v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-subagent-resolution)
+   Compiling xai-grok-http v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-http)
+   Compiling xai-grok-shell-terminal v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell-terminal)
+   Compiling xai-grok-memory v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-memory)
+   Compiling xai-grok-shell-session-support v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell-session-support)
+   Compiling xai-grok-login v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-login)
+   Compiling xai-grok-cloud-config v0.1.0 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-cloud-config)
+   Compiling xai-grok-shell v1.0.45 (/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/crates/codegen/xai-grok-shell)
+    Finished `test` profile [unoptimized] target(s) in 3m 47s
+     Running unittests src/lib.rs (target/debug/deps/xai_grok_shell-7f734dc12c3eb672)
+
+running 13 tests
+test agent::roster::merge_roster_tests::reasoning_effort_serializes_as_camel_case_and_skips_when_none ... ok
+test agent::roster::merge_roster_tests::new_resident_without_summary_stays_titleless_now ... ok
+test agent::roster::merge_roster_tests::last_turn_summary_cleared_disk_clears_resident_row ... ok
+test agent::roster::merge_roster_tests::duplicate_summaries_are_deduped ... ok
+test agent::roster::merge_roster_tests::resident_effort_is_taken_from_the_live_row_not_the_summary ... ok
+test agent::roster::merge_roster_tests::dormant_row_carries_persisted_reasoning_effort ... ok
+test agent::roster::merge_roster_tests::idle_resident_adopts_persisted_title_and_last_active ... ok
+test agent::roster::merge_roster_tests::hidden_summaries_are_excluded ... ok
+test agent::roster::merge_roster_tests::blank_persisted_title_leaves_row_untitled ... ok
+test agent::roster::merge_roster_tests::working_resident_keeps_now_but_adopts_title ... ok
+test agent::roster::merge_roster_tests::last_turn_summary_adopted_from_summary_for_resident_and_dormant ... ok
+test agent::roster::merge_roster_tests::headless_summaries_exclude_dormant_and_resident_rows ... ok
+test agent::roster::merge_roster_tests::dormant_sessions_are_emitted_and_sorted_after_residents ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 7047 filtered out; finished in 0.01s

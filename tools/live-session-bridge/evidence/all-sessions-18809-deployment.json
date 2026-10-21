@@ -1,0 +1,47 @@
+{
+  "endpoint": "192.168.178.92:18809",
+  "originalSessionId": "01a15d1b-1076-7a80-893c-5b707434c0d8",
+  "originalActorId": "01a15d1b-124c-70c0-82c3-fc42b26461bc",
+  "originalActorUnchanged": true,
+  "sourceCount": 16,
+  "availableSources": 4,
+  "partial": true,
+  "resumeBlocked": false,
+  "counts": {
+    "working": 0,
+    "needs_input": 0,
+    "idle": 6,
+    "dormant": 102
+  },
+  "savedCount": 102,
+  "upgradeRequiredSourceCount": 1,
+  "visibleReadOnlyResidentCount": 2,
+  "unsupportedSourceHttpStatus": 426,
+  "physicalFixtureRows": [
+    {
+      "sessionId": "01a15d83-c21c-7b12-acf6-029698cead63",
+      "title": "ALL-SESSIONS PHONE SAVED 6F4A",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-phone-saved-20261021",
+      "resident": false,
+      "activity": "dormant",
+      "bridgeLeaderId": "2333beb726dfabb13617a0cf"
+    },
+    {
+      "sessionId": "01a15d83-b9c5-7b90-882a-cb90fabcc9d8",
+      "title": "ALL-SESSIONS PHONE SECONDARY 6F4A",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-phone-secondary-20261021",
+      "resident": true,
+      "activity": "idle",
+      "bridgeLeaderId": "ab84ef9143baf7b590cdbf54"
+    },
+    {
+      "sessionId": "01a15d83-b2cd-76f0-ba3f-3c02b03c2408",
+      "title": "ALL-SESSIONS PHONE PRIMARY 6F4A",
+      "cwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-phone-primary-20261021",
+      "resident": true,
+      "activity": "idle",
+      "bridgeLeaderId": "ab84ef9143baf7b590cdbf54"
+    }
+  ],
+  "wrongSecretHttpStatus": 401
+}

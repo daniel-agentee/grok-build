@@ -1,11 +1,14 @@
 # Live Grok session bridge
 
-A small authenticated WebSocket transport for **one existing native Grok leader**.
+A small authenticated WebSocket transport for existing native Grok leaders.
 It creates no `MvpAgent`, model connection, or conversation history store.
 An explicit mobile **New session** request creates a fresh session on that existing
 leader, with the Mac's normal workspace trust and permission checks.
 The Terminal and iOS clients subscribe to the same resident session actor through
 Grok's existing local leader, and tools execute on the Mac in that actor's workspace.
+The session picker combines compatible leaders from the configured primary's
+socket directory, preserving each live actor's source. Saved history has a
+separate, explicit resume action.
 
 ## Compatibility
 
@@ -31,7 +34,9 @@ Earlier live tests used installed stock **1.0.62 (1474f9cbdd91)**, SHA256
 `ec434e831afdcfce87780f2815fd732b1df8a4a8de96a491716ad75d13605a4e`.
 Those results are historical and identified separately in the evidence. Stock
 1.0.62 demonstrably cold-restored a session when explicit close raced attachment;
-the final strict bridge refuses stock leaders that lack the new native capability.
+the final strict bridge refuses attachment to leaders that lack the new native
+capability. Same-version/protocol leaders remain visible through authenticated
+read-only roster discovery with an upgrade notice.
 See [STRICT_LIVE_TEST_RESULTS.md](STRICT_LIVE_TEST_RESULTS.md) for historical
 D419 strict-attachment acceptance, retained endpoints/session and reconnection
 commands. The final bounded-runtime evidence is linked at the end of this README.
@@ -76,8 +81,11 @@ python3 tools/live-session-bridge/pin_build.py
 Then, from this directory:
 
 The reproducible build writes `target/debug/xai-grok-pager`; the launcher checks
-that output against the exact manifest hash. The session-feature verification
-copy is `target/verified-session-features-mcp-bounded/xai-grok-pager`.
+that output against the exact manifest hash. The current all-sessions verification
+copy is `target/verified-all-sessions-20261021/xai-grok-pager`, SHA256
+`27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8`.
+The earlier session-feature copy remains
+`target/verified-session-features-mcp-bounded/xai-grok-pager`.
 The earlier demonstration executable remains separately preserved at
 `target/verified-switching-final/xai-grok-pager`, SHA256
 `d41925f463ab9b81fcb7ca55e759f193e7fa6f526f8fade8f8447a7f99c465ab`.
@@ -324,7 +332,7 @@ session discovery/info, workspace/model discovery, billing reads, and live `sess
 and `session/set_model`. Prompt, cancel and model changes require a successful
 attachment to that exact session on the same connection. Explicit cancellation
 still cancels the shared turn; simply losing the phone connection never does.
-Session creation, fork/import/rehydration, close/delete, credential access, permission
+Unrestricted session creation, fork/import/rehydration, close/delete, credential access, permission
 mode changes and shell-config writes are rejected. Phone Settings writes that
 require those methods are unsupported by this narrow bridge. Companion config and
 Mermaid rendering extensions are also unsupported: they do not exist in this pinned
@@ -443,9 +451,107 @@ Repeat with `--signal kill` to cover an abruptly lost Terminal. Both runs launch
 and stop only their own extra interactive Terminal; the original Terminal and
 resident actor remain available.
 
-## Session creation and native skills verification, 2026-10-20
+## All sessions, source routing and saved resume, 2026-10-21
 
-The current immutable native artifact is
+The directory follows native `discover_leaders_in`: it scans `leader*.sock` in
+the configured primary socket's own directory and also includes that explicit
+primary path. It does not recursively search arbitrary directories. The parent
+must belong to the current UID and disallow group/world writes; sockets must
+belong to that UID and cannot be symlinks. Discovery registers at most 32 sources,
+examines at most 512 directory entries, probes sources concurrently with a
+4-second deadline, and caches the aggregate for one second. Native saved-session
+discovery returns at most its 200 recent saved entries per source; this is not an
+unbounded archive browser.
+
+Each roster row adds opaque `bridgeLeaderId`, a sanitized socket-basename
+`bridgeLeaderLabel` (for example `Mac · bob`), and `bridgeAttachSupported`. A selected
+WebSocket uses `/ws?leader=<bridgeLeaderId>`; it routes all session info, strict
+attachment, replay, prompts, approvals, commands and cancel to that source. The
+token is an HMAC of the socket path with the bridge secret. Client-supplied paths
+are never accepted. A wrong token fails with HTTP 400 and a known unavailable
+source fails with 503. A discovered source that requires a safe-attachment upgrade
+rejects selection with 426. Fresh sessions are created only on the configured primary;
+another selected source returns `primary_required` before creating anything.
+Retained owners across all selected sources share the same eight-session limit.
+
+The aggregate keeps two live rows when the same saved SID has distinct actors
+on two leaders. New native rosters include optional `residentActorId`; legacy
+compatible rosters may omit it, but strict load still returns and validates the
+actor UUID. Live rows take precedence over saved rows for the same SID. Source
+removal notifications are scoped by `bridgeLeaderId`, so one source cannot clear
+another source's actor. Polling refreshes other sources while the selected
+source supplies its normal streamed events.
+
+Top-level `bridgeSources`, `bridgePartial` and `bridgeResumeBlocked` expose
+partial discovery explicitly. Same-version/protocol leaders that lack strict
+attachment capabilities are authenticated and read only for discovery. Their
+rows remain visible with `bridgeAttachSupported:false` and
+`bridgeAttachUnsupportedReason:"upgrade_required"`; controls are disabled, and
+source status has `available:true`, `ownershipUnknown:false` and
+`error:"upgrade_required"`. Their known live ownership still prevents duplicate
+history resume on another source. Discovery never sends them a load or prompt.
+A never-live stale socket gives a warning but does not block saved resume.
+A version/protocol-incompatible or authentication-failing source or
+loss of any previously inspected source blocks saved resume globally: ownership
+is unknown. Previously known live SIDs from an unavailable source cannot be
+relabeled Saved. Other compatible live actors remain attachable. For example,
+the existing `leader-bob.sock` without strict-attach capabilities has two live
+rows visible as requiring an upgrade on the actual phone endpoint; it is
+preserved, not restarted or bypassed. Use a separate owner-controlled socket directory when an isolated
+compatible fleet is needed. Do not move active socket files.
+
+Saved history is resumed only after deliberate confirmation with
+`session/load`, `_meta["x.ai/resumeSaved"]=true`, and its existing absolute roster
+workspace. This starts a new actor from history; the UI must describe it as
+Resume, distinct from attaching an existing live actor. Resume rejects old actor
+assertions, cursors, policy/tool overrides and wrong workspaces. A global lock and
+fresh directory check before and after retainer authentication prevent concurrent
+resume requests through this bridge from creating duplicate actors. An independent
+cold resume in Terminal or another bridge can race the final lookup: there is no
+cross-leader transaction. If that deliberately creates two live actors, discovery
+keeps both origins separate and requires explicit selection; strict live attachment
+still cannot replace an actor with saved history. A newly discovered live owner returns
+`origin_conflict`; partial unknown ownership returns `source_unavailable`.
+Neither case falls back to history automatically.
+
+The retainer performs native cold load, gets the actual execution workspace from
+`_x.ai/session/info`, then proves the resulting UUID with strict load before the
+phone's strict attachment and authoritative replay. Native cold load responses
+omit `sessionId` and actor UUID, so the bridge uses the requested SID (rejecting
+a conflicting returned SID) and performs this explicit identity proof. Returned
+`_meta["x.ai/bridgeExecutionCwd"]` communicates an actual worktree execution path
+to the app. A resumed actor survives phone disconnect under the same bounded
+ownership rules as a fresh mobile session. Keep the bridge running for that
+continuity. Unknown native outcomes require roster reconciliation, never retries.
+
+The current source patch/manifest were input-verified and the first successful
+native build was archived before further verification. The new optional roster
+UUID has 13 native roster-merge checks; 91 Python tests cover directory bounds,
+symlink replacement, source loss, routing, collision, worktree resume, simultaneous
+resume and existing transport/launcher security and lifecycle behavior.
+
+Run the real two-leader proof from the repository root using existing cached Mac
+authentication. It creates and cleans up only its own disposable native leaders,
+workspaces and sessions, with default permissions. It does not send model prompts:
+
+```sh
+python3 tools/live-session-bridge/verify_directory_live.py \
+  --binary target/verified-all-sessions-20261021/xai-grok-pager \
+  --output /tmp/grok-all-sessions-native-live.json
+```
+
+[Native live evidence](evidence/all-sessions-native-live.json) proves two-origin
+discovery/strict attachment, deliberate same-SID/distinct-actor collision,
+saved resume retained after phone disconnect without duplicate resume, real
+source loss refusing history fallback, and wrong-secret rejection. It is separate
+from model-turn/Simulator/physical-device evidence in the paired iOS repository.
+[Deployment evidence](evidence/all-sessions-18809-deployment.json) confirms the
+actual phone endpoint was updated without replacing its original Terminal actor.
+It records only counts and disposable fixture rows from other sources.
+
+## Earlier session creation and native skills verification, 2026-10-20
+
+The earlier immutable native artifact is
 `target/verified-session-features-mcp-bounded/xai-grok-pager`, SHA256
 `f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc`.
 The bridge directory passed **72 automated tests**, including the 17 pin/launcher

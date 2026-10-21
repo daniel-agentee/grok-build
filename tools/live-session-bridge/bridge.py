@@ -10,6 +10,8 @@ import argparse
 import asyncio
 from contextlib import suppress
 import hmac
+import hashlib
+import errno
 import json
 import logging
 import os
@@ -27,6 +29,8 @@ PREFLIGHT_TIMEOUT = 15
 MAX_PENDING_LOADS = 4
 MAX_PENDING_REQUESTS = 128
 MAX_OWNED_SESSIONS = 8
+MAX_LEADER_SOURCES = 32
+SOURCE_TIMEOUT = 4
 CREATION_RESPONSE_TIMEOUT = 30
 ROSTER_METHOD = "_x.ai/sessions/list"
 INTERNAL_PREFIX = "grok-mobile-preflight:"
@@ -63,6 +67,7 @@ LOAD_META_KEYS = {
     "autoMode",
     "x.ai/leaderClientId",
     "x.ai/resident_only",
+    "x.ai/resumeSaved",
 }
 SESSION_PARAM_KEYS = {
     "session/load": {"sessionId", "cwd", "mcpServers", "_meta"},
@@ -94,7 +99,8 @@ async def write_frame(writer: asyncio.StreamWriter, value: dict[str, Any]) -> No
     await writer.drain()
 
 
-async def connect_leader(socket: Path, version: str, *, require_capability: bool = False):
+async def connect_leader(socket: Path, version: str, *, require_capability: bool = False,
+                         capability_result: dict[str, Any] | None = None):
     reader, writer = await asyncio.open_unix_connection(socket)
     try:
         await write_frame(
@@ -117,7 +123,7 @@ async def connect_leader(socket: Path, version: str, *, require_capability: bool
             ready = await asyncio.wait_for(read_frame(reader), 90)
             if ready.get("type") != "leader_ready":
                 raise ValueError("Leader did not become ready")
-        if require_capability:
+        if require_capability or capability_result is not None:
 
             async def verify_capability():
                 identifier = INTERNAL_PREFIX + "capability"
@@ -143,11 +149,12 @@ async def connect_leader(socket: Path, version: str, *, require_capability: bool
                     if response.get("id") != identifier:
                         continue
                     metadata = unwrap_result(response).get("_meta", {})
-                    if (
-                        not isinstance(metadata, dict)
-                        or metadata.get("x.ai/residentOnlyAttach") is not True
-                        or metadata.get("x.ai/residentActorIdentity") is not True
-                    ):
+                    supported = (isinstance(metadata, dict)
+                                 and metadata.get("x.ai/residentOnlyAttach") is True
+                                 and metadata.get("x.ai/residentActorIdentity") is True)
+                    if capability_result is not None:
+                        capability_result["attachSupported"] = supported
+                    if require_capability and not supported:
                         raise ValueError("Pinned leader lacks resident-only attachment capability")
                     return
 
@@ -209,6 +216,183 @@ def unwrap_result(response: dict[str, Any]) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
+def source_error(request: dict[str, Any], code: str, message: str, **data) -> dict[str, Any]:
+    result = rpc_error(request, message)
+    result["error"]["data"] = {"code": code, **data}
+    return result
+
+
+class LeaderDirectory:
+    """Bounded native-style leader*.sock discovery. Tokens never accept client paths.
+
+    Only owner-controlled, non-symlink sockets in the configured primary's own
+    directory are considered. Every read verifies pinned version and live actor
+    capabilities. Previously observed owners are retained to fail closed on loss.
+    """
+
+    def __init__(self, primary: Path, secret: str, version: str):
+        self.primary = primary.absolute()
+        self.secret, self.version = secret, version
+        self.sources: dict[str, Path] = {}
+        self.attach_supported: dict[str, bool] = {}
+        self.known_residents: dict[str, set[str]] = {}
+        self.lock = asyncio.Lock()
+        self.resume_lock = asyncio.Lock()
+        self.cached_snapshot = None
+        self.cached_at = 0.0
+        self.refresh_paths()
+
+    def token(self, path: Path) -> str:
+        return hmac.new(self.secret.encode(), str(path.absolute()).encode(), hashlib.sha256).hexdigest()[:24]
+
+    def label(self, token: str) -> str:
+        if self.sources[token] == self.primary:
+            return "Primary Mac"
+        name = self.sources[token].stem.removeprefix("leader").strip("-_")
+        name = "".join(c if c.isascii() and (c.isalnum() or c in "-_") else " " for c in name).strip()[:40]
+        return "Mac · " + (name or token[:6])
+
+    def refresh_paths(self) -> bool:
+        # Match native discover_leaders_in's leader*.sock naming, adding explicit
+        # primary even when custom-named. Bound both files read and registered.
+        root = self.primary.parent
+        try:
+            info = root.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                return False
+            candidates = [self.primary]
+            with os.scandir(root) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= 512:
+                        return False
+                    if entry.name.startswith("leader") and entry.name.endswith(".sock"):
+                        candidates.append(Path(entry.path))
+        except OSError:
+            return False
+        overflow = False
+        for path in sorted(set(candidates), key=lambda p: (p != self.primary, str(p))):
+            try:
+                info = path.lstat()
+                if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                    continue
+            except OSError:
+                continue
+            token = self.token(path)
+            if token not in self.sources and len(self.sources) >= MAX_LEADER_SOURCES:
+                overflow = True
+                continue
+            self.sources[token] = path
+        # Keep a disappeared primary token and all previously-known sources.
+        self.sources.setdefault(self.token(self.primary), self.primary)
+        return not overflow
+
+    def resolve(self, token: str | None) -> Path | None:
+        self.refresh_paths()
+        path = self.primary if token is None else self.sources.get(token)
+        if path is not None:
+            try:
+                root, info = path.parent.lstat(), path.lstat()
+                if (not stat.S_ISDIR(root.st_mode) or root.st_uid != os.getuid()
+                    or root.st_mode & 0o022 or not stat.S_ISSOCK(info.st_mode)
+                    or info.st_uid != os.getuid()):
+                    return None
+            except FileNotFoundError:
+                pass  # Known offline source returns 503, never another origin.
+        return path
+
+    def enrich(self, row: dict[str, Any], token: str) -> dict[str, Any]:
+        supported = self.attach_supported.get(token, True)
+        return {**row, "bridgeLeaderId": token, "bridgeLeaderLabel": self.label(token),
+                "bridgeAttachSupported": supported,
+                **({"bridgeAttachUnsupportedReason": "upgrade_required"} if not supported else {})}
+
+    async def read_source(self, token: str, path: Path) -> list[dict[str, Any]]:
+        writer = None
+        try:
+            # Revalidate pathname trust on every connection, including remembered
+            # tokens after a socket replacement. Never follow a symlink.
+            info = path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError("Untrusted source")
+            capabilities = {}
+            reader, writer = await connect_leader(path, self.version, capability_result=capabilities)
+            self.attach_supported[token] = capabilities["attachSupported"]
+            for identifier, method, params in [
+                (INTERNAL_PREFIX + "owner-auth", "authenticate", {"methodId": "cached_token"}),
+                (INTERNAL_PREFIX + "directory", ROSTER_METHOD, {}),
+            ]:
+                await write_frame(writer, {"type": "acp", "payload": json.dumps({
+                    "jsonrpc": "2.0", "id": identifier, "method": method, "params": params,
+                })})
+                while True:
+                    envelope = await read_frame(reader)
+                    if envelope.get("type") != "acp":
+                        continue
+                    response = json.loads(envelope["payload"], parse_constant=reject_nonfinite)
+                    if response.get("id") == identifier and "method" not in response:
+                        if "error" in response:
+                            raise ValueError("Source rejected discovery")
+                        break
+            rows = unwrap_result(response).get("sessions")
+            if not isinstance(rows, list):
+                raise ValueError("Invalid source roster")
+            return [self.enrich(row, token) for row in rows if isinstance(row, dict)
+                    and isinstance(row.get("sessionId"), str)]
+        finally:
+            if writer is not None:
+                writer.close()
+                with suppress(ConnectionError):
+                    await writer.wait_closed()
+
+    async def snapshot(self, *, fresh=False) -> dict[str, Any]:
+        async with self.lock:
+            now = asyncio.get_running_loop().time()
+            if not fresh and self.cached_snapshot is not None and now - self.cached_at < 1:
+                return self.cached_snapshot
+            complete = self.refresh_paths()
+            sources = list(self.sources.items())
+            async def bounded(token, path):
+                try:
+                    rows = await asyncio.wait_for(self.read_source(token, path), SOURCE_TIMEOUT)
+                    return token, rows, None, False
+                except (OSError, ValueError, TypeError, KeyError, asyncio.TimeoutError,
+                        asyncio.IncompleteReadError) as error:
+                    # A stale never-live socket is not an unknown live owner. A
+                    # reachable incompatible/auth-failing source is, as is loss
+                    # of any source that this bridge previously inspected.
+                    stale = isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}
+                    unknown = not stale or token in self.known_residents
+                    return token, [], "source_unavailable", unknown
+            results = await asyncio.gather(*(bounded(token, path) for token, path in sources))
+            live, saved, statuses = [], {}, []
+            for token, rows, error, unknown in results:
+                supported = self.attach_supported.get(token, True)
+                statuses.append({"bridgeLeaderId": token, "bridgeLeaderLabel": self.label(token),
+                                 "available": error is None, "ownershipUnknown": unknown,
+                                 "bridgeAttachSupported": supported,
+                                 **({"error": error} if error else {"error": "upgrade_required"} if not supported else {})})
+                if error is None:
+                    self.known_residents[token] = {r["sessionId"] for r in rows if r.get("resident") is True}
+                for row in rows:
+                    if row.get("resident") is True:
+                        live.append(row)
+                    else:
+                        sid = row["sessionId"]
+                        if sid not in saved or token == self.token(self.primary):
+                            saved[sid] = row
+            resident_ids = {r["sessionId"] for r in live}
+            # A source loss cannot relabel its last-known live actor as saved.
+            unavailable_ids = set().union(*(self.known_residents.get(s["bridgeLeaderId"], set())
+                                           for s in statuses if not s["available"])) if statuses else set()
+            rows = live + [row for sid, row in saved.items() if sid not in resident_ids | unavailable_ids]
+            rows.sort(key=lambda r: r.get("lastChangeUnixMs") or 0, reverse=True)
+            result = {"sessions": rows, "bridgeSources": statuses,
+                      "bridgePartial": not complete or any(not s["available"] or not s["bridgeAttachSupported"] for s in statuses),
+                      "bridgeResumeBlocked": not complete or any(s["ownershipUnknown"] for s in statuses)}
+            self.cached_snapshot, self.cached_at = result, asyncio.get_running_loop().time()
+            return result
+
+
 class SessionOwner:
     """One bounded native subscriber for a deliberately mobile-created actor.
 
@@ -217,10 +401,12 @@ class SessionOwner:
     eviction. It never answers permission requests or reconnects a dead actor.
     """
 
-    def __init__(self, bridge: Bridge, request: dict[str, Any]):
+    def __init__(self, bridge: Bridge, request: dict[str, Any], before_dispatch=None):
         self.bridge = bridge
         self.request = request
+        self.before_dispatch = before_dispatch
         self.session_id: str | None = None
+        self.execution_cwd: str | None = None
         # None is an uncertain native outcome, never a definite RPC rejection.
         self.result: asyncio.Future[dict[str, Any] | None] = asyncio.get_running_loop().create_future()
         self.task = asyncio.create_task(self.run())
@@ -248,6 +434,11 @@ class SessionOwner:
                             self.result.set_result({**auth, "id": self.request["id"]})
                             return
                         break
+            if self.before_dispatch is not None:
+                rejection = await self.before_dispatch()
+                if rejection is not None:
+                    self.result.set_result(rejection)
+                    return
             creation_dispatched = True
             creation_deadline = asyncio.get_running_loop().time() + CREATION_RESPONSE_TIMEOUT
             await write_frame(writer, {"type": "acp", "payload": json.dumps(self.request)})
@@ -264,6 +455,25 @@ class SessionOwner:
                 value = json.loads(frame["payload"], parse_constant=reject_nonfinite)
                 if not isinstance(value, dict):
                     raise ValueError("Invalid owner frame")
+                if not self.result.done() and "method" not in value and value.get("id") == INTERNAL_PREFIX + "owner-info":
+                    info = unwrap_result(value)
+                    cwd = info.get("cwd")
+                    if "error" in value or not isinstance(cwd, str) or not Path(cwd).is_absolute():
+                        raise ValueError("Resumed execution workspace unavailable")
+                    self.execution_cwd = cwd
+                    await write_frame(writer, {"type": "acp", "payload": json.dumps({
+                        "jsonrpc": "2.0", "id": INTERNAL_PREFIX + "owner-attach", "method": "session/load",
+                        "params": {"sessionId": self.session_id, "cwd": cwd, "mcpServers": [],
+                            "_meta": {"x.ai/resident_only": True, "x.ai/restore_code": False, "clientUserMessageEcho": True}},
+                    })})
+                    continue
+                if not self.result.done() and "method" not in value and value.get("id") == INTERNAL_PREFIX + "owner-attach":
+                    meta = unwrap_result(value).get("_meta", {})
+                    if "error" in value or not isinstance(meta.get("x.ai/residentActorId"), str):
+                        raise ValueError("Resumed actor identity unavailable")
+                    meta["x.ai/bridgeExecutionCwd"] = self.execution_cwd
+                    self.result.set_result({**value, "id": self.request["id"]})
+                    continue
                 if (
                     not self.result.done() and "method" not in value
                     and request_key(value) == request_key(self.request)
@@ -272,9 +482,24 @@ class SessionOwner:
                         self.result.set_result(value)
                         return
                     sid = unwrap_result(value).get("sessionId")
+                    if self.request.get("method") == "session/load" and sid is None:
+                        # ACP LoadSessionResponse carries modes/config/meta, not
+                        # the SID already supplied in its request.
+                        sid = self.request["params"]["sessionId"]
                     if not isinstance(sid, str) or not sid:
                         raise ValueError("Native create omitted session identity")
+                    if self.request.get("method") == "session/load" and sid != self.request["params"]["sessionId"]:
+                        raise ValueError("Native resume changed session identity")
                     self.session_id = sid
+                    if self.request.get("method") == "session/load":
+                        # Native cold restoration deliberately omits incarnation
+                        # metadata. Prove the new resident actor on this retained
+                        # connection before exposing success to the phone.
+                        await write_frame(writer, {"type": "acp", "payload": json.dumps({
+                            "jsonrpc": "2.0", "id": INTERNAL_PREFIX + "owner-info", "method": "_x.ai/session/info",
+                            "params": {"sessionId": sid},
+                        })})
+                        continue
                     self.result.set_result(value)
                 method = value.get("method", "")
                 params = value.get("params", {})
@@ -306,10 +531,13 @@ class SessionOwner:
 
 
 class Bridge:
-    def __init__(self, socket: Path, secret: str, version: str):
-        self.socket, self.secret, self.version = socket, secret, version
-        self.owners: set[SessionOwner] = set()
-        self.creations: set[asyncio.Task] = set()
+    def __init__(self, socket: Path, secret: str, version: str, *, directory=None, root=None):
+        self.socket, self.secret, self.version = socket.absolute(), secret, version
+        self.directory = directory or LeaderDirectory(socket, secret, version)
+        self.root = root or self
+        self.children: dict[str, Bridge] = {} if root is None else root.children
+        self.owners: set[SessionOwner] = set() if root is None else root.owners
+        self.creations: set[asyncio.Task] = set() if root is None else root.creations
 
     async def cleanup(self, app: web.Application) -> None:
         owners = tuple(self.owners)
@@ -346,6 +574,18 @@ class Bridge:
         # Native apps omit Origin. Web pages must never inherit local agent access.
         if request.headers.get("Origin"):
             raise web.HTTPForbidden(text="Browser origins are not allowed")
+        target = self.directory.resolve(request.query.get("leader"))
+        if target is None:
+            raise web.HTTPBadRequest(text="Unknown leader source; refresh sessions")
+        if self.directory.attach_supported.get(self.directory.token(target)) is False:
+            raise web.HTTPUpgradeRequired(text="Leader upgrade required for safe live attachment")
+        if target != self.socket:
+            token = self.directory.token(target)
+            child = self.children.get(token)
+            if child is None:
+                child = Bridge(target, self.secret, self.version, directory=self.directory, root=self.root)
+                self.children[token] = child
+            return await child.websocket(request)
         try:
             reader, writer = await connect_leader(self.socket, self.version)
         except (OSError, ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
@@ -363,6 +603,8 @@ class Bridge:
         attached_workspaces: dict[str, str] = {}
         attachment_ended = False
         counter = 0
+        background: set[asyncio.Task] = set()
+        selected_token = self.directory.token(self.socket)
 
         async def forward(value: dict[str, Any]) -> None:
             # A queued phone message must not cross a native lifecycle removal,
@@ -399,6 +641,12 @@ class Bridge:
                     if isinstance(params, dict) and isinstance(params.get("method"), str):
                         method, params = params["method"], params.get("params", {})
                 if method == "x.ai/sessions/changed" and isinstance(params, dict):
+                    params["bridgeLeaderId"] = selected_token
+                    if isinstance(params.get("upserted"), list):
+                        params["upserted"] = [self.directory.enrich(row, selected_token)
+                            for row in params["upserted"] if isinstance(row, dict)]
+                    payload = json.dumps(value)
+                if method == "x.ai/sessions/changed" and isinstance(params, dict):
                     removed = params.get("removed", [])
                     targets = (
                         set(attached)
@@ -429,6 +677,11 @@ class Bridge:
                             and metadata.get("x.ai/residentOnlyAttach") is True
                             and metadata.get("x.ai/residentActorIdentity") is True
                         )
+                        if isinstance(metadata, dict):
+                            metadata.update({"x.ai/mobileLeaderDirectory": True,
+                                             "x.ai/explicitSavedResume": True,
+                                             "x.ai/bridgeLeaderId": selected_token})
+                            payload = json.dumps(value)
                 preflight_entry = pending.pop(str(value.get("id")), None) if is_response else None
                 if preflight_entry is not None:
                     preflight, timer = preflight_entry
@@ -472,10 +725,99 @@ class Bridge:
                         raise ValueError("Leader omitted resident actor identity")
                     attached[loaded_session] = actor_id
                     attached_workspaces[loaded_session] = loaded_workspace
+                    unwrap_result(value).setdefault("_meta", {})["x.ai/bridgeExecutionCwd"] = loaded_workspace
+                    payload = json.dumps(value)
                 # Late preflight replies are bridge-private too.
                 if str(value.get("id", "")).startswith(INTERNAL_PREFIX):
                     continue
                 await ws.send_str(payload)
+
+        def spawn_background(coro):
+            task = asyncio.create_task(coro)
+            background.add(task)
+            task.add_done_callback(background.discard)
+
+        async def discover(value):
+            try:
+                result = await self.directory.snapshot()
+                if not ws.closed:
+                    await ws.send_json({"jsonrpc": "2.0", "id": value["id"], "result": {"result": result}})
+            except (ConnectionError, RuntimeError):
+                pass
+            finally:
+                inflight.discard(request_key(value))
+
+        async def check_resume(value):
+            snapshot = await self.directory.snapshot(fresh=True)
+            sid = value["params"]["sessionId"]
+            owners = [r for r in snapshot["sessions"] if r.get("sessionId") == sid and r.get("resident") is True]
+            if owners:
+                target = owners[0]
+                return source_error(value, "origin_conflict", "This session is live; refresh and explicitly attach its running source",
+                    bridgeLeaderId=target["bridgeLeaderId"], multipleOrigins=len(owners) > 1)
+            unavailable = {s["bridgeLeaderId"] for s in snapshot["bridgeSources"] if not s["available"]}
+            if snapshot["bridgeResumeBlocked"] or selected_token in unavailable or any(sid in self.directory.known_residents.get(token, set()) for token in unavailable):
+                return source_error(value, "source_unavailable", "A known live source is unavailable; saved history will not replace it")
+            saved = next((r for r in snapshot["sessions"] if r.get("sessionId") == sid), None)
+            if saved is None:
+                return source_error(value, "session_unavailable", "Saved session no longer exists; refresh sessions")
+            try:
+                workspace = Path(value["params"]["cwd"]).resolve(strict=True)
+                expected = Path(saved.get("cwd", "")).resolve(strict=True)
+                if workspace != expected or not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK):
+                    raise ValueError()
+            except (OSError, RuntimeError, ValueError):
+                return source_error(value, "workspace_unavailable", "Saved session requires its existing absolute Mac workspace")
+            return None
+
+        async def resume_saved(value):
+            key = request_key(value)
+            try:
+                # Serialize all bridge-owned resumes across origins. Recheck after
+                # owner authentication as well as discovery so a stale picker can
+                # never intentionally create a second known resident actor.
+                async with self.directory.resume_lock:
+                    rejection = await check_resume(value)
+                    if rejection is not None:
+                        if not ws.closed:
+                            await ws.send_json(rejection)
+                        return
+                    if len(self.owners) >= MAX_OWNED_SESSIONS:
+                        if not ws.closed:
+                            await ws.send_json(rpc_error(value, "Mobile session limit reached; close a mobile-owned session on Mac"))
+                        return
+                    native = {**value, "params": {**value["params"], "_meta": {"x.ai/restore_code": False, "clientUserMessageEcho": True}}}
+                    owner = SessionOwner(self, native, before_dispatch=lambda: check_resume(value))
+                    self.owners.add(owner)
+                    # This task survives phone loss, as does its owner. An unknown
+                    # native outcome is never automatically retried.
+                    response = await owner.result
+                    if ws.closed:
+                        return
+                    if response is None:
+                        await ws.close(code=1011, message=b"Session resume outcome uncertain; refresh sessions")
+                        return
+                    if "error" in response:
+                        await ws.send_json(response)
+                        return
+                    actor = unwrap_result(response).get("_meta", {}).get("x.ai/residentActorId")
+                    if not isinstance(actor, str) or not actor:
+                        await ws.close(code=1011, message=b"Resumed actor identity unavailable")
+                        return
+                    # Replay must flow on the phone connection, rather than the
+                    # retainer. Only this strict second load is returned to it.
+                    params = value["params"]
+                    params["_meta"] = {"x.ai/resident_only": True, "x.ai/residentActorId": actor,
+                                       "x.ai/restore_code": False, "clientUserMessageEcho": True}
+                    params["cwd"] = unwrap_result(response)["_meta"].get("x.ai/bridgeExecutionCwd", params["cwd"])
+                    loading[key] = params["sessionId"]
+                    loading_workspaces[key] = params["cwd"]
+                    await forward(value)
+            finally:
+                creating.discard(key)
+                # A forwarded strict attach remains in flight until native reply.
+                if key not in loading:
+                    inflight.discard(key)
 
         async def from_phone():
             nonlocal counter
@@ -534,6 +876,9 @@ class Bridge:
                     )
                     continue
                 if method == "session/new":
+                    if self.socket != self.directory.primary:
+                        await ws.send_json(source_error(value, "primary_required", "Create new sessions on the configured primary Mac connection"))
+                        continue
                     if not resident_only_supported:
                         await ws.send_json(rpc_error(
                             value, "Initialize the compatible live leader before creating a session"
@@ -647,6 +992,12 @@ class Bridge:
                         rpc_error(value, "Discovery and billing reads accept empty parameters only")
                     )
                     continue
+                if method in {"x.ai/sessions/list", ROSTER_METHOD}:
+                    if "id" not in value:
+                        continue
+                    inflight.add(request_key(value))
+                    spawn_background(discover(value))
+                    continue
                 if method in {"x.ai/session/info", "_x.ai/session/info"} and params.keys() - {
                     "sessionId"
                 }:
@@ -710,6 +1061,19 @@ class Bridge:
                             rpc_error(value, "Resident actor identity must be a string")
                         )
                         continue
+                    if "x.ai/resumeSaved" in meta:
+                        if meta["x.ai/resumeSaved"] is not True or "x.ai/residentActorId" in meta or "cursor" in meta:
+                            await ws.send_json(rpc_error(value, "Explicit saved resume cannot reuse a live actor or replay cursor"))
+                            continue
+                        if creating:
+                            await ws.send_json(rpc_error(value, "A session creation or resume is already pending; reconcile before retrying"))
+                            continue
+                        creating.add(request_key(value))
+                        inflight.add(request_key(value))
+                        task = asyncio.create_task(resume_saved(value))
+                        self.creations.add(task)
+                        task.add_done_callback(self.creations.discard)
+                        continue
                     counter += 1
                     request_id = f"{INTERNAL_PREFIX}{counter}"
 
@@ -767,9 +1131,9 @@ class Bridge:
         finally:
             for _, timer in pending.values():
                 timer.cancel()
-            for task in tasks:
+            for task in tasks + list(background):
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, *list(background), return_exceptions=True)
             # Detach only. Never emit session/cancel, session/close, or a signal.
             writer.close()
             with suppress(ConnectionError):

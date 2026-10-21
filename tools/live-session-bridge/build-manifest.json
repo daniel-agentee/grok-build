@@ -6,7 +6,7 @@
   "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
   "cargo_version": "cargo 1.94.0 (85eff7c80 2026-01-15)",
   "cargo_lock_sha256": "73f15eb527021f73f585dad1e6903208e35c4cdca1a15b73d9a4b8c8432da692",
-  "patch_sha256": "63010285ee1d42819181274f2c39143bd8a0bb90db176f0539ae80f889f30d3a",
+  "patch_sha256": "28f6919ad1a01c0d70503cc4efb7b21bc8e23d48a20517b5046837dc76d86639",
   "build_command": [
     "cargo",
     "build",
@@ -22,8 +22,8 @@
     "CARGO_INCREMENTAL": "0"
   },
   "binary": "target/debug/xai-grok-pager",
-  "binary_sha256": "f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc",
-  "version_output": "grok 1.0.45 (24b498ce6a7f) [alpha]",
+  "binary_sha256": "27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8",
+  "version_output": "grok 1.0.45 (2ad3ac440d6d) [alpha]",
   "native_test_environment": {
     "CARGO_PROFILE_DEV_DEBUG": "0",
     "CARGO_PROFILE_TEST_DEBUG": "0",
@@ -42,7 +42,7 @@
     "--",
     "--nocapture"
   ],
-  "artifact_checkout_commit": "24b498ce6a7f648cfe64b59a770fdf14076ee18a",
+  "artifact_checkout_commit": "2ad3ac440d6d15a7a27c447de1dc2d38ada54f13",
   "native_interaction_test_command": [
     "cargo",
     "test",
@@ -72,5 +72,7 @@
     "scope_kill_all_reaps_enrolled_mcp_child_while_owner_wedged",
     "spawn_into_a_closed_scope_fails_fast"
   ],
-  "native_mcp_test_evidence": "evidence/session-features-bounded-mcp-tests.txt"
+  "native_mcp_test_evidence": "evidence/session-features-bounded-mcp-tests.txt",
+  "all_sessions_binary_copy": "target/verified-all-sessions-20261021/xai-grok-pager",
+  "all_sessions_build_evidence": "evidence/all-sessions-native-build.txt"
 }

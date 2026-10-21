@@ -105,6 +105,7 @@ mod tests {
             activity: agent::RosterActivity::Working,
             last_turn_summary: Some("Fixed the roster merge".to_string()),
             resident: true,
+        resident_actor_id: None,
             last_change_unix_ms: 1_725_000_000_123,
             origin: agent::RosterOrigin::Local,
         }
@@ -185,6 +186,7 @@ mod tests {
             activity: agent::RosterActivity::Idle,
             last_turn_summary: None,
             resident: false,
+        resident_actor_id: None,
             last_change_unix_ms: 1_762_000_000_000,
             origin: agent::RosterOrigin::Local,
         };

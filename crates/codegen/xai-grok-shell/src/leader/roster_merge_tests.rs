@@ -21,6 +21,7 @@ fn row(session_id: &str) -> RosterEntry {
         activity: RosterActivity::Idle,
         last_turn_summary: None,
         resident: false,
+        resident_actor_id: None,
         last_change_unix_ms: 1_762_000_000_000,
         origin: RosterOrigin::Local,
     }
@@ -39,6 +40,7 @@ fn live_row(session_id: &str) -> RosterEntry {
         activity: RosterActivity::Working,
         last_turn_summary: None,
         resident: true,
+        resident_actor_id: None,
         last_change_unix_ms: 7,
         origin: RosterOrigin::Local,
     }

@@ -1,0 +1,364 @@
+"""Bounded federation/ownership regressions. Native interoperability is separate."""
+from __future__ import annotations
+import asyncio
+import importlib.util
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+from aiohttp import ClientSession, WSServerHandshakeError, WSMsgType, web
+
+spec = importlib.util.spec_from_file_location("directory_bridge", Path(__file__).with_name("bridge.py"))
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+
+
+class NativeFixture:
+    def __init__(self, path, rows):
+        self.path, self.rows = path, rows
+        self.writers, self.seen = set(), []
+        self.protocol, self.version, self.capable = 1, "1.0.45", True
+        self.loads, self.creates, self.prompts, self.approvals = [], [], [], []
+        self.execution_cwd = str(path.parent)
+        self.fail_roster = False
+        self.before_owner_auth = None
+        self.drop_load = False
+        self.server = None
+
+    async def start(self):
+        self.server = await asyncio.start_unix_server(self.handle, path=self.path)
+        return self
+
+    async def stop(self):
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+        for writer in tuple(self.writers):
+            writer.close()
+            await writer.wait_closed()
+
+    async def emit(self, value):
+        for writer in tuple(self.writers):
+            await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps(value)})
+
+    async def handle(self, reader, writer):
+        self.writers.add(writer)
+        try:
+            await bridge.read_frame(reader)
+            await bridge.write_frame(writer, {"type": "registered", "ready": True,
+                "leader_protocol_version": self.protocol, "leader_binary_version": self.version})
+            while True:
+                value = json.loads((await bridge.read_frame(reader))["payload"])
+                self.seen.append(value)
+                method, params = value.get("method"), value.get("params", {})
+                result = {}
+                if method == "initialize":
+                    result = {"_meta": {"x.ai/residentOnlyAttach": self.capable,
+                                         "x.ai/residentActorIdentity": self.capable}}
+                elif method == "authenticate":
+                    if self.before_owner_auth and value.get("id") == bridge.INTERNAL_PREFIX + "owner-auth":
+                        callback, self.before_owner_auth = self.before_owner_auth, None
+                        callback()
+                elif method in {bridge.ROSTER_METHOD, "x.ai/sessions/list"}:
+                    if self.fail_roster:
+                        await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps(bridge.rpc_error(value, "No roster"))})
+                        continue
+                    result = {"result": {"sessions": [dict(row) for row in self.rows]}}
+                elif method == "_x.ai/session/info":
+                    result = {"result": {"cwd": self.execution_cwd}}
+                elif method == "session/load":
+                    self.loads.append(value)
+                    if self.drop_load:
+                        return
+                    row = next(r for r in self.rows if r["sessionId"] == params["sessionId"])
+                    if params.get("_meta", {}).get("x.ai/resident_only") and not row["resident"]:
+                        await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps(bridge.rpc_error(value, "Gone"))})
+                        continue
+                    row.update(resident=True, activity="idle", residentActorId=row.get("residentActorId", "new-actor"))
+                    result = {"_meta": {"x.ai/residentActorId": row["residentActorId"]} if params.get("_meta", {}).get("x.ai/resident_only") else {}}
+                    await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": row["sessionId"], "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "saved replay"}}}})})
+                elif method == "session/prompt":
+                    self.prompts.append(value)
+                elif method == "session/new":
+                    self.creates.append(value)
+                elif not method:
+                    self.approvals.append(value)
+                    continue
+                if "id" in value:
+                    await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps({"jsonrpc": "2.0", "id": value["id"], "result": result})})
+        except (asyncio.IncompleteReadError, ConnectionError, StopIteration):
+            pass
+        finally:
+            self.writers.discard(writer)
+            writer.close()
+            await writer.wait_closed()
+
+
+class DirectoryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        # macOS /tmp resolves through /private/tmp; no parent symlink accepted.
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.primary = await NativeFixture(self.root / "leader.sock", [self.row("p", True, "idle", "actor-p"), self.row("saved", False, "dormant")]).start()
+        self.secondary = await NativeFixture(self.root / "leader-second.sock", [self.row("s", True, "working", "actor-s"), self.row("p", False, "dormant"), self.row("saved", False, "dormant")]).start()
+        self.runtime = bridge.Bridge(self.primary.path, "x" * 40, "1.0.45")
+        self.runner = web.AppRunner(bridge.make_app(self.runtime)); await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0); await site.start()
+        self.url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/ws"
+        self.http = ClientSession()
+        self.sockets = []
+        self.number = 0
+        self.extra = []
+
+    def row(self, sid, resident, activity, actor=None):
+        return {"sessionId": sid, "cwd": str(self.root), "resident": resident,
+                "activity": activity, "title": sid, "lastChangeUnixMs": 1,
+                **({"residentActorId": actor} if actor else {})}
+
+    async def asyncTearDown(self):
+        for ws in self.sockets: await ws.close()
+        await self.http.close(); await self.runner.cleanup()
+        await self.primary.stop(); await self.secondary.stop()
+        for fixture in self.extra: await fixture.stop()
+        self.temp.cleanup()
+
+    async def rpc(self, ws, method, params):
+        self.number += 1
+        identifier = self.number
+        await ws.send_json({"jsonrpc": "2.0", "id": identifier, "method": method, "params": params})
+        async with asyncio.timeout(5):
+            while True:
+                value = await ws.receive_json()
+                if value.get("id") == identifier and "method" not in value:
+                    return value
+
+    async def connect(self, token=None):
+        ws = await self.http.ws_connect(self.url + ("?leader=" + token if token else ""), headers={"Authorization": "Bearer " + "x" * 40})
+        self.sockets.append(ws)
+        self.assertNotIn("error", await self.rpc(ws, "initialize", {}))
+        return ws
+
+    async def roster(self, ws):
+        return bridge.unwrap_result(await self.rpc(ws, bridge.ROSTER_METHOD, {}))
+
+    async def resume(self, ws, sid="saved"):
+        return await self.rpc(ws, "session/load", {"sessionId": sid, "cwd": str(self.root), "mcpServers": [], "_meta": {"x.ai/resumeSaved": True}})
+
+    async def test_union_keeps_working_idle_saved_and_resident_wins(self):
+        ws = await self.connect(); result = await self.roster(ws)
+        self.assertEqual({(r["sessionId"], r["activity"]) for r in result["sessions"]}, {("p", "idle"), ("s", "working"), ("saved", "dormant")})
+        self.assertEqual(len(result["sessions"]), 3)
+        self.assertFalse(result["bridgePartial"])
+        for row in result["sessions"]:
+            self.assertEqual(len(row["bridgeLeaderId"]), 24)
+            self.assertNotIn(str(self.root), row["bridgeLeaderId"])
+        self.assertEqual(next(r for r in result["sessions"] if r["sessionId"] == "saved")["bridgeLeaderId"], self.runtime.directory.token(self.primary.path))
+
+    async def test_same_sid_distinct_actors_are_separate_origins(self):
+        self.secondary.rows.append(self.row("p", True, "needs_input", "actor-p-other"))
+        result = await self.runtime.directory.snapshot(fresh=True)
+        rows = [r for r in result["sessions"] if r["sessionId"] == "p"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({(r["bridgeLeaderId"], r["residentActorId"]) for r in rows}), 2)
+
+    async def test_source_selection_routes_load_prompt_approval_and_catalog(self):
+        token = self.runtime.directory.token(self.secondary.path)
+        ws = await self.connect(token)
+        self.assertNotIn("error", await self.rpc(ws, "session/load", {"sessionId": "s", "cwd": str(self.root)}))
+        await self.rpc(ws, "_x.ai/commands/list", {"sessionId": "s", "cwd": str(self.root)})
+        await self.rpc(ws, "session/prompt", {"sessionId": "s", "prompt": [{"type": "text", "text": "secondary only"}]})
+        await ws.send_json({"jsonrpc": "2.0", "id": "approval", "result": {"outcome": {"outcome": "selected", "optionId": "allow_once"}}})
+        await asyncio.sleep(.01)
+        self.assertEqual(len(self.secondary.prompts), 1); self.assertFalse(self.primary.prompts)
+        self.assertEqual(self.secondary.prompts[0]["params"]["_meta"]["x.ai/residentActorId"], "actor-s")
+        self.assertTrue(self.secondary.approvals); self.assertFalse(self.primary.approvals)
+        self.assertTrue(any(v.get("method") == "_x.ai/commands/list" for v in self.secondary.seen))
+        result = await self.rpc(ws, "session/new", {"cwd": str(self.root)})
+        self.assertEqual(result["error"]["data"]["code"], "primary_required")
+        self.assertFalse(self.secondary.creates)
+
+    async def test_unknown_token_raw_path_and_wrong_secret_never_connect(self):
+        before = len(self.primary.writers) + len(self.secondary.writers)
+        for query, secret, status in [("?leader=unknown", "x" * 40, 400), ("?leader=/tmp/arbitrary.sock", "x" * 40, 400), ("", "wrong", 401)]:
+            with self.assertRaises(WSServerHandshakeError) as caught:
+                await self.http.ws_connect(self.url + query, headers={"Authorization": "Bearer " + secret})
+            self.assertEqual(caught.exception.status, status)
+        self.assertEqual(len(self.primary.writers) + len(self.secondary.writers), before)
+
+    async def test_stale_symlink_and_untrusted_uid_are_not_live_sources(self):
+        stale = self.root / "leader-stale.sock"
+        server = await asyncio.start_unix_server(lambda r,w: None, path=stale); server.close(); await server.wait_closed()
+        (self.root / "leader-link.sock").symlink_to(self.secondary.path)
+        result = await self.runtime.directory.snapshot(fresh=True)
+        self.assertEqual(len(result["bridgeSources"]), 3)
+        self.assertTrue(result["bridgePartial"]); self.assertFalse(result["bridgeResumeBlocked"])
+        self.assertNotIn(self.runtime.directory.token(self.root / "leader-link.sock"), self.runtime.directory.sources)
+        with patch.object(bridge.os, "getuid", return_value=os.getuid() + 1):
+            directory = bridge.LeaderDirectory(self.primary.path, "x" * 40, "1.0.45")
+            self.assertEqual(len(directory.sources), 0)
+
+    async def test_incompatible_reachable_source_blocks_saved_resume(self):
+        self.secondary.version = "1.0.62"
+        ws = await self.connect(); result = await self.roster(ws)
+        self.assertTrue(result["bridgePartial"]); self.assertTrue(result["bridgeResumeBlocked"])
+        reply = await self.resume(ws)
+        self.assertEqual(reply["error"]["data"]["code"], "source_unavailable")
+        self.assertFalse(self.primary.loads)
+
+    async def test_readonly_legacy_source_lists_all_sessions_but_never_attaches(self):
+        self.secondary.capable = False
+        ws = await self.connect(); result = await self.roster(ws)
+        row = next(r for r in result["sessions"] if r["sessionId"] == "s")
+        self.assertFalse(row["bridgeAttachSupported"])
+        self.assertEqual(row["bridgeAttachUnsupportedReason"], "upgrade_required")
+        self.assertTrue(result["bridgePartial"])
+        self.assertFalse(result["bridgeResumeBlocked"])
+        source = next(s for s in result["bridgeSources"] if s["bridgeLeaderId"] == row["bridgeLeaderId"])
+        self.assertTrue(source["available"])
+        self.assertFalse(source["ownershipUnknown"])
+        self.assertEqual(source["error"], "upgrade_required")
+        with self.assertRaises(WSServerHandshakeError) as caught:
+            await self.connect(row["bridgeLeaderId"])
+        self.assertEqual(caught.exception.status, 426)
+        # Source's live ownership still prevents a second actor from its history.
+        self.primary.rows.append(self.row("s", False, "dormant"))
+        reply = await self.resume(ws, "s")
+        self.assertEqual(reply["error"]["data"]["code"], "origin_conflict")
+        self.assertFalse(self.secondary.loads)
+        self.assertFalse(self.secondary.prompts)
+        self.assertFalse(self.primary.loads)
+
+    async def test_readonly_source_loss_still_blocks_saved_resume(self):
+        self.secondary.capable = False
+        await self.runtime.directory.snapshot(fresh=True)
+        await self.secondary.stop()
+        result = await self.runtime.directory.snapshot(fresh=True)
+        self.assertTrue(result["bridgeResumeBlocked"])
+        self.assertFalse(any(r["sessionId"] == "s" for r in result["sessions"]))
+
+    async def test_source_death_has_no_dormant_fallback_and_recovery_reconciles(self):
+        await self.runtime.directory.snapshot(fresh=True)
+        self.primary.rows.append(self.row("s", False, "dormant"))
+        await self.secondary.stop()
+        result = await self.runtime.directory.snapshot(fresh=True)
+        self.assertFalse(any(r["sessionId"] == "s" for r in result["sessions"]))
+        self.assertTrue(result["bridgeResumeBlocked"])
+        with self.assertRaises(WSServerHandshakeError): await self.connect(self.runtime.directory.token(self.secondary.path))
+        ws = await self.connect(); reply = await self.resume(ws, "s")
+        self.assertEqual(reply["error"]["data"]["code"], "source_unavailable")
+        self.assertFalse(self.primary.loads)
+        await self.secondary.start()
+        result = await self.runtime.directory.snapshot(fresh=True)
+        self.assertEqual(next(r for r in result["sessions"] if r["sessionId"] == "s")["residentActorId"], "actor-s")
+        self.assertFalse(result["bridgeResumeBlocked"])
+
+    async def test_saved_resume_retains_actor_and_replays_via_strict_attach(self):
+        ws = await self.connect(); reply = await self.resume(ws)
+        self.assertNotIn("error", reply)
+        self.assertEqual(reply["result"]["_meta"]["x.ai/residentActorId"], "new-actor")
+        self.assertEqual(len(self.primary.loads), 3)
+        self.assertNotIn("x.ai/resumeSaved", self.primary.loads[0]["params"]["_meta"])
+        self.assertTrue(self.primary.loads[2]["params"]["_meta"]["x.ai/resident_only"])
+        await ws.close(); await asyncio.sleep(.02)
+        self.assertEqual(len(self.runtime.owners), 1)
+        owner = next(iter(self.runtime.owners)); self.assertEqual(owner.session_id, "saved")
+        self.assertFalse(owner.task.done())
+        second = await self.connect(); reply = await self.resume(second)
+        self.assertEqual(reply["error"]["data"]["code"], "origin_conflict")
+        self.assertEqual(len(self.primary.loads), 3)
+
+    async def test_saved_resume_rechecks_owner_after_retainer_auth_race(self):
+        ws = await self.connect()
+        # First discovery authenticates both sources; set the race only after it.
+        await self.runtime.directory.snapshot(fresh=True)
+        count = 0
+        original = self.runtime.directory.snapshot
+        async def snapshot(**kwargs):
+            nonlocal count
+            result = await original(**kwargs); count += 1
+            if count == 1:
+                self.primary.before_owner_auth = lambda: self.secondary.rows.append(self.row("saved", True, "working", "racing-actor"))
+            return result
+        with patch.object(self.runtime.directory, "snapshot", side_effect=snapshot):
+            reply = await self.resume(ws)
+        self.assertEqual(reply["error"]["data"]["code"], "origin_conflict")
+        self.assertEqual(reply["error"]["data"]["bridgeLeaderId"], self.runtime.directory.token(self.secondary.path))
+        self.assertFalse(self.primary.loads)
+
+    async def test_resume_ownership_cap_and_unknown_outcome_never_retry(self):
+        ws = await self.connect()
+        with patch.object(bridge, "MAX_OWNED_SESSIONS", 0):
+            self.assertIn("error", await self.resume(ws))
+        self.assertFalse(self.primary.loads)
+        self.primary.drop_load = True
+        await ws.send_json({"jsonrpc": "2.0", "id": "uncertain", "method": "session/load", "params": {"sessionId": "saved", "cwd": str(self.root), "_meta": {"x.ai/resumeSaved": True}}})
+        result = await asyncio.wait_for(ws.receive(), 5)
+        self.assertEqual(result.type, WSMsgType.CLOSE); self.assertEqual(result.data, 1011)
+        self.assertEqual(len(self.primary.loads), 1)
+
+    async def test_saved_worktree_uses_resumed_execution_workspace_for_both_strict_loads(self):
+        actual = self.root / "actual-worktree"; actual.mkdir()
+        self.primary.execution_cwd = str(actual)
+        ws = await self.connect(); reply = await self.resume(ws)
+        self.assertNotIn("error", reply)
+        self.assertEqual(reply["result"]["_meta"]["x.ai/bridgeExecutionCwd"], str(actual))
+        self.assertEqual([v["params"]["cwd"] for v in self.primary.loads], [str(self.root), str(actual), str(actual)])
+        self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"sessionId": "saved", "cwd": str(actual)}))
+        self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", {"sessionId": "saved", "cwd": str(self.root)}))
+
+    async def test_simultaneous_saved_resume_creates_one_actor_and_returns_origin_conflict(self):
+        first, second = await self.connect(), await self.connect()
+        results = await asyncio.gather(self.resume(first), self.resume(second))
+        self.assertEqual(sum("error" not in result for result in results), 1)
+        rejected = next(result for result in results if "error" in result)
+        self.assertEqual(rejected["error"]["data"]["code"], "origin_conflict")
+        self.assertEqual(len(self.primary.loads), 3)
+        self.assertEqual(len(self.runtime.owners), 1)
+
+    async def test_registered_socket_replaced_by_symlink_cannot_be_selected(self):
+        token = self.runtime.directory.token(self.secondary.path)
+        await self.secondary.stop(); self.secondary.path.unlink()
+        self.secondary.path.symlink_to(self.primary.path)
+        with self.assertRaises(WSServerHandshakeError) as caught: await self.connect(token)
+        self.assertEqual(caught.exception.status, 400)
+
+    async def test_source_death_between_roster_and_strict_attach_never_restores(self):
+        ws = await self.connect(self.runtime.directory.token(self.secondary.path))
+        self.secondary.drop_load = True
+        await ws.send_json({"jsonrpc": "2.0", "id": "dying", "method": "session/load", "params": {"sessionId": "s", "cwd": str(self.root)}})
+        value = await asyncio.wait_for(ws.receive(), 5)
+        self.assertEqual(value.type, WSMsgType.CLOSE); self.assertEqual(value.data, 1011)
+        self.assertEqual(len(self.secondary.loads), 1)
+        self.assertTrue(self.secondary.loads[0]["params"]["_meta"]["x.ai/resident_only"])
+        self.assertFalse(self.primary.loads)
+
+    async def test_resume_rejects_stale_actor_cursor_and_wrong_workspace(self):
+        ws = await self.connect()
+        for meta in [{"x.ai/resumeSaved": False}, {"x.ai/resumeSaved": True, "cursor": "old"}, {"x.ai/resumeSaved": True, "x.ai/residentActorId": "old-actor"}]:
+            reply = await self.rpc(ws, "session/load", {"sessionId": "saved", "cwd": str(self.root), "_meta": meta})
+            self.assertIn("error", reply)
+        reply = await self.rpc(ws, "session/load", {"sessionId": "saved", "cwd": "/", "_meta": {"x.ai/resumeSaved": True}})
+        self.assertEqual(reply["error"]["data"]["code"], "workspace_unavailable")
+        self.assertFalse(self.primary.loads)
+
+    async def test_notifications_are_scoped_to_selected_origin(self):
+        token = self.runtime.directory.token(self.secondary.path); ws = await self.connect(token)
+        await self.secondary.emit({"jsonrpc": "2.0", "method": "_x.ai/sessions/changed", "params": {"upserted": [self.secondary.rows[0]], "removed": ["elsewhere"]}})
+        value = await ws.receive_json()
+        self.assertEqual(value["params"]["bridgeLeaderId"], token)
+        self.assertEqual(value["params"]["upserted"][0]["bridgeLeaderId"], token)
+
+    async def test_concurrent_roster_reads_coalesce_and_bound_registry(self):
+        results = await asyncio.gather(*(self.runtime.directory.snapshot() for _ in range(8)))
+        self.assertTrue(all(r is results[0] for r in results))
+        self.assertEqual(sum(v.get("method") == bridge.ROSTER_METHOD for v in self.primary.seen), 1)
+        with patch.object(bridge, "MAX_LEADER_SOURCES", 1):
+            directory = bridge.LeaderDirectory(self.primary.path, "x" * 40, "1.0.45")
+            result = await directory.snapshot(fresh=True)
+            self.assertEqual(len(directory.sources), 1)
+            self.assertTrue(result["bridgePartial"]); self.assertTrue(result["bridgeResumeBlocked"])
+
+
+if __name__ == "__main__": unittest.main()

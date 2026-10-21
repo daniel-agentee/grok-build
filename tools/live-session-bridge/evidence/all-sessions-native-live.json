@@ -1,0 +1,19 @@
+{
+  "binaryVersion": "grok 1.0.45 (2ad3ac440d6d) [alpha]",
+  "tests": [
+    "real_two_origin_roster_and_actor_identity",
+    "strict_attach_routes_to_each_original_actor",
+    "same_saved_id_distinct_live_actors_never_merged",
+    "explicit_saved_resume_retained_after_phone_disconnect_and_not_duplicated",
+    "real_source_loss_refuses_history_fallback",
+    "wrong_secret_rejected"
+  ],
+  "primarySessionId": "01a15d87-927d-7bc2-89c7-3e1969cd35c6",
+  "primaryActorId": "01a15d87-9438-7a31-9d30-7e33eb06928c",
+  "secondarySessionId": "01a15d87-94aa-7013-a8ff-08c1f11e20c5",
+  "secondaryActorId": "01a15d87-95e1-7661-b641-58105a652147",
+  "collisionActorId": "01a15d87-a74f-7051-bdc4-5a5b72c2f6f1",
+  "savedSessionId": "01a15d87-c2e8-76d3-98bd-23fae889c21f",
+  "resumedActorId": "01a15d87-e3df-7ea0-bb34-4d7f15af6a67",
+  "passed": true
+}

@@ -14,7 +14,7 @@ import time
 
 from bridge import connect_leader, load_secret
 
-BINARY_SHA256 = "f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc"
+BINARY_SHA256 = "27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8"
 VERSION = "1.0.45"
 
 

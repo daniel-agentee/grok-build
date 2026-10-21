@@ -4650,6 +4650,7 @@ async fn roster_merge_round_trips_namespaced_ids_and_broadcasts_changes() {
         activity: RosterActivity::Idle,
         last_turn_summary: None,
         resident: false,
+        resident_actor_id: None,
         last_change_unix_ms: 1,
         origin: RosterOrigin::Local,
     };
@@ -4686,6 +4687,7 @@ async fn roster_merge_round_trips_namespaced_ids_and_broadcasts_changes() {
         session_id: "live".to_owned(),
         session_kind: None,
         resident: true,
+        resident_actor_id: None,
         ..cursor_row.clone()
     };
     let body: serde_json::Value = serde_json::from_str(

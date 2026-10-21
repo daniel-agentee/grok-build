@@ -1,0 +1,58 @@
+test_concurrent_roster_reads_coalesce_and_bound_registry (test_directory.DirectoryTests.test_concurrent_roster_reads_coalesce_and_bound_registry) ... ok
+test_incompatible_reachable_source_blocks_saved_resume (test_directory.DirectoryTests.test_incompatible_reachable_source_blocks_saved_resume) ... ok
+test_notifications_are_scoped_to_selected_origin (test_directory.DirectoryTests.test_notifications_are_scoped_to_selected_origin) ... ok
+test_readonly_legacy_source_lists_all_sessions_but_never_attaches (test_directory.DirectoryTests.test_readonly_legacy_source_lists_all_sessions_but_never_attaches) ... ERROR
+test_readonly_source_loss_still_blocks_saved_resume (test_directory.DirectoryTests.test_readonly_source_loss_still_blocks_saved_resume) ... FAIL
+test_registered_socket_replaced_by_symlink_cannot_be_selected (test_directory.DirectoryTests.test_registered_socket_replaced_by_symlink_cannot_be_selected) ... ok
+test_resume_ownership_cap_and_unknown_outcome_never_retry (test_directory.DirectoryTests.test_resume_ownership_cap_and_unknown_outcome_never_retry) ... ok
+test_resume_rejects_stale_actor_cursor_and_wrong_workspace (test_directory.DirectoryTests.test_resume_rejects_stale_actor_cursor_and_wrong_workspace) ... ok
+test_same_sid_distinct_actors_are_separate_origins (test_directory.DirectoryTests.test_same_sid_distinct_actors_are_separate_origins) ... ok
+test_saved_resume_rechecks_owner_after_retainer_auth_race (test_directory.DirectoryTests.test_saved_resume_rechecks_owner_after_retainer_auth_race) ... ok
+test_saved_resume_retains_actor_and_replays_via_strict_attach (test_directory.DirectoryTests.test_saved_resume_retains_actor_and_replays_via_strict_attach) ... ok
+test_saved_worktree_uses_resumed_execution_workspace_for_both_strict_loads (test_directory.DirectoryTests.test_saved_worktree_uses_resumed_execution_workspace_for_both_strict_loads) ... ok
+test_simultaneous_saved_resume_creates_one_actor_and_returns_origin_conflict (test_directory.DirectoryTests.test_simultaneous_saved_resume_creates_one_actor_and_returns_origin_conflict) ... ok
+test_source_death_between_roster_and_strict_attach_never_restores (test_directory.DirectoryTests.test_source_death_between_roster_and_strict_attach_never_restores) ... ok
+test_source_death_has_no_dormant_fallback_and_recovery_reconciles (test_directory.DirectoryTests.test_source_death_has_no_dormant_fallback_and_recovery_reconciles) ... ok
+test_source_selection_routes_load_prompt_approval_and_catalog (test_directory.DirectoryTests.test_source_selection_routes_load_prompt_approval_and_catalog) ... ok
+test_stale_symlink_and_untrusted_uid_are_not_live_sources (test_directory.DirectoryTests.test_stale_symlink_and_untrusted_uid_are_not_live_sources) ... ok
+test_union_keeps_working_idle_saved_and_resident_wins (test_directory.DirectoryTests.test_union_keeps_working_idle_saved_and_resident_wins) ... ok
+test_unknown_token_raw_path_and_wrong_secret_never_connect (test_directory.DirectoryTests.test_unknown_token_raw_path_and_wrong_secret_never_connect) ... ok
+
+======================================================================
+ERROR: test_readonly_legacy_source_lists_all_sessions_but_never_attaches (test_directory.DirectoryTests.test_readonly_legacy_source_lists_all_sessions_but_never_attaches)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/tools/live-session-bridge/test_directory.py", line 213, in test_readonly_legacy_source_lists_all_sessions_but_never_attaches
+    row = next(r for r in result["sessions"] if r["sessionId"] == "s")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+StopIteration
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+RuntimeError: coroutine raised StopIteration
+
+======================================================================
+FAIL: test_readonly_source_loss_still_blocks_saved_resume (test_directory.DirectoryTests.test_readonly_source_loss_still_blocks_saved_resume)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/danielstojanovic/code/_tools/grok-live-switching/grok-build/tools/live-session-bridge/test_directory.py", line 238, in test_readonly_source_loss_still_blocks_saved_resume
+    self.assertTrue(result["bridgeResumeBlocked"])
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.325s
+
+FAILED (failures=1, errors=1)
