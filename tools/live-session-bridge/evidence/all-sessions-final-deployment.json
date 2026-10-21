@@ -1,0 +1,40 @@
+{
+  "fixtureManifest": "/tmp/grok-all-sessions-phone-fixtures.json",
+  "deletedOwnedSessionIds": [
+    "01a15d83-b2cd-76f0-ba3f-3c02b03c2408",
+    "01a15d83-b9c5-7b90-882a-cb90fabcc9d8",
+    "01a15d83-c21c-7b12-acf6-029698cead63"
+  ],
+  "exactFixtureSessionsAbsentFromNativeRoster": true,
+  "capturedAtUTC": "2026-10-21T08:35:06.740213+00:00",
+  "endpoint": "192.168.178.92:18809",
+  "bridgeExecSessionId": 37232,
+  "bridgeRestartedOnlyAfterNoClientOrOwnerTransports": true,
+  "ownersBeforeRestartEvidence": "Only Unix FDs 4/5 connected to each other (asyncio self-pipe), TCP listener only; no native leader/owner transport or mobile TCP connection.",
+  "ownedFixtureLeaderStopped": true,
+  "ownedFixtureSocketRemoved": true,
+  "testFixtureSourceAbsent": true,
+  "deletedOwnedSessionsAbsent": true,
+  "originalSessionId": "01a15d1b-1076-7a80-893c-5b707434c0d8",
+  "originalActorId": "01a15d1b-124c-70c0-82c3-fc42b26461bc",
+  "originalActorUnchangedStrictLoad": true,
+  "originalExecutionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/session-features-disposable-1792493676",
+  "savedResumeBlocked": false,
+  "reachableCounts": {
+    "live": 4,
+    "saved": 104,
+    "readOnlyLive": 2
+  },
+  "availableSourceCount": 3,
+  "readOnlyUpgradeSourceCount": 1,
+  "userLeaderProcessesPreserved": true,
+  "sourceSha256": "9ea0e9f4ebcd39faed048e2c46fdcaef267ffd127f0764d7b4786dc8f4c0160f",
+  "health": {
+    "transport": "grok-leader-ipc",
+    "protocol": 1,
+    "leaderAvailable": true
+  },
+  "wrongSecretHttpStatus": 401,
+  "unsupportedSourceHttpStatus": 426,
+  "passed": true
+}
