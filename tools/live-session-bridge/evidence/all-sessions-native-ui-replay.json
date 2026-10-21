@@ -1,0 +1,88 @@
+{
+  "mode": "after",
+  "sessions": [
+    {
+      "role": "primary",
+      "sessionId": "01a15d76-b26d-7533-b989-730a843d3283",
+      "residentActorId": "01a15d78-0697-73f1-b7f5-b6d6440ecb67",
+      "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-primary-20261021",
+      "userMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 1,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 0,
+        "SAVED-RESUME-PHONE-ACK-A81C": 0
+      },
+      "assistantMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 1,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 0,
+        "SAVED-RESUME-PHONE-ACK-A81C": 0
+      },
+      "duplicateReplayEventIds": 0
+    },
+    {
+      "role": "secondary",
+      "sessionId": "01a15d76-ee2a-7690-b0da-e71be700c77a",
+      "residentActorId": "01a15d78-0d4f-70b1-9152-47c68b13bb46",
+      "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-secondary-20261021",
+      "userMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 0,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 1,
+        "SAVED-RESUME-PHONE-ACK-A81C": 0
+      },
+      "assistantMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 0,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 1,
+        "SAVED-RESUME-PHONE-ACK-A81C": 0
+      },
+      "duplicateReplayEventIds": 0
+    },
+    {
+      "role": "saved",
+      "sessionId": "01a15d76-f726-79b2-8b0d-50ab3281a7f9",
+      "residentActorId": "01a15d8d-c943-7351-8632-0d23da66505d",
+      "executionCwd": "/Users/danielstojanovic/code/_tools/grok-live-switching/all-sessions-saved-20261021",
+      "userMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 0,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 0,
+        "SAVED-RESUME-PHONE-ACK-A81C": 1
+      },
+      "assistantMarkerCounts": {
+        "PRIMARY-ORIGIN-PHONE-ACK-A81C": 0,
+        "SECOND-ORIGIN-PHONE-ACK-A81C": 0,
+        "SAVED-RESUME-PHONE-ACK-A81C": 1
+      },
+      "duplicateReplayEventIds": 0
+    }
+  ],
+  "terminalActorsUnchanged": true,
+  "savedActorRetainedAfterAllMobileAndAuditObserversDetached": true,
+  "passed": true,
+  "mobileAppExplicitlyTerminatedBeforeAudit": true,
+  "runtimeProvenance": {
+    "simulatorNativeArtifact": "target/verified-session-features-mcp-bounded/xai-grok-pager",
+    "simulatorNativeSha256": "f0dc780dc99737421021144fab7953c8cedafa300ddb46aadabe2189940b96bc",
+    "simulatorBridge": "Final saved-resume SID/UUID and execution-workspace handling; loaded before subsequent read-only legacy-directory enumeration and source-label changes. No at-launch bridge source hash captured.",
+    "finalNativeArtifact": "target/verified-all-sessions-20261021/xai-grok-pager",
+    "finalNativeSha256": "27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8",
+    "finalNativeCoverage": "Separate six-case real-native proof; actual phone disposable fixture leader.",
+    "finalBridgeCoverage": "Actual endpoint18809 authenticated discovery, read-only upgrade visibility and refusal, original actor preservation, wrong-secret rejection;91automated tests.",
+    "notes": "The full Simulator model-turn scenario demonstrates legacy-compatible origins; it does not run the newer optional-roster-UUID binary or later read-only-directory branch."
+  },
+  "interactiveTerminalExitEvidence": {
+    "primary": {
+      "exitCode": 0,
+      "visiblePhonePrompt": "Reply exactly PRIMARY-ORIGIN-PHONE-ACK-A81C. Do not use tools.",
+      "visibleAssistantReply": "PRIMARY-ORIGIN-PHONE-ACK-A81C"
+    },
+    "secondary": {
+      "exitCode": 0,
+      "visiblePhonePrompt": "Reply exactly SECOND-ORIGIN-PHONE-ACK-A81C. Do not use tools.",
+      "visibleAssistantReply": "SECOND-ORIGIN-PHONE-ACK-A81C"
+    },
+    "capture": "Observed native interactive Terminal exit output after Ctrl-Q; no additional prompts sent."
+  },
+  "cleanup": {
+    "simulatorFixtureTerminalsExited": true,
+    "simulatorFixtureBridgeAndLeadersStoppedAfterVerification": true,
+    "originalUserTerminalLeaderAnd18809Preserved": true
+  }
+}
