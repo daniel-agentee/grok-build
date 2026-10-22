@@ -13,7 +13,7 @@ The connection path is:
 ```text
 iPhone → trusted HTTPS/WSS at Cloudflare
        → dedicated outbound encrypted tunnel on Daniel's Mac
-       → http://127.0.0.1:18809/ws
+       → http://127.0.0.1:18853/ws
        → that Mac's existing native Grok leader and exact resident session actor
 ```
 
@@ -46,8 +46,49 @@ in the main bridge README. The dedicated connector uses:
 - Label: `io.agentee.grok-mobile-tunnel`
 - Configuration: `~/.grok/mobile-bridge/remote-access/config.yml`
 - Logs: `~/.grok/mobile-bridge/remote-access/tunnel.log` and `tunnel.err`
-- Cloudflare ingress: exact `/ws` to `http://127.0.0.1:18809`, then a 404 catchall
+- Cloudflare ingress: exact `/ws` to `http://127.0.0.1:18853`, then a 404 catchall
 - Loopback-only connector metrics: `127.0.0.1:18819`
+
+The active public bridge is the reviewed parallel release
+`~/.grok/mobile-bridge/releases/bridge-47fd5f8a8d58/bridge.py`, supervised as
+**`io.grok.mobile.v20261022.bridge`** on loopback port **18853**. Its saved
+LaunchAgent is
+`~/Library/LaunchAgents/io.grok.mobile.v20261022.bridge.plist`. The bridge source
+is commit `8327f7b0ae5f1e375261c6fc0bc23d2de197fb9e`, SHA-256
+`47fd5f8a8d58726775248ed5366378104d980ec5b3169541366b476daaee4ab6`.
+It uses the same secret file, native leader socket and workspace reader as the
+previous bridge. The native binary remains Grok 1.0.45 (`2ad3ac440d6d`), protocol 1.
+
+The original **`io.grok.mobile.bridge`** on port **18809** deliberately remains
+running. Its creator subscriptions still keep existing mobile-created native
+actors resident. **Do not stop or restart that bridge to clean up the old port.**
+Keep it alive until every resident actor present before this rollout has
+explicitly closed. Ordinary attachments through the new bridge do not transfer
+creator ownership. The native **`io.grok.mobile.leader`** was also preserved.
+
+The active release pointer is `~/.grok/mobile-bridge/active-release.json`.
+Its `rollout-runtime-manifest.json` records the source and artifact hashes,
+runtime arguments, native version, process and socket identities, and acceptance
+evidence. In that release directory, `rollout-before.json`, `rollout-local.json`
+and `rollout-public.json` retain resident identity and canonical history cursor
+checks; `rollout-tunnel-switch.json` records the single ingress-port change.
+No saved conversation was resumed and no model turn was submitted by deployment.
+
+Only the dedicated connector was restarted for this cutover. Both compatible
+resident actors kept their original UUIDs, workspaces, source tokens and history;
+126 saved rows stayed actorless, including 12 open conversations whose persisted
+previews were read twice over public WSS. The pre-existing legacy `bob` source
+does not advertise resident actor identity or strict attachment. Its original
+session, workspace, process, socket and unsupported status were preserved without
+loading or upgrading it; strict interoperability is not claimed for that source.
+
+For rollback, the release's `rollback_rollout.py --dry-run` validates the exact
+current ingress hash and confirms the original bridge and native leader are
+alive. Running that helper without `--dry-run` restores only the dedicated
+connector's origin to 18809 and restarts that connector. It does not terminate
+either bridge or the native leader, and refuses to overwrite a later ingress
+change. The public URL and the phone's saved secret remain the same in either
+direction.
 
 The LaunchAgent has RunAtLoad and KeepAlive. It reconnects its outbound tunnel
 and restarts the connector after a process crash. The native actor survives a
@@ -71,6 +112,7 @@ On this Mac, these commands validate configuration and inspect only job identity
 ~/.local/bin/cloudflared tunnel \
   --config ~/.grok/mobile-bridge/remote-access/config.yml ingress validate
 launchctl list | rg 'io.agentee.grok-mobile-tunnel$'
+launchctl list | rg 'io\.grok\.mobile\.(v20261022\.bridge|bridge|leader)$'
 ```
 
 If the dedicated LaunchAgent is not loaded, load its saved owner-only plist:
