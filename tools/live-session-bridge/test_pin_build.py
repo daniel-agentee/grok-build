@@ -224,6 +224,80 @@ class PinBuildTests(unittest.TestCase):
                 [(here / name).read_bytes() for name in ("launch.py", "build-manifest.json")],
             )
 
+    def workspace_fixture(self, directory):
+        root, here, manifest = self.fixture(directory)
+        manifest["workspace_reader"] = {
+            "binary": "workspace-reader",
+            "binary_sha256": "0" * 64,
+            "build_command": ["cargo", "build", "--locked", "--offline", "--bin", "grok-dashboard-workspace"],
+        }
+        manifest["pager_artifact_inputs"] = {"patch_sha256": "historical-pager-input"}
+        (here / "build-manifest.json").write_text(json.dumps(manifest))
+        (here / "bridge.py").write_text('WORKSPACE_READER_SHA256 = "' + "0" * 64 + '"\n')
+        (root / "workspace-reader").write_bytes(b"locally built read-only exporter")
+        return root, here, manifest
+
+    def test_exporter_only_build_preserves_pager_pin_and_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, manifest = self.workspace_fixture(directory)
+            launcher = (here / "launch.py").read_bytes()
+            with (patch.object(pin_build, "output", side_effect=self.native_output),
+                  patch.object(pin_build.subprocess, "run") as build):
+                digest = pin_build.rebuild_and_pin(root, workspace_reader_only=True)
+            build.assert_called_once()
+            self.assertEqual(build.call_args.args[0], manifest["workspace_reader"]["build_command"])
+            self.assertEqual((here / "launch.py").read_bytes(), launcher)
+            result = json.loads((here / "build-manifest.json").read_text())
+            self.assertEqual(result["binary_sha256"], manifest["binary_sha256"])
+            self.assertEqual(result["pager_artifact_inputs"], manifest["pager_artifact_inputs"])
+            self.assertEqual(result["workspace_reader"]["binary_sha256"], digest)
+            self.assertEqual(result["workspace_reader"]["patch_sha256"], manifest["patch_sha256"])
+            self.assertIn(digest, (here / "bridge.py").read_text())
+
+    def test_full_rebuild_builds_and_pins_both_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, manifest = self.workspace_fixture(directory)
+            with (patch.object(pin_build, "output", side_effect=self.native_output),
+                  patch.object(pin_build.subprocess, "run") as build):
+                pin_build.rebuild_and_pin(root)
+            self.assertEqual([call.args[0] for call in build.call_args_list],
+                             [manifest["build_command"], manifest["workspace_reader"]["build_command"]])
+            result = json.loads((here / "build-manifest.json").read_text())
+            self.assertEqual(result["pager_artifact_inputs"]["patch_sha256"], manifest["patch_sha256"])
+            self.assertIn(result["binary_sha256"], (here / "launch.py").read_text())
+            self.assertIn(result["workspace_reader"]["binary_sha256"], (here / "bridge.py").read_text())
+
+    def test_failed_exporter_build_or_missing_artifact_changes_no_pins(self):
+        for failure in ("build", "missing-artifact"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root, here, _ = self.workspace_fixture(directory)
+                names = ("launch.py", "bridge.py", "build-manifest.json")
+                before = [(here / name).read_bytes() for name in names]
+                if failure == "missing-artifact":
+                    (root / "workspace-reader").unlink()
+                with (patch.object(pin_build, "output", side_effect=self.native_output),
+                      patch.object(pin_build.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "cargo") if failure == "build" else None)):
+                    with self.assertRaises((OSError, subprocess.CalledProcessError)):
+                        pin_build.rebuild_and_pin(root, workspace_reader_only=True)
+                self.assertEqual(before, [(here / name).read_bytes() for name in names])
+
+    def test_exporter_requires_explicit_single_pin_and_manifest_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, _ = self.fixture(directory)
+            with (patch.object(pin_build, "output", side_effect=self.native_output),
+                  patch.object(pin_build.subprocess, "run") as build):
+                with self.assertRaisesRegex(ValueError, "describe the dashboard exporter"):
+                    pin_build.rebuild_and_pin(root, workspace_reader_only=True)
+                build.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            root, here, _ = self.workspace_fixture(directory)
+            (here / "bridge.py").write_text('WORKSPACE_READER_SHA256 = "invalid"\n')
+            with (patch.object(pin_build, "output", side_effect=self.native_output),
+                  patch.object(pin_build.subprocess, "run") as build):
+                with self.assertRaisesRegex(ValueError, "one explicit exporter pin"):
+                    pin_build.rebuild_and_pin(root, workspace_reader_only=True)
+                build.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from aiohttp import ClientSession, WSServerHandshakeError, WSMsgType, web
 
 spec = importlib.util.spec_from_file_location("directory_bridge", Path(__file__).with_name("bridge.py"))
@@ -162,6 +162,81 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         rows = [r for r in result["sessions"] if r["sessionId"] == "p"]
         self.assertEqual(len(rows), 2)
         self.assertEqual(len({(r["bridgeLeaderId"], r["residentActorId"]) for r in rows}), 2)
+
+    async def test_workspace_membership_marks_idle_history_and_refresh_removal(self):
+        membership = {("saved", str(self.root))}
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(membership, None))):
+            result = await self.runtime.directory.snapshot(fresh=True)
+        rows = {row["sessionId"]: row for row in result["sessions"]}
+        self.assertTrue(rows["saved"]["workspaceMember"])
+        self.assertFalse(rows["saved"]["resident"])
+        self.assertEqual(rows["saved"]["activity"], "dormant")
+        self.assertNotIn("residentActorId", rows["saved"])
+        self.assertFalse(rows["p"]["workspaceMember"])
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), None))):
+            refreshed = await self.runtime.directory.snapshot(fresh=True)
+        saved = next(row for row in refreshed["sessions"] if row["sessionId"] == "saved")
+        self.assertFalse(saved["workspaceMember"])
+        self.assertEqual(len(refreshed["sessions"]), len(result["sessions"]))
+        self.assertFalse(self.primary.loads + self.secondary.loads)
+
+    async def test_membership_matches_sid_and_normalized_cwd_without_changing_live_source(self):
+        self.secondary.rows.append({**self.row("p", True, "needs_input", "actor-p-other"), "cwd": str(self.root / "other")})
+        members = {("p", os.path.normpath(str(self.root / ".")))}
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(members, None))):
+            result = await self.runtime.directory.snapshot(fresh=True)
+        rows = [row for row in result["sessions"] if row["sessionId"] == "p"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["residentActorId"] for row in rows}, {"actor-p", "actor-p-other"})
+        self.assertTrue(next(row for row in rows if row["residentActorId"] == "actor-p")["workspaceMember"])
+        other = next(row for row in rows if row["residentActorId"] == "actor-p-other")
+        self.assertFalse(other["workspaceMember"])
+        self.assertEqual(other["bridgeLeaderId"], self.runtime.directory.token(self.secondary.path))
+
+    async def test_membership_failure_preserves_live_actors_and_source_loss_still_blocks_resume(self):
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), "read_timeout"))):
+            result = await self.runtime.directory.snapshot(fresh=True)
+        self.assertEqual(result["bridgeWorkspaceMembershipError"], "read_timeout")
+        self.assertEqual({row["residentActorId"] for row in result["sessions"] if row["resident"]}, {"actor-p", "actor-s"})
+        self.assertFalse(result["bridgeResumeBlocked"])
+        self.assertTrue(all(not row["workspaceMember"] for row in result["sessions"]))
+        await self.secondary.stop()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            result = await self.runtime.directory.snapshot(fresh=True)
+            self.assertTrue(result["bridgeResumeBlocked"])
+            self.assertTrue(next(row for row in result["sessions"] if row["sessionId"] == "saved")["workspaceMember"])
+            ws = await self.connect()
+            reply = await self.resume(ws)
+        self.assertEqual(reply["error"]["data"]["code"], "source_unavailable")
+        self.assertFalse(self.primary.loads)
+
+    async def test_native_deltas_preserve_membership_and_refresh_removal_is_authoritative(self):
+        ws = await self.connect()
+        members = {("saved", str(self.root))}
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(members, None))):
+            await self.runtime.directory.snapshot(fresh=True)
+        native_row = self.primary.rows[1]
+        self.assertNotIn("workspaceMember", native_row)
+        await self.primary.emit({"jsonrpc": "2.0", "method": "_x.ai/sessions/changed", "params": {"upserted": [native_row], "removed": []}})
+        changed = await asyncio.wait_for(ws.receive_json(), 2)
+        row = changed["params"]["upserted"][0]
+        self.assertTrue(row["workspaceMember"])
+        self.assertFalse(row["resident"])
+        self.assertEqual(row["bridgeLeaderId"], self.runtime.directory.token(self.primary.path))
+        self.assertEqual(self.runtime.directory.cached_at, 0)
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), "read_timeout"))):
+            degraded = await self.runtime.directory.snapshot(fresh=True)
+        self.assertEqual(degraded["bridgeWorkspaceMembershipError"], "read_timeout")
+        self.assertTrue(next(row for row in degraded["sessions"] if row["sessionId"] == "saved")["workspaceMember"])
+        await self.primary.emit({"jsonrpc": "2.0", "method": "_x.ai/sessions/changed", "params": {"upserted": [native_row], "removed": []}})
+        changed = await asyncio.wait_for(ws.receive_json(), 2)
+        self.assertTrue(changed["params"]["upserted"][0]["workspaceMember"])
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), None))):
+            await self.runtime.directory.snapshot(fresh=True)
+        await self.primary.emit({"jsonrpc": "2.0", "method": "_x.ai/sessions/changed", "params": {"upserted": [native_row], "removed": []}})
+        changed = await asyncio.wait_for(ws.receive_json(), 2)
+        self.assertFalse(changed["params"]["upserted"][0]["workspaceMember"])
+        self.assertFalse(self.primary.loads + self.secondary.loads)
 
     async def test_source_selection_routes_load_prompt_approval_and_catalog(self):
         token = self.runtime.directory.token(self.secondary.path)

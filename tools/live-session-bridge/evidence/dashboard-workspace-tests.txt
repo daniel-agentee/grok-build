@@ -1,0 +1,65 @@
+2026-10-21 — dashboard workspace membership projection
+
+Native artifact
+  Package: xai-grok-dashboard-store
+  Binary: grok-dashboard-workspace
+  Target: aarch64-apple-darwin
+  SHA256: cb04f8888bf2b11ea602fe2249ff08f92ca533270e7a7d2d37ab31f360bb10c1
+  Preserved copy: target/verified-all-sessions-20261021/grok-dashboard-workspace
+  Source/lock/compiler pins: ../build-manifest.json workspace_reader
+  The existing pager artifact and its original source-input provenance were preserved.
+
+Automated native tests — real temporary SQLite stores, no user history writes
+  Environment: CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
+  cargo test --locked --offline -p xai-grok-dashboard-store read_existing_snapshot -- --nocapture
+  PASS: 5 tests
+    Missing store creates no database or directory.
+    Active WAL commits and subsequent membership deletion are visible.
+    Empty/corrupt stores fail without repair or changing their bytes.
+    Only a complete committed transaction is observed.
+    File/immediate-parent symlinks are rejected; existing mode remains unchanged.
+
+  cargo test --locked --offline -p xai-grok-dashboard-store --bin grok-dashboard-workspace
+  PASS: 2 tests
+    Terminal title/summary/pin visibility excludes empty/whitespace startup placeholders.
+    Non-Build conversations are excluded even when pinned and titled.
+
+Focused bridge/launcher/build-pin automated coverage
+  python3 -m unittest -q test_workspace_membership test_directory test_launch test_pin_build
+  PASS: 52 tests
+  Native protocol fixtures exercise real Unix sockets and authenticated WebSockets.
+  This is automated coverage, not proof of live model interoperability.
+
+  Membership-specific cases include:
+    SID plus normalized cwd join, distinct live actor/source identity retained.
+    Dormant open member remains nonresident and receives no actor UUID.
+    Membership removal keeps saved conversation history available.
+    Native roster deltas preserve membership; invalidate aggregate cache.
+    Failed refresh retains known membership with an actionable warning.
+    Later successful deletion clears the marker in snapshots and deltas.
+    Source loss still blocks unsafe saved resume despite workspace membership.
+    Failed exporter never removes a valid live actor.
+    Missing/untrusted exporter, digest/UID/mode/symlink rejection before execution.
+    Malformed JSON/schema/member rows, nonzero exit, oversized output.
+    Timeout/cancellation/oversize child cleanup, including exit/kill race.
+    Packaged/preserved/debug default paths are independent of caller cwd.
+    Explicit absolute helper argument passes through launcher.
+    Exporter-only pinning preserves pager pin/provenance.
+    Full pin workflow rebuilds both artifacts; failures change no checked-in pins.
+
+Reproducible build and provenance verification
+  python3 tools/live-session-bridge/pin_build.py --workspace-reader-only
+  PASS: exact native patch, Cargo.lock, compiler and target verified before/after build.
+  PASS: helper rebuild produced the same SHA256 above.
+  PASS: debug and preserved helper copies have identical pinned digests.
+  PASS: debug and preserved pager copies still match the prior pager SHA256.
+  PASS: archived original pager input patch matches pager_artifact_inputs.patch_sha256.
+  git diff --check: PASS
+
+Independent live read-only exporter audit
+  PASS: output schemaVersion 1, only sessionId/cwd fields.
+  PASS: exactly 12 visible canonical member SID/cwd pairs matched Terminal's screenshot.
+  PASS: 17 raw canonical members exclude 5 native-hidden startup placeholders.
+  No user attachment, resume, actor restart, or history mutation was performed.
+  Final aggregate, Simulator and physical-device acceptance are reported separately;
+  this exporter audit alone does not establish those surfaces passed.

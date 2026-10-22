@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from bridge import connect_leader, load_secret
+from bridge import connect_leader, default_workspace_reader, load_secret
 
 BINARY_SHA256 = "27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8"
 VERSION = "1.0.45"
@@ -34,6 +34,8 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Use 0.0.0.0 for a trusted LAN iPhone")
     parser.add_argument("--port", type=int, default=18789)
+    parser.add_argument("--workspace-reader", type=Path,
+                        help="Pinned read-only dashboard exporter; defaults to the packaged or preserved tested helper")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("Port must be between 1 and 65535")
@@ -48,6 +50,8 @@ def main() -> None:
         parser.error("Pinned binary must be an executable regular file")
     if hashlib.sha256(binary.read_bytes()).hexdigest() != BINARY_SHA256:
         parser.error("Binary differs from the documented tested build; use the pinned binary")
+    reader = args.workspace_reader or default_workspace_reader()
+    reader = reader.expanduser().absolute()
     # Refuse occupied ports, rather than replacing an unrelated bridge/service.
     probe = socket.socket()
     try:
@@ -131,6 +135,8 @@ def main() -> None:
                 args.host,
                 "--port",
                 str(args.port),
+                "--workspace-reader",
+                str(reader),
             ],
             stdin=subprocess.DEVNULL,
             stdout=logfile,

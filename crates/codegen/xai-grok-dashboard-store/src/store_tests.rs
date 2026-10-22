@@ -29,6 +29,95 @@ fn temp_store() -> (TempDir, WorkspaceStore) {
     (tmp, store)
 }
 
+#[test]
+fn read_existing_snapshot_does_not_create_a_missing_store() {
+    let tmp = TempDir::new().unwrap();
+    let db = default_db_path(tmp.path());
+    assert!(
+        WorkspaceStore::read_existing_snapshot(&db)
+            .unwrap()
+            .is_none()
+    );
+    assert!(!db.parent().unwrap().exists());
+}
+
+#[test]
+fn read_existing_snapshot_sees_wal_commits_and_membership_deletion() {
+    let (_tmp, mut writer) = temp_store();
+    let first = new_member("open", MemberKind::Build, MemberOrigin::Local, 10);
+    writer.insert_member(first.clone()).unwrap();
+    let read = || {
+        WorkspaceStore::read_existing_snapshot(writer.path())
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(read().members, writer.snapshot().unwrap().members);
+    let path = writer.path().to_path_buf();
+    writer.remove_member(&first.key).unwrap();
+    assert!(
+        WorkspaceStore::read_existing_snapshot(&path)
+            .unwrap()
+            .unwrap()
+            .members
+            .is_empty()
+    );
+}
+
+#[test]
+fn read_existing_snapshot_never_repairs_corrupt_or_empty_files() {
+    let tmp = TempDir::new().unwrap();
+    for content in [b"not a SQLite file".as_slice(), b"".as_slice()] {
+        let db = tmp.path().join("corrupt.db");
+        std::fs::write(&db, content).unwrap();
+        assert!(WorkspaceStore::read_existing_snapshot(&db).is_err());
+        assert_eq!(std::fs::read(&db).unwrap(), content);
+    }
+}
+
+#[test]
+fn read_existing_snapshot_uses_one_committed_transaction() {
+    let (_tmp, writer) = temp_store();
+    let path = writer.path().to_path_buf();
+    let mut peer = rusqlite::Connection::open(&path).unwrap();
+    let tx = peer.transaction().unwrap();
+    tx.execute("INSERT INTO members (session_id, kind, origin, cwd, title, last_change_unix_ms) VALUES ('pending', 'build', 'local', '/tmp/pending', 'Pending', 1)", []).unwrap();
+    tx.execute("UPDATE meta SET grouping = 'directory' WHERE id = 0", [])
+        .unwrap();
+    let before = WorkspaceStore::read_existing_snapshot(&path)
+        .unwrap()
+        .unwrap();
+    assert!(before.members.is_empty());
+    assert_eq!(before.grouping, Grouping::State);
+    tx.commit().unwrap();
+    let after = WorkspaceStore::read_existing_snapshot(&path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.members.len(), 1);
+    assert_eq!(after.grouping, Grouping::Directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn read_existing_snapshot_rejects_symlinks_without_changing_permissions() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (tmp, writer) = temp_store();
+    let path = writer.path();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    WorkspaceStore::read_existing_snapshot(path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let link = tmp.path().join("linked.db");
+    symlink(path, &link).unwrap();
+    assert!(WorkspaceStore::read_existing_snapshot(&link).is_err());
+    let linked_dir = tmp.path().join("linked-dir");
+    symlink(path.parent().unwrap(), &linked_dir).unwrap();
+    assert!(WorkspaceStore::read_existing_snapshot(&linked_dir.join("workspace.db")).is_err());
+}
+
 fn assign(id: &str, kind: MemberKind, rank: Option<i64>) -> RankAssignment {
     RankAssignment {
         key: member_key(id, kind),

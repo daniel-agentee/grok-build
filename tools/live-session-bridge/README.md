@@ -6,9 +6,44 @@ An explicit mobile **New session** request creates a fresh session on that exist
 leader, with the Mac's normal workspace trust and permission checks.
 The Terminal and iOS clients subscribe to the same resident session actor through
 Grok's existing local leader, and tools execute on the Mac in that actor's workspace.
-The session picker combines compatible leaders from the configured primary's
-socket directory, preserving each live actor's source. Saved history has a
-separate, explicit resume action.
+The session picker combines resident actors with open dashboard workspace members
+from the configured primary's Grok home, preserving each live actor's source.
+Older conversations have a separate **History** button and explicit resume action.
+
+Terminal's **Idle** count includes open workspace conversations whose agent is no
+longer loaded. They belong in the phone's overview, but they are not resident live
+actors. The phone displays them as Idle and asks before resuming their history.
+It never claims that a newly restored actor is the same uninterrupted live actor.
+
+## Open-session discovery
+
+`grok-dashboard-workspace` is a small read-only exporter in the native
+`xai-grok-dashboard-store` crate. It uses the typed store API, opening the existing
+`<primary-socket-directory>/dashboard/workspace.db` without schema initialization,
+migration, journal-mode changes, or creating a missing store. Keep the primary
+socket in its actual Grok home, normally `~/.grok`, so discovery uses the same
+canonical workspace as Terminal.
+
+The exporter matches Terminal's unloaded-member visibility: Build conversations
+with a nonblank title, turn summary, or pin. Empty startup placeholders are hidden.
+It exports only session identity and absolute workspace path. The bridge joins
+those onto native roster rows by session ID plus normalized cwd, adding
+`workspaceMember`; it does not create sessions or infer a live actor from history.
+The native hard capacity is 256 workspace members.
+
+Native activity deltas preserve this separate membership marker. They invalidate
+the short aggregate cache without running an exporter lookup on the conversation
+or tool stream. A failed membership refresh keeps the last known membership and
+returns `bridgeWorkspaceMembershipError` so iOS can show a refresh notice. Real
+live actors and the unknown-owner resume guard remain independent of this lookup.
+A later successful read reconciles additions and removals.
+
+The bridge checks the exporter's pinned SHA256, ownership, executable mode, and
+absence of group/world write permissions before executing it. Symlinks are
+rejected. Reads have a two-second deadline and a bounded output size; exited,
+timed-out, oversized, and cancelled helper processes are reaped. Failures report
+stable codes (`reader_unavailable`, `reader_untrusted`, `read_failed`,
+`read_timeout`, or `invalid_snapshot`) without database contents or private paths.
 
 ## Compatibility
 
@@ -26,7 +61,7 @@ actor incarnation. Saved session IDs alone do not identify an uninterrupted acto
 
 The Rust-only patch is `resident-only-attach.patch`; it applies to that exact
 source base. `build-manifest.json` records the compiler, lockfile/patch digests,
-build command, and final local binary digest. The launcher verifies that binary's
+build commands, and separate pager/exporter artifact digests. The launcher verifies the pager's
 SHA256 before starting either process. It uses the isolated
 `../../target/debug/xai-grok-pager`, preserving the globally installed CLI.
 
@@ -58,6 +93,8 @@ patch first and use the rebuild/pin helper below to prepare the launcher artifac
 ```sh
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 cargo build --locked --offline \
   -p xai-grok-pager-bin --bin xai-grok-pager
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 cargo build --locked --offline \
+  -p xai-grok-dashboard-store --bin grok-dashboard-workspace
 ```
 
 For a clean source checkout at the pinned revision, first apply
@@ -78,12 +115,40 @@ Run the tests and acceptance checks again for a newly built artifact.
 python3 tools/live-session-bridge/pin_build.py
 ```
 
+That command rebuilds and pins both artifacts. To add or rebuild only the
+observational exporter while preserving the already verified live pager binary:
+
+```sh
+python3 tools/live-session-bridge/pin_build.py --workspace-reader-only
+```
+
+Both modes verify the exact current native patch, lockfile, compiler, and target
+before and after compiling. The helper-only mode leaves the pager checksum and
+its recorded build provenance unchanged. `pager_artifact_inputs` and
+`evidence/all-sessions-pager-artifact.patch` retain the inputs for the preserved
+pager; the workspace exporter has its own source-input hashes in the manifest.
+After the targeted tests and acceptance checks pass for a new build, preserve
+the helper for the launch commands below:
+
+```sh
+mkdir -p target/verified-all-sessions-20261021
+install -m 700 target/debug/grok-dashboard-workspace \
+  target/verified-all-sessions-20261021/grok-dashboard-workspace
+```
+
 Then, from this directory:
 
 The reproducible build writes `target/debug/xai-grok-pager`; the launcher checks
 that output against the exact manifest hash. The current all-sessions verification
 copy is `target/verified-all-sessions-20261021/xai-grok-pager`, SHA256
 `27efdb05b8e0c1482ce4158db026e9b574be57f3a4674ee545ba17624754ebc8`.
+The separate read-only exporter is preserved beside it as
+`target/verified-all-sessions-20261021/grok-dashboard-workspace`, SHA256
+`cb04f8888bf2b11ea602fe2249ff08f92ca533270e7a7d2d37ab31f360bb10c1`.
+It was built from the current native patch without rebuilding or restarting the
+preserved pager. The bridge finds a helper packaged beside `bridge.py`, then this
+preserved copy, then fresh `target/debug` output, independently of the caller's
+working directory. Every choice still requires the exact helper checksum.
 The earlier session-feature copy remains
 `target/verified-session-features-mcp-bounded/xai-grok-pager`.
 The earlier demonstration executable remains separately preserved at
@@ -102,7 +167,8 @@ For a single command that starts the pinned leader and bridge, then enters the
 interactive Terminal UI:
 
 ```sh
-.venv/bin/python launch.py --workspace /absolute/path/to/workspace --host 0.0.0.0
+.venv/bin/python launch.py --workspace /absolute/path/to/workspace --host 0.0.0.0 \
+  --workspace-reader ../../target/verified-all-sessions-20261021/grok-dashboard-workspace
 ```
 
 Use an unused `--port` if 18789 is occupied. The launcher does not replace services
@@ -147,6 +213,7 @@ random owner-only secret file. Omit `--init-secret` on subsequent launches:
 ```sh
 .venv/bin/python bridge.py --leader-socket ~/.grok/leader-mobile.sock \
   --secret-file ~/.grok/mobile-bridge.secret --init-secret \
+  --workspace-reader ../../target/verified-all-sessions-20261021/grok-dashboard-workspace \
   --host 0.0.0.0 --port 18789
 ```
 

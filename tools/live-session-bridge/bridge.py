@@ -31,9 +31,25 @@ MAX_PENDING_REQUESTS = 128
 MAX_OWNED_SESSIONS = 8
 MAX_LEADER_SOURCES = 32
 SOURCE_TIMEOUT = 4
+WORKSPACE_READ_TIMEOUT = 2
+MAX_WORKSPACE_MEMBERS = 256  # Native xai-grok-dashboard-store::WORKSPACE_CAPACITY.
+MAX_WORKSPACE_OUTPUT = 2 * 1024 * 1024
+WORKSPACE_READER_SHA256 = "cb04f8888bf2b11ea602fe2249ff08f92ca533270e7a7d2d37ab31f360bb10c1"
 CREATION_RESPONSE_TIMEOUT = 30
 ROSTER_METHOD = "_x.ai/sessions/list"
 INTERNAL_PREFIX = "grok-mobile-preflight:"
+
+
+def default_workspace_reader() -> Path:
+    """Find a packaged helper, a preserved tested artifact, or a fresh build."""
+    here = Path(__file__).resolve().parent
+    packaged = here / "grok-dashboard-workspace"
+    if packaged.exists():
+        return packaged
+    preserved = here.parents[1] / "target/verified-all-sessions-20261021/grok-dashboard-workspace"
+    return preserved if preserved.exists() else here.parents[1] / "target/debug/grok-dashboard-workspace"
+
+
 READ_METHODS = {
     "initialize",
     "authenticate",
@@ -230,7 +246,7 @@ class LeaderDirectory:
     capabilities. Previously observed owners are retained to fail closed on loss.
     """
 
-    def __init__(self, primary: Path, secret: str, version: str):
+    def __init__(self, primary: Path, secret: str, version: str, *, workspace_reader: Path | None = None):
         self.primary = primary.absolute()
         self.secret, self.version = secret, version
         self.sources: dict[str, Path] = {}
@@ -240,7 +256,67 @@ class LeaderDirectory:
         self.resume_lock = asyncio.Lock()
         self.cached_snapshot = None
         self.cached_at = 0.0
+        self.workspace_reader = workspace_reader
+        self.workspace_reader_sha256 = WORKSPACE_READER_SHA256
+        self.workspace_members: set[tuple[str, str]] = set()
         self.refresh_paths()
+
+    async def read_workspace_membership(self) -> tuple[set[tuple[str, str]], str | None]:
+        """Native typed-store export; membership is separate from actor residence.
+
+        Every discovered socket shares this trusted Grok home. The canonical
+        dashboard store belongs to that home, not to an individual leader.
+        A failed export never invents membership or removes valid live actors.
+        """
+        path = self.workspace_reader
+        if path is None:
+            return set(), "reader_unavailable"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022 or not info.st_mode & 0o111
+                    or hashlib.file_digest(handle, "sha256").hexdigest() != self.workspace_reader_sha256):
+                    return set(), "reader_untrusted"
+        except OSError:
+            return set(), "reader_unavailable"
+        process = None
+        try:
+            async with asyncio.timeout(WORKSPACE_READ_TIMEOUT):
+                process = await asyncio.create_subprocess_exec(
+                    str(path), str(self.primary.parent / "dashboard/workspace.db"),
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                output = bytearray()
+                while chunk := await process.stdout.read(65536):
+                    output.extend(chunk)
+                    if len(output) > MAX_WORKSPACE_OUTPUT:
+                        return set(), "invalid_snapshot"
+                if await process.wait() != 0:
+                    return set(), "read_failed"
+                payload = json.loads(output, parse_constant=reject_nonfinite)
+                rows = payload.get("members") if isinstance(payload, dict) else None
+                if payload.get("schemaVersion") != 1 or not isinstance(rows, list) or len(rows) > MAX_WORKSPACE_MEMBERS:
+                    return set(), "invalid_snapshot"
+                members = set()
+                for row in rows:
+                    if (not isinstance(row, dict) or not isinstance(row.get("sessionId"), str)
+                        or not row["sessionId"] or len(row["sessionId"]) > 512
+                        or not isinstance(row.get("cwd"), str) or not Path(row["cwd"]).is_absolute()):
+                        return set(), "invalid_snapshot"
+                    members.add((row["sessionId"], os.path.normpath(row["cwd"])))
+                return members, None
+        except asyncio.TimeoutError:
+            return set(), "read_timeout"
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+            return set(), "invalid_snapshot"
+        finally:
+            if process is not None and process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
 
     def token(self, path: Path) -> str:
         return hmac.new(self.secret.encode(), str(path.absolute()).encode(), hashlib.sha256).hexdigest()[:24]
@@ -300,9 +376,14 @@ class LeaderDirectory:
                 pass  # Known offline source returns 503, never another origin.
         return path
 
+    def is_workspace_member(self, row: dict[str, Any]) -> bool:
+        cwd = row.get("cwd")
+        return isinstance(cwd, str) and (row.get("sessionId"), os.path.normpath(cwd)) in self.workspace_members
+
     def enrich(self, row: dict[str, Any], token: str) -> dict[str, Any]:
         supported = self.attach_supported.get(token, True)
         return {**row, "bridgeLeaderId": token, "bridgeLeaderLabel": self.label(token),
+                "workspaceMember": self.is_workspace_member(row),
                 "bridgeAttachSupported": supported,
                 **({"bridgeAttachUnsupportedReason": "upgrade_required"} if not supported else {})}
 
@@ -363,7 +444,16 @@ class LeaderDirectory:
                     stale = isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}
                     unknown = not stale or token in self.known_residents
                     return token, [], "source_unavailable", unknown
-            results = await asyncio.gather(*(bounded(token, path) for token, path in sources))
+            results, (members, membership_error) = await asyncio.gather(
+                asyncio.gather(*(bounded(token, path) for token, path in sources)),
+                self.read_workspace_membership(),
+            )
+            # Native deltas contain actor state only. Retain this independently
+            # sourced membership projection when those deltas update the UI.
+            # A failed read keeps the last known metadata and returns an explicit
+            # refresh warning; it must not silently move open rows to History.
+            if membership_error is None:
+                self.workspace_members = members
             live, saved, statuses = [], {}, []
             for token, rows, error, unknown in results:
                 supported = self.attach_supported.get(token, True)
@@ -385,10 +475,14 @@ class LeaderDirectory:
             unavailable_ids = set().union(*(self.known_residents.get(s["bridgeLeaderId"], set())
                                            for s in statuses if not s["available"])) if statuses else set()
             rows = live + [row for sid, row in saved.items() if sid not in resident_ids | unavailable_ids]
+            for row in rows:
+                row["workspaceMember"] = self.is_workspace_member(row)
             rows.sort(key=lambda r: r.get("lastChangeUnixMs") or 0, reverse=True)
             result = {"sessions": rows, "bridgeSources": statuses,
                       "bridgePartial": not complete or any(not s["available"] or not s["bridgeAttachSupported"] for s in statuses),
                       "bridgeResumeBlocked": not complete or any(s["ownershipUnknown"] for s in statuses)}
+            if membership_error:
+                result["bridgeWorkspaceMembershipError"] = membership_error
             self.cached_snapshot, self.cached_at = result, asyncio.get_running_loop().time()
             return result
 
@@ -531,9 +625,9 @@ class SessionOwner:
 
 
 class Bridge:
-    def __init__(self, socket: Path, secret: str, version: str, *, directory=None, root=None):
+    def __init__(self, socket: Path, secret: str, version: str, *, directory=None, root=None, workspace_reader=None):
         self.socket, self.secret, self.version = socket.absolute(), secret, version
-        self.directory = directory or LeaderDirectory(socket, secret, version)
+        self.directory = directory or LeaderDirectory(socket, secret, version, workspace_reader=workspace_reader)
         self.root = root or self
         self.children: dict[str, Bridge] = {} if root is None else root.children
         self.owners: set[SessionOwner] = set() if root is None else root.owners
@@ -641,10 +735,12 @@ class Bridge:
                     if isinstance(params, dict) and isinstance(params.get("method"), str):
                         method, params = params["method"], params.get("params", {})
                 if method == "x.ai/sessions/changed" and isinstance(params, dict):
+                    self.directory.cached_at = 0
                     params["bridgeLeaderId"] = selected_token
-                    if isinstance(params.get("upserted"), list):
-                        params["upserted"] = [self.directory.enrich(row, selected_token)
-                            for row in params["upserted"] if isinstance(row, dict)]
+                    for key in ("upserted", "sessions"):
+                        if isinstance(params.get(key), list):
+                            params[key] = [self.directory.enrich(row, selected_token)
+                                for row in params[key] if isinstance(row, dict)]
                     payload = json.dumps(value)
                 if method == "x.ai/sessions/changed" and isinstance(params, dict):
                     removed = params.get("removed", [])
@@ -1157,6 +1253,9 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8787, type=int)
     parser.add_argument("--cli-version", default="1.0.45")
+    parser.add_argument("--workspace-reader", type=Path,
+                        default=default_workspace_reader(),
+                        help="Pinned read-only native dashboard membership exporter")
     parser.add_argument("--init-secret", action="store_true")
     args = parser.parse_args()
     if args.init_secret:
@@ -1168,7 +1267,8 @@ def main() -> None:
     secret = load_secret(args.secret_file)
     logging.basicConfig(level=logging.WARNING)
     web.run_app(
-        make_app(Bridge(args.leader_socket, secret, args.cli_version)),
+        make_app(Bridge(args.leader_socket, secret, args.cli_version,
+                        workspace_reader=args.workspace_reader.expanduser().absolute())),
         host=args.host,
         port=args.port,
         access_log=None,

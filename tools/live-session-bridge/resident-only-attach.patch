@@ -1,3 +1,285 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d3aa3f7..ca3d43d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -13795,6 +13795,7 @@ version = "0.1.0"
+ dependencies = [
+  "pretty_assertions",
+  "rusqlite",
++ "serde_json",
+  "strum 0.27.2",
+  "tempfile",
+  "thiserror 2.0.18",
+diff --git a/crates/codegen/xai-grok-dashboard-store/Cargo.toml b/crates/codegen/xai-grok-dashboard-store/Cargo.toml
+index a98271c..f3db0b3 100644
+--- a/crates/codegen/xai-grok-dashboard-store/Cargo.toml
++++ b/crates/codegen/xai-grok-dashboard-store/Cargo.toml
+@@ -9,6 +9,7 @@ description = "SQLite-backed persistent dashboard workspace: membership, layout
+ # rusqlite 0.37 + bundled = self-contained SQLite (>= 3.50.2).
+ # Keep in step with xai-sqlite-journal (CVE-2025-29087/-3277/-6965 floor).
+ rusqlite = { version = "0.37", features = ["bundled"] }
++serde_json = { workspace = true }
+ strum = { workspace = true }
+ thiserror = { workspace = true }
+ tracing = { workspace = true }
+diff --git a/crates/codegen/xai-grok-dashboard-store/src/bin/grok-dashboard-workspace.rs b/crates/codegen/xai-grok-dashboard-store/src/bin/grok-dashboard-workspace.rs
+new file mode 100644
+index 0000000..0651637
+--- /dev/null
++++ b/crates/codegen/xai-grok-dashboard-store/src/bin/grok-dashboard-workspace.rs
+@@ -0,0 +1,100 @@
++//! Read-only, bounded dashboard membership export for the authenticated mobile bridge.
++use std::path::PathBuf;
++
++use xai_grok_dashboard_store::{Member, MemberKind, WORKSPACE_CAPACITY, WorkspaceStore};
++
++fn visible_unloaded_member(member: &Member) -> bool {
++    let has_text = |text: Option<&str>| text.is_some_and(|s| !s.trim().is_empty());
++    matches!(member.kind, MemberKind::Build)
++        && (member.pin_rank.is_some()
++            || has_text(member.title.as_deref())
++            || has_text(member.last_turn_summary.as_deref()))
++}
++
++fn main() {
++    if run().is_err() {
++        // Database failures can contain private paths; the bridge reports a stable error code.
++        eprintln!("Dashboard membership is unavailable");
++        std::process::exit(1);
++    }
++}
++
++fn run() -> Result<(), Box<dyn std::error::Error>> {
++    let mut args = std::env::args_os().skip(1);
++    let db = PathBuf::from(args.next().ok_or("Expected workspace database path")?);
++    if args.next().is_some() || !db.is_absolute() {
++        return Err("Expected one absolute workspace database path".into());
++    }
++    let snapshot = WorkspaceStore::read_existing_snapshot(&db)?;
++    let members = snapshot
++        .iter()
++        .flat_map(|snapshot| &snapshot.members)
++        .filter(|member| visible_unloaded_member(member))
++        .filter_map(|member| {
++            // A membership marker can only join a native roster row with its
++            // absolute execution workspace. Never substitute the bridge cwd.
++            let cwd = member
++                .cwd
++                .as_deref()
++                .filter(|cwd| std::path::Path::new(cwd).is_absolute())?;
++            Some(serde_json::json!({ "sessionId": member.session_id.as_ref(), "cwd": cwd }))
++        })
++        .collect::<Vec<_>>();
++    if members.len() > WORKSPACE_CAPACITY {
++        return Err("Workspace membership exceeds its capacity".into());
++    }
++    println!(
++        "{}",
++        serde_json::json!({ "schemaVersion": 1, "members": members })
++    );
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use xai_grok_dashboard_store::{MemberOrigin, SessionId};
++
++    fn member() -> Member {
++        Member {
++            session_id: SessionId::new("fixture").unwrap(),
++            kind: MemberKind::Build,
++            origin: MemberOrigin::Local,
++            cwd: Some("/work/project".into()),
++            title: None,
++            model: None,
++            last_turn_summary: None,
++            is_worktree: false,
++            last_change_unix_ms: 1,
++            pin_rank: None,
++            order_rank: None,
++        }
++    }
++
++    #[test]
++    fn unloaded_visibility_matches_terminal_content_and_pin_rules() {
++        let mut row = member();
++        assert!(!visible_unloaded_member(&row));
++        row.title = Some(" \n ".into());
++        row.last_turn_summary = Some("\t".into());
++        row.model = Some("model alone is a startup placeholder".into());
++        assert!(!visible_unloaded_member(&row));
++        row.title = Some("Open task".into());
++        assert!(visible_unloaded_member(&row));
++        row.title = None;
++        row.last_turn_summary = Some("A previous turn".into());
++        assert!(visible_unloaded_member(&row));
++        row.last_turn_summary = None;
++        row.pin_rank = Some(0);
++        assert!(visible_unloaded_member(&row));
++    }
++
++    #[test]
++    fn non_build_members_are_never_mobile_build_conversations() {
++        let mut row = member();
++        row.title = Some("Non Build task".into());
++        row.pin_rank = Some(0);
++        row.kind = MemberKind::Conversation;
++        assert!(!visible_unloaded_member(&row));
++    }
++}
+diff --git a/crates/codegen/xai-grok-dashboard-store/src/store.rs b/crates/codegen/xai-grok-dashboard-store/src/store.rs
+index 9a22daf..5c6c3ec 100644
+--- a/crates/codegen/xai-grok-dashboard-store/src/store.rs
++++ b/crates/codegen/xai-grok-dashboard-store/src/store.rs
+@@ -114,6 +114,47 @@ pub struct WorkspaceStore {
+ }
+ 
+ impl WorkspaceStore {
++    /// Read an existing workspace without creating, migrating, or changing its journal mode.
++    /// A separate export process can use this without taking ownership of the Terminal's store.
++    /// Missing stores return `None`; corrupt and incompatible files remain untouched.
++    pub fn read_existing_snapshot(db_path: &Path) -> Result<Option<WorkspaceSnapshot>> {
++        let effective =
++            xai_sqlite_journal::JournalMode::for_db_path(db_path).effective_db_path(db_path);
++        match std::fs::symlink_metadata(&effective) {
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++            Err(error) => return Err(error.into()),
++            Ok(metadata) if !metadata.is_file() => {
++                return Err(std::io::Error::other("workspace store is not a regular file").into());
++            }
++            Ok(_) => {}
++        }
++        if let Some(parent) = effective.parent()
++            && !std::fs::symlink_metadata(parent)?.is_dir()
++        {
++            return Err(
++                std::io::Error::other("workspace store directory is not a directory").into(),
++            );
++        }
++        // SQLite NOFOLLOW also rejects macOS's system /var -> /private/var
++        // alias. Resolve ancestors only; keep the final component protected
++        // against replacement with a symlink between metadata and open.
++        let opened = match (effective.parent(), effective.file_name()) {
++            (Some(parent), Some(name)) => parent.canonicalize()?.join(name),
++            _ => effective,
++        };
++        let conn = rusqlite::Connection::open_with_flags(
++            &opened,
++            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
++                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
++                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
++        )?;
++        conn.busy_timeout(std::time::Duration::from_millis(500))?;
++        let tx = conn.unchecked_transaction()?;
++        let snapshot = read_snapshot(&tx)?;
++        tx.commit()?;
++        Ok(Some(snapshot))
++    }
++
+     /// The handle's current schema-gate state.
+     /// A guarded write can transition it to [`SchemaState::NewerReadOnly`] after a peer upgrades the store.
+     pub fn schema_state(&self) -> SchemaState {
+diff --git a/crates/codegen/xai-grok-dashboard-store/src/store_tests.rs b/crates/codegen/xai-grok-dashboard-store/src/store_tests.rs
+index b34c114..686f3df 100644
+--- a/crates/codegen/xai-grok-dashboard-store/src/store_tests.rs
++++ b/crates/codegen/xai-grok-dashboard-store/src/store_tests.rs
+@@ -29,6 +29,95 @@ fn temp_store() -> (TempDir, WorkspaceStore) {
+     (tmp, store)
+ }
+ 
++#[test]
++fn read_existing_snapshot_does_not_create_a_missing_store() {
++    let tmp = TempDir::new().unwrap();
++    let db = default_db_path(tmp.path());
++    assert!(
++        WorkspaceStore::read_existing_snapshot(&db)
++            .unwrap()
++            .is_none()
++    );
++    assert!(!db.parent().unwrap().exists());
++}
++
++#[test]
++fn read_existing_snapshot_sees_wal_commits_and_membership_deletion() {
++    let (_tmp, mut writer) = temp_store();
++    let first = new_member("open", MemberKind::Build, MemberOrigin::Local, 10);
++    writer.insert_member(first.clone()).unwrap();
++    let read = || {
++        WorkspaceStore::read_existing_snapshot(writer.path())
++            .unwrap()
++            .unwrap()
++    };
++    assert_eq!(read().members, writer.snapshot().unwrap().members);
++    let path = writer.path().to_path_buf();
++    writer.remove_member(&first.key).unwrap();
++    assert!(
++        WorkspaceStore::read_existing_snapshot(&path)
++            .unwrap()
++            .unwrap()
++            .members
++            .is_empty()
++    );
++}
++
++#[test]
++fn read_existing_snapshot_never_repairs_corrupt_or_empty_files() {
++    let tmp = TempDir::new().unwrap();
++    for content in [b"not a SQLite file".as_slice(), b"".as_slice()] {
++        let db = tmp.path().join("corrupt.db");
++        std::fs::write(&db, content).unwrap();
++        assert!(WorkspaceStore::read_existing_snapshot(&db).is_err());
++        assert_eq!(std::fs::read(&db).unwrap(), content);
++    }
++}
++
++#[test]
++fn read_existing_snapshot_uses_one_committed_transaction() {
++    let (_tmp, writer) = temp_store();
++    let path = writer.path().to_path_buf();
++    let mut peer = rusqlite::Connection::open(&path).unwrap();
++    let tx = peer.transaction().unwrap();
++    tx.execute("INSERT INTO members (session_id, kind, origin, cwd, title, last_change_unix_ms) VALUES ('pending', 'build', 'local', '/tmp/pending', 'Pending', 1)", []).unwrap();
++    tx.execute("UPDATE meta SET grouping = 'directory' WHERE id = 0", [])
++        .unwrap();
++    let before = WorkspaceStore::read_existing_snapshot(&path)
++        .unwrap()
++        .unwrap();
++    assert!(before.members.is_empty());
++    assert_eq!(before.grouping, Grouping::State);
++    tx.commit().unwrap();
++    let after = WorkspaceStore::read_existing_snapshot(&path)
++        .unwrap()
++        .unwrap();
++    assert_eq!(after.members.len(), 1);
++    assert_eq!(after.grouping, Grouping::Directory);
++}
++
++#[cfg(unix)]
++#[test]
++fn read_existing_snapshot_rejects_symlinks_without_changing_permissions() {
++    use std::os::unix::fs::{PermissionsExt, symlink};
++    let (tmp, writer) = temp_store();
++    let path = writer.path();
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640)).unwrap();
++    WorkspaceStore::read_existing_snapshot(path)
++        .unwrap()
++        .unwrap();
++    assert_eq!(
++        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
++        0o640
++    );
++    let link = tmp.path().join("linked.db");
++    symlink(path, &link).unwrap();
++    assert!(WorkspaceStore::read_existing_snapshot(&link).is_err());
++    let linked_dir = tmp.path().join("linked-dir");
++    symlink(path.parent().unwrap(), &linked_dir).unwrap();
++    assert!(WorkspaceStore::read_existing_snapshot(&linked_dir.join("workspace.db")).is_err());
++}
++
+ fn assign(id: &str, kind: MemberKind, rank: Option<i64>) -> RankAssignment {
+     RankAssignment {
+         key: member_key(id, kind),
 diff --git a/crates/codegen/xai-grok-mcp/src/servers.rs b/crates/codegen/xai-grok-mcp/src/servers.rs
 index db48d8e..09acfba 100644
 --- a/crates/codegen/xai-grok-mcp/src/servers.rs

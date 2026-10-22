@@ -114,6 +114,47 @@ pub struct WorkspaceStore {
 }
 
 impl WorkspaceStore {
+    /// Read an existing workspace without creating, migrating, or changing its journal mode.
+    /// A separate export process can use this without taking ownership of the Terminal's store.
+    /// Missing stores return `None`; corrupt and incompatible files remain untouched.
+    pub fn read_existing_snapshot(db_path: &Path) -> Result<Option<WorkspaceSnapshot>> {
+        let effective =
+            xai_sqlite_journal::JournalMode::for_db_path(db_path).effective_db_path(db_path);
+        match std::fs::symlink_metadata(&effective) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(std::io::Error::other("workspace store is not a regular file").into());
+            }
+            Ok(_) => {}
+        }
+        if let Some(parent) = effective.parent()
+            && !std::fs::symlink_metadata(parent)?.is_dir()
+        {
+            return Err(
+                std::io::Error::other("workspace store directory is not a directory").into(),
+            );
+        }
+        // SQLite NOFOLLOW also rejects macOS's system /var -> /private/var
+        // alias. Resolve ancestors only; keep the final component protected
+        // against replacement with a symlink between metadata and open.
+        let opened = match (effective.parent(), effective.file_name()) {
+            (Some(parent), Some(name)) => parent.canonicalize()?.join(name),
+            _ => effective,
+        };
+        let conn = rusqlite::Connection::open_with_flags(
+            &opened,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_millis(500))?;
+        let tx = conn.unchecked_transaction()?;
+        let snapshot = read_snapshot(&tx)?;
+        tx.commit()?;
+        Ok(Some(snapshot))
+    }
+
     /// The handle's current schema-gate state.
     /// A guarded write can transition it to [`SchemaState::NewerReadOnly`] after a peer upgrades the store.
     pub fn schema_state(&self) -> SchemaState {

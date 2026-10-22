@@ -13795,6 +13795,7 @@ version = "0.1.0"
 dependencies = [
  "pretty_assertions",
  "rusqlite",
+ "serde_json",
  "strum 0.27.2",
  "tempfile",
  "thiserror 2.0.18",

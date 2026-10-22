@@ -109,6 +109,8 @@ class LauncherTests(unittest.TestCase):
                         str(binary),
                         "--port",
                         str(port),
+                        "--workspace-reader",
+                        str(root / "preserved-dashboard-reader"),
                     ],
                 ):
                     launcher.main()
@@ -118,6 +120,8 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(leader_args[leader_args.index("--permission-mode") + 1], "default")
             self.assertEqual(terminal_args[terminal_args.index("--permission-mode") + 1], "default")
             self.assertEqual(bridge_args[bridge_args.index("--cli-version") + 1], launcher.VERSION)
+            self.assertEqual(bridge_args[bridge_args.index("--workspace-reader") + 1],
+                             str((root / "preserved-dashboard-reader").absolute()))
             self.assertIn("--no-auto-update", leader_args)
             self.assertIn("--no-auto-update", terminal_args)
             self.assertFalse((root / ".claude").exists())
