@@ -22,6 +22,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.socket = Path(self.temp.name) / "leader.sock"
         self.seen = asyncio.Queue()
+        self.native_methods = []
         self.closed = asyncio.Event()
         self.roster = [{"sessionId": "live-1", "cwd": "/workspace", "resident": True}]
         self.execution_cwd = "/workspace"
@@ -33,6 +34,24 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.answer_roster = True
         self.answer_load = True
         self.owner_auth_error = False
+        self.model_catalog = {
+            "currentModelId": "catalog-base",
+            "availableModels": [
+                {"modelId": "catalog-base", "name": "Catalog Base", "_meta": {
+                    "supportsReasoningEffort": True,
+                    "reasoningEfforts": [{"id": "thorough", "value": "high", "label": "Thorough", "default": True}],
+                }},
+                {"modelId": "catalog-fast", "name": "Catalog Fast", "_meta": {
+                    "supportsReasoningEffort": True,
+                    "reasoningEfforts": [{"id": "deep-thinking", "value": "xhigh", "label": "Deep thinking", "default": True}],
+                }},
+                {"modelId": "catalog-no-reasoning", "name": "No effort selector", "_meta": {
+                    "supportsReasoningEffort": False,
+                }},
+            ],
+        }
+        self.model_catalog_error = False
+        self.answer_model_catalog = True
         self.drop_registration = False
         self.leader_writers = []
         self.server = await asyncio.start_unix_server(self.leader, path=self.socket)
@@ -76,6 +95,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 frame = await bridge.read_frame(reader)
                 await self.seen.put(frame)
                 value = json.loads(frame["payload"])
+                self.native_methods.append(value.get("method"))
                 if value.get("method") == "initialize" and value.get("id") in {
                     "bridge-test-init",
                     bridge.INTERNAL_PREFIX + "capability",
@@ -105,6 +125,13 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                     await bridge.write_frame(writer, {
                         "type": "acp", "payload": json.dumps(auth_response),
                     })
+                elif value.get("method") == "_x.ai/models/list" and value.get("id") == bridge.INTERNAL_PREFIX + "owner-models":
+                    if not self.answer_model_catalog:
+                        continue
+                    response = {"jsonrpc": "2.0", "id": value["id"], "result": {"result": self.model_catalog}}
+                    if self.model_catalog_error:
+                        response = bridge.rpc_error(value, "Native model catalog unavailable")
+                    await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps(response)})
                 elif value.get("method") == bridge.ROSTER_METHOD:
                     if not self.answer_roster:
                         continue
@@ -818,6 +845,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         forwarded = await self.next_forward("session/new")
         self.assertEqual(forwarded["params"]["cwd"], str(Path(self.temp.name).resolve()))
         self.assertEqual(forwarded["params"]["_meta"], {})
+        self.assertNotIn("_x.ai/models/list", self.native_methods,
+                         "Default creation must preserve native defaults without settings discovery")
         await self.emit_native({"jsonrpc": "2.0", "id": "create", "result": {"sessionId": "new-1"}})
         self.assertEqual((await ws.receive_json())["result"]["sessionId"], "new-1")
         await ws.send_json({
@@ -826,6 +855,120 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertIn("error", await ws.receive_json())
         self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_new_session_model_settings_capability_requires_native_actor_guarantees(self):
+        for supported in (True, False):
+            self.actor_identity_supported = supported
+            ws = await self.client.ws_connect(self.url, headers={"Authorization": "Bearer " + "x" * 40})
+            self.assertEqual((await self.seen.get())["type"], "register")
+            await ws.send_json({"jsonrpc": "2.0", "id": "bridge-test-init", "method": "initialize", "params": {}})
+            reply = await ws.receive_json()
+            self.assertIs(reply["result"]["_meta"]["x.ai/newSessionModelSettings"], supported)
+            await self.next_forward("initialize")
+            await ws.close()
+
+    async def test_new_session_forwards_only_advertised_model_and_canonical_effort_on_creator(self):
+        ws = await self.connect()
+        settings = {"modelId": "catalog-fast", "reasoningEffort": "xhigh"}
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": "advanced-create", "method": "session/new",
+            "params": {"cwd": self.temp.name, "mcpServers": [], "_meta": settings},
+        })
+        catalog = await self.next_forward("_x.ai/models/list")
+        self.assertEqual(catalog["params"], {})
+        creator = self.leader_writers[-1]
+        forwarded = await self.next_forward("session/new")
+        self.assertIs(self.leader_writers[-1], creator)
+        self.assertEqual(forwarded["params"], {
+            "cwd": str(Path(self.temp.name).resolve()), "mcpServers": [], "_meta": settings,
+        })
+        await self.emit_native({"jsonrpc": "2.0", "id": "advanced-create", "result": {
+            "sessionId": "new-with-settings", "models": {"currentModelId": "catalog-fast"},
+        }})
+        self.assertEqual((await ws.receive_json())["result"]["sessionId"], "new-with-settings")
+        self.assertEqual(len(self.bridge.owners), 1)
+        await ws.send_json({"jsonrpc": "2.0", "id": "prompt-before-proof", "method": "session/prompt",
+                            "params": {"sessionId": "new-with-settings", "prompt": []}})
+        self.assertIn("error", await ws.receive_json())
+        self.assertTrue(self.seen.empty(), "Advanced creation must still require strict attachment proof")
+        await ws.close()
+
+    async def test_new_session_rejects_invalid_setting_types_and_override_siblings_before_native(self):
+        ws = await self.connect()
+        for meta in [
+            {"modelId": None}, {"modelId": False}, {"modelId": []}, {"modelId": {}},
+            {"modelId": ""}, {"modelId": " catalog-fast"}, {"modelId": "catalog-fast\n"},
+            {"modelId": "m" * 513}, {"reasoningEffort": "high"},
+            {"modelId": "catalog-fast", "reasoningEffort": None},
+            {"modelId": "catalog-fast", "reasoningEffort": True},
+            {"modelId": "catalog-fast", "reasoningEffort": []},
+            {"modelId": "catalog-fast", "reasoningEffort": "deep-thinking"},
+            {"modelId": "catalog-fast", "reasoningEffort": "HIGH"},
+            {"modelId": "catalog-fast", "reasoningEffort": "fast"},
+            {"modelId": "catalog-fast", "yoloMode": True},
+            {"modelId": "catalog-fast", "autoMode": False},
+            {"modelId": "catalog-fast", "x.ai/residentActorId": "other-actor"},
+            {"modelId": "catalog-fast", "sessionId": "other-session"},
+            {"modelId": "catalog-fast", "systemPromptOverride": "override"},
+            {"modelId": "catalog-fast", "fastMode": True},
+        ]:
+            await ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                                "params": {"cwd": self.temp.name, "_meta": meta}})
+            self.assertIn("error", await ws.receive_json(), meta)
+        self.assertTrue(self.seen.empty(), "Invalid settings must not register a creator or query native")
+        await ws.close()
+
+    async def test_new_session_model_without_reasoning_preserves_native_effort_default(self):
+        ws = await self.connect()
+        await ws.send_json({
+            "jsonrpc": "2.0", "id": "model-only", "method": "session/new",
+            "params": {"cwd": self.temp.name, "_meta": {"modelId": "catalog-no-reasoning"}},
+        })
+        await self.next_forward("_x.ai/models/list")
+        forwarded = await self.next_forward("session/new")
+        self.assertEqual(forwarded["params"]["_meta"], {"modelId": "catalog-no-reasoning"})
+        await self.emit_native({"jsonrpc": "2.0", "id": "model-only", "result": {"sessionId": "model-only-session"}})
+        self.assertEqual((await ws.receive_json())["result"]["sessionId"], "model-only-session")
+        await ws.close()
+
+    async def test_new_session_rejects_stale_model_and_unadvertised_effort_without_creating(self):
+        ws = await self.connect()
+        for settings in [
+            {"modelId": "not-advertised"},
+            {"modelId": "catalog-base", "reasoningEffort": "xhigh"},
+            {"modelId": "catalog-fast", "reasoningEffort": "low"},
+            {"modelId": "catalog-no-reasoning", "reasoningEffort": "high"},
+        ]:
+            await ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                                "params": {"cwd": self.temp.name, "_meta": settings}})
+            self.assertEqual((await ws.receive_json())["error"]["data"]["code"], "settings_invalid")
+            self.assertEqual(len(self.bridge.owners), 0)
+        methods = []
+        while not self.seen.empty():
+            frame = self.seen.get_nowait()
+            if frame.get("type") == "acp":
+                methods.append(json.loads(frame["payload"])["method"])
+        self.assertEqual(methods.count("_x.ai/models/list"), 4)
+        self.assertNotIn("session/new", methods)
+        self.assertNotIn("session/load", methods)
+        await ws.close()
+
+    async def test_new_session_model_catalog_failure_is_definite_and_never_creates(self):
+        ws = await self.connect()
+        for failure in ("native-error", "malformed", "timeout"):
+            self.model_catalog_error = failure == "native-error"
+            self.model_catalog = {} if failure == "malformed" else self.model_catalog
+            self.answer_model_catalog = failure != "timeout"
+            with patch.object(bridge, "CATALOG_TIMEOUT", .03):
+                await ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                                    "params": {"cwd": self.temp.name, "_meta": {"modelId": "catalog-fast"}}})
+                self.assertEqual((await ws.receive_json())["error"]["data"]["code"], "settings_unavailable")
+            self.assertEqual(len(self.bridge.owners), 0)
+        while not self.seen.empty():
+            frame = self.seen.get_nowait()
+            if frame.get("type") == "acp":
+                self.assertNotIn(json.loads(frame["payload"])["method"], ("session/new", "session/load"))
         await ws.close()
 
     async def test_new_session_rejects_missing_relative_non_directory_and_inaccessible_workspaces(self):

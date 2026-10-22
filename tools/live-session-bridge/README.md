@@ -375,7 +375,7 @@ Select a **resident** session; the app must pass its actual absolute `cwd`.
 
 The phone may also create a fresh session by selecting an existing absolute Mac
 workspace directory. The request is native ACP `session/new` with `cwd`, empty
-`mcpServers`, and empty `_meta`; arbitrary configuration, permission overrides,
+`mcpServers`, and optional `_meta` model choices; arbitrary configuration, permission overrides,
 caller-chosen session identity and injected tools are rejected. Directory
 symlinks are resolved to an existing readable/searchable directory before
 forwarding. This does not grant project trust or alter inherited policy.
@@ -384,6 +384,27 @@ The phone must then perform the same strict resident-only `session/load` as for
 Terminal-created sessions, obtaining the resident actor UUID before controlling it.
 To use a phone-created session in Terminal, use its SID in the `--resume LIVE_SID`
 command above with that workspace and the same native leader socket.
+
+The default request omits model choices and inherits native configuration.
+An optional Advanced form is available only when initialize advertises
+`result._meta["x.ai/newSessionModelSettings"]=true`. Read the authenticated,
+session-free `_x.ai/models/list` catalog; opening this form must not create or
+attach a session. A deliberate `session/new` may supply only
+`_meta:{modelId,reasoningEffort?}`. Use the advertised `modelId` and the selected
+model's `_meta.reasoningEfforts[].value`, not its display label or option ID.
+Canonical effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+and `max`; the chosen model must also explicitly advertise the particular value.
+The retained creator re-reads the catalog before dispatch, rejecting stale,
+unsupported or malformed choices before native creation. Catalog failure returns
+`error.data.code=settings_unavailable`; invalid choices return `settings_invalid`.
+Permission, tool, trust and identity metadata remain forbidden.
+
+Creation replies and strict-load replies contain the effective native `models`
+and `configOptions`. A client must verify both against its explicit choices and
+retain the returned SID even if attachment fails. A lost response is uncertain;
+neither an attach error nor mismatched effective settings authorizes an automatic
+second create. These settings configure the new actor only, leaving any existing
+conversation attached while the form is open.
 
 Only one unresolved create is forwarded per WebSocket connection. A lost response
 is **uncertain**, not evidence of failure: reconnect and inspect the live picker
@@ -420,6 +441,51 @@ returning a false definite rejection; the app requires checking Live sessions
 before another creation. The abandoned owner connection is closed and its slot
 released. Explicit native validation or authentication errors remain definite
 rejections on the existing phone connection.
+
+### Updating a bridge without unloading its idle mobile actors
+
+Do not restart the old bridge to roll out a transport-only change. Its cleanup
+closes retained creator sockets. When that removes an idle actor's last native
+subscriber, Grok deliberately unloads the actor; an unchanged leader PID alone
+does not prove session continuity. A working actor or parked approval survives
+native detach, but maintenance must also preserve idle actors.
+
+Use parallel bridges against the same native leader instead. Prepare a distinct
+loopback-only bridge service, for example `127.0.0.1:18853`, using the same
+`leader_socket`, `secret_file`, native version and workspace reader as the old
+service. Register only its bridge role under a distinct launchd label; do not
+install another leader or replace the old service configuration. Verify the new
+listener with authentication and strict-load the expected actor UUID/workspace.
+Source identifiers remain stable: they are HMACs of the same secret and absolute
+leader socket path, independent of bridge port, process or WebSocket connection.
+
+After verification and review, switch only the dedicated tunnel's exact `/ws`
+ingress origin from `http://127.0.0.1:18809` to the new loopback port. Validate the
+tunnel configuration and restart only its dedicated connector. The public WSS
+address, bridge secret and native leader stay the same. This causes a brief
+public reconnect; existing public sockets may close, then attach to the new
+bridge with canonical replay. Local Terminal subscribers and the old bridge's
+retained creator sockets stay connected throughout.
+
+Keep the old bridge running while any actor it retained still exists. Without
+an owner-export API, conservatively retain it until every pre-update resident
+actor has explicitly closed; do not infer safety from an empty phone list or
+idle status. The new bridge's ordinary attachment does not transfer creator
+ownership. Rollback changes only the dedicated tunnel origin back to the still
+running old bridge. Preserve pre/post source, session, actor UUID, absolute
+workspace and event cursor baselines. Never resume saved history to repair a
+failed identity check.
+
+The October 22 isolated native check ran the prior bridge and this source in
+parallel against one actual pinned native leader. All 12 assertions passed:
+one prior-bridge-created idle actor remained identical while both phone sockets
+disconnected, the new bridge strictly reattached it, prior history survived with
+unique event IDs, and the old creator retained it after another phone detach.
+The new bridge created no actor or retainer. This proof used zero model turns or
+tools, left the public runtime unchanged, and is retained locally at
+`~/.grok/mobile-bridge/viewport-rollover-20261022/blue-green-native-proof.json`.
+It is not a new live permission-routing test; permission reverse-requests still
+use the shared native leader and their original request IDs.
 
 Native stdio MCP startup includes a bounded OS-launch phase. A process-wide limit
 of four launches leaves the session runtime's blocking workers available for

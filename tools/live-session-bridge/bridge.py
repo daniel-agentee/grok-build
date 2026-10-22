@@ -73,6 +73,8 @@ READ_METHODS = {
     PREVIEW_METHOD,
 }
 SESSION_METHODS = {"session/prompt", "session/cancel", "session/set_model"}
+NEW_SESSION_META_KEYS = {"modelId", "reasoningEffort"}
+CANONICAL_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 INITIALIZE_META_KEYS = {"clientIdentifier", "clientUserMessageEcho"}
 EMPTY_PARAM_METHODS = READ_METHODS - {
     "initialize",
@@ -244,6 +246,45 @@ def source_error(request: dict[str, Any], code: str, message: str, **data) -> di
     result = rpc_error(request, message)
     result["error"]["data"] = {"code": code, **data}
     return result
+
+
+def new_session_settings_error(meta: Any, catalog: dict[str, Any] | None = None) -> str | None:
+    """Only explicit advertised model/effort selections may cross creation.
+
+    Native creation can fall back for unknown choices. Reject stale/unadvertised
+    choices before creating an actor; the client still verifies effective reply
+    settings because native policy may change after catalog discovery.
+    """
+    if not isinstance(meta, dict) or meta.keys() - NEW_SESSION_META_KEYS:
+        return "New session settings accept only modelId and reasoningEffort"
+    if not meta:
+        return None
+    model_id = meta.get("modelId")
+    if (not isinstance(model_id, str) or not model_id or len(model_id) > 512
+        or model_id.strip() != model_id or any(ord(c) < 32 or ord(c) == 127 for c in model_id)):
+        return "Choose an advertised model before setting new session options"
+    if "reasoningEffort" in meta and (
+        not isinstance(meta["reasoningEffort"], str)
+        or meta["reasoningEffort"] not in CANONICAL_REASONING_EFFORTS
+    ):
+        return "Choose a supported canonical reasoning level"
+    if catalog is None:
+        return None
+    models = catalog.get("availableModels")
+    if not isinstance(models, list):
+        return "Model choices are unavailable; refresh the new session form"
+    selected = [model for model in models if isinstance(model, dict) and model.get("modelId") == model_id]
+    if len(selected) != 1:
+        return "Selected model is no longer advertised; refresh the new session form"
+    if "reasoningEffort" in meta:
+        model_meta = selected[0].get("_meta")
+        efforts = model_meta.get("reasoningEfforts") if isinstance(model_meta, dict) else None
+        if (not isinstance(model_meta, dict) or model_meta.get("supportsReasoningEffort") is not True
+            or not isinstance(efforts, list)
+            or not any(isinstance(option, dict) and option.get("value") == meta["reasoningEffort"]
+                       for option in efforts)):
+            return "Selected reasoning level is unavailable for this model; refresh the new session form"
+    return None
 
 
 class LeaderDirectory:
@@ -564,6 +605,40 @@ class SessionOwner:
                             self.result.set_result({**auth, "id": self.request["id"]})
                             return
                         break
+            settings = self.request.get("params", {}).get("_meta", {})
+            if self.request.get("method") == "session/new" and settings:
+                # Precreation discovery on the authenticated creator connection
+                # creates no session and cannot disturb another actor's config.
+                catalog_id = INTERNAL_PREFIX + "owner-models"
+                await write_frame(writer, {"type": "acp", "payload": json.dumps({
+                    "jsonrpc": "2.0", "id": catalog_id, "method": "_x.ai/models/list", "params": {},
+                })})
+                catalog = None
+                try:
+                    async with asyncio.timeout(CATALOG_TIMEOUT):
+                        while True:
+                            frame = await read_frame(reader)
+                            if frame.get("type") != "acp":
+                                continue
+                            response = json.loads(frame["payload"], parse_constant=reject_nonfinite)
+                            if not isinstance(response, dict):
+                                raise ValueError("Invalid model catalog response")
+                            if response.get("id") == catalog_id and "method" not in response:
+                                if "error" not in response:
+                                    catalog = unwrap_result(response)
+                                break
+                except asyncio.TimeoutError:
+                    pass
+                if not isinstance(catalog, dict) or not isinstance(catalog.get("availableModels"), list):
+                    self.result.set_result(source_error(
+                        self.request, "settings_unavailable",
+                        "Model choices are unavailable; update the Mac bridge or refresh the new session form",
+                    ))
+                    return
+                error = new_session_settings_error(settings, catalog)
+                if error is not None:
+                    self.result.set_result(source_error(self.request, "settings_invalid", error))
+                    return
             if self.before_dispatch is not None:
                 rejection = await self.before_dispatch()
                 if rejection is not None:
@@ -830,6 +905,7 @@ class Bridge:
                                              "x.ai/explicitSavedResume": True,
                                              "x.ai/idleSessionPreview": True,
                                              "x.ai/workspaceCommands": True,
+                                             "x.ai/newSessionModelSettings": resident_only_supported,
                                              "x.ai/bridgeLeaderId": selected_token})
                             payload = json.dumps(value)
                 preflight_entry = pending.pop(str(value.get("id")), None) if is_response else None
@@ -1160,11 +1236,17 @@ class Bridge:
                     if (
                         params.keys() - {"cwd", "mcpServers", "_meta"}
                         or params.get("mcpServers", []) != []
-                        or params.get("_meta", {}) != {}
+                        or not isinstance(params.get("_meta", {}), dict)
+                        or params.get("_meta", {}).keys() - NEW_SESSION_META_KEYS
                     ):
                         await ws.send_json(rpc_error(
                             value, "New sessions must preserve Mac tools and permission settings"
                         ))
+                        continue
+                    settings = params.get("_meta", {})
+                    settings_error = new_session_settings_error(settings)
+                    if settings_error is not None:
+                        await ws.send_json(source_error(value, "settings_invalid", settings_error))
                         continue
                     try:
                         cwd = params.get("cwd")
@@ -1189,6 +1271,8 @@ class Bridge:
                         ))
                         continue
                     params["cwd"] = str(workspace)
+                    if "_meta" in params:
+                        params["_meta"] = {key: settings[key] for key in NEW_SESSION_META_KEYS if key in settings}
                     creating.add(request_key(value))
                     inflight.add(request_key(value))
                     # A successful create is deliberately not an attachment proof.
