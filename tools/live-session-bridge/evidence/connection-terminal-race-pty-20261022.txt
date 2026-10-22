@@ -1,0 +1,8 @@
+Captured from actual interactive Grok Terminal PTY 91918 on graceful exit (exit0).
+Fixture: terminal-resume-race-20261022.
+The authenticated ACP WebSocket test client sent one prompt to the same actor.
+
+  Reply with exactly CONNECTION-RACE-PHONE-20261022-ACK. Do not use any tools.
+  CONNECTION-RACE-PHONE-20261022-ACK
+
+The iOS app and physical-device coverage are recorded separately.

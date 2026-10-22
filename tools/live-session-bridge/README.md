@@ -12,8 +12,12 @@ Older conversations have a separate **History** button and explicit resume actio
 
 Terminal's **Idle** count includes open workspace conversations whose agent is no
 longer loaded. They belong in the phone's overview, but they are not resident live
-actors. The phone displays them as Idle and asks before resuming their history.
-It never claims that a newly restored actor is the same uninterrupted live actor.
+actors. The phone opens Idle conversations immediately with their full saved
+history, without loading an agent. Backing out, reconnecting and viewing skills
+remain read-only. The first new message deliberately resumes the session on the
+configured primary, then sends that message once. History-only rows retain their
+explicit **Resume saved convo?** confirmation. A newly restored actor is never
+presented as the same uninterrupted live actor.
 
 ## Open-session discovery
 
@@ -44,6 +48,51 @@ rejected. Reads have a two-second deadline and a bounded output size; exited,
 timed-out, oversized, and cancelled helper processes are reaped. Failures report
 stable codes (`reader_unavailable`, `reader_untrusted`, `read_failed`,
 `read_timeout`, or `invalid_snapshot`) without database contents or private paths.
+
+## Idle history and workspace commands
+
+Initialize advertises `x.ai/idleSessionPreview` and `x.ai/workspaceCommands` in
+`result._meta`. The exact read-only native history method is
+`_x.ai/session/updates`, with `{sessionId,cwd,offset,limit}`. Supply the canonical
+session UUID and its absolute open-workspace path. Offset defaults to zero; limit
+defaults to 500 and is restricted to 1–500. The response contains complete
+timestamped `session/update` envelopes, `totalCount`, `hasMore` and optional
+`lastEventId`. Page until complete and apply the ordinary update parser. Native
+history filtering handles rewound branches. A fork may retain its parent's event
+ID prefix; use the envelope's `params.sessionId` to choose the conversation.
+
+Preview requires a freshly verified canonical dashboard member and matching
+native roster row/workspace. Missing membership, a failed membership read,
+unknown sessions, traversal, streaming/routing metadata and out-of-bounds pages
+are rejected. Preview never calls load/create, creates no actor or retainer,
+and cannot cancel ongoing work on disconnect.
+
+`_x.ai/commands/list` also accepts `{cwd}` before session attachment, only for an
+existing open Mac workspace. The native pre-session registry retains folder,
+plugin trust, compatibility and skill eligibility checks. It performs no session
+load and does not require an actor. Its response is display metadata; invoking a
+command later uses the normal native prompt resolver and permissions.
+
+The bridge shares in-flight metadata scans and reuses a successful result for at
+most 15 seconds, with a 32-entry bound. Keys include the exact source, canonical
+workspace, native socket incarnation, and cheap canonical trust/config file
+stamps. Fresh membership is still required for every request. Native errors and
+uncertain/expired reads are not cached. Deep plugin-file edits expire within 15
+seconds; an explicit `{cwd,refresh:true}` bypasses the cached response immediately.
+Refresh deliberately joins an already-running read for that same key and is
+removed before forwarding to native. The optional flag is strictly boolean;
+unrelated policy metadata stays forbidden. Attached `{sessionId,cwd?}` requests
+continue to read their live actor's catalog.
+
+Cold resumes are serialized and checked against all known live sources both
+before and after retainer authentication. If Terminal resumed first, the bridge
+returns `error.data.code=origin_conflict` with its exact source; refresh and
+strictly attach the existing actor before sending once. Multiple live origins or
+unknown source ownership fail closed. Cold mobile resumes use the configured
+primary, as does `service.py terminal`. Native attach arbitration is atomic within
+that leader; independent CLI cold resumes on another leader have no global
+cross-process lock and can create distinct actors. Such a conflict is surfaced,
+never merged by saved session ID.
 
 ## Compatibility
 
@@ -157,6 +206,90 @@ The earlier demonstration executable remains separately preserved at
 Its original manifest and patch are retained as `evidence/d419-build-manifest.json`
 and `evidence/d419-resident-only-attach.patch`; its historical live evidence in
 `STRICT_LIVE_TEST_RESULTS.md` does not verify the newer MCP containment patch.
+
+## Durable Mac connection
+
+Use the per-user login services for day-to-day operation. A detached transport
+alone cannot recover when its native leader exits; that was the cause of the
+October 22 HTTP 503 / **Connection failed** incident. The bridge remained alive
+but its configured native socket had disappeared.
+
+This Mac is already configured with the custom socket
+`~/.grok/leader-mobile-recovery-20261022.sock`. From this directory, reuse its saved
+configuration directly with the Python environment containing `requirements.txt`:
+
+```sh
+python3 service.py status
+python3 service.py terminal --workspace /absolute/project/path
+```
+
+For a new installation only, after preparing pinned artifacts and an existing
+owner-only bridge secret, install once. To reproduce this Mac's selected socket:
+
+```sh
+python3 service.py install --workspace "$HOME" \
+  --leader-socket "$HOME/.grok/leader-mobile-recovery-20261022.sock" \
+  --host 0.0.0.0 --port 18809
+```
+
+Do not reinstall a different configuration over an active native owner.
+
+`install` registers `io.grok.mobile.leader` and `io.grok.mobile.bridge` in the
+current user's `~/Library/LaunchAgents`. The native leader and WebSocket transport
+have independent launchd ownership, start at login, and recover after process
+exit. Each service execs its actual long-lived process; there is no detached
+child whose launcher can exit successfully while the real owner disappears.
+The 30-second launchd throttle prevents a fast failure from spinning. Interactive
+QoS is deliberate: a Background job's pinned-artifact verification was measured
+to starve on a busy Mac. Digests are streamed with bounded memory.
+
+The default listener is loopback. `--host 0.0.0.0` explicitly enables the existing
+authenticated trusted-LAN connection. The encrypted remote route forwards to
+the same loopback port; it does not start another agent. HTTP 401 still identifies
+an incorrect bridge secret. HTTP 503 means the configured native owner is not
+ready; the service can recover it without changing the credential.
+
+The configuration contains file paths and connection settings only, stored at
+`~/.grok/mobile-bridge/service/service.json` with mode 600. Both roles revalidate
+the exact native/helper checksums and existing credential permissions at startup.
+No credential value is written to a plist, environment variable, command argument,
+or diagnostic output. Cached native CLI authentication is reused. The controlled
+runtime environment excludes inherited API keys and tool-runner overrides.
+
+An already listening native owner is adopted without stopping it. A hung,
+unready, or incompatible listener is preserved and reported; the watchdog never
+unlinks a user socket or kills an owner. The install command refuses occupied
+ports and changed service configurations instead of replacing active services.
+Repeated installation of the exact existing configuration does not restart
+either role. `service.py terminal` reads that configuration, so Terminal and phone
+use the same configured native source even when a custom socket was selected.
+
+The current Mac deployment retains the previously selected
+`~/.grok/leader-mobile-recovery-20261022.sock`; it is recorded in `service.json`.
+Use `service.py status` and `service.py terminal` directly on this installation.
+Do not re-run a differing `install` command over an active configured owner.
+
+A bridge or phone reconnect leaves an independently connected Terminal's native
+actor running. A native process crash ends that live actor: launchd restores
+connection availability, and saved conversations still require deliberate resume.
+No service startup replays history or silently creates replacement actors.
+The Mac must remain powered on, logged in, and awake for remote access.
+
+Read status without exposing the launchd environment:
+
+```sh
+python3 service.py status
+launchctl list | rg 'io\.grok\.mobile\.(leader|bridge)'
+python3 -m unittest test_service test_launch -v
+```
+
+Never dump `launchctl print`: other services' environments may contain secrets.
+Service logs are owner-only under `~/.grok/mobile-bridge/service/`.
+
+## Manual development launch
+
+These original foreground/detached commands remain useful for development. Use
+the login services above for automatic recovery after native or bridge exit.
 
 ```sh
 python3 -m venv .venv
@@ -443,11 +576,27 @@ no `session/cancel`, `session/close`, process signal, or leader shutdown is emit
 A phone reconnect establishes a fresh IPC client and reattaches with full replay.
 Leader process crashes cannot be represented as uninterrupted live sessions.
 
-LAN `ws://` provides authentication but **not encryption**. Use only a trusted LAN
-for this first version. For remote access, keep the bridge bound to loopback and
-use a properly authenticated encrypted VPN/tunnel, or a TLS reverse proxy with
-certificate validation and WSS. Do not expose plaintext WebSocket to the Internet.
-The Mac must stay awake and its leader must remain running.
+The installed remote endpoint is **`wss://grok-mobile-ds.agentee.io/ws`**. It uses
+trusted TLS at Cloudflare and a dedicated outbound encrypted tunnel to this
+Mac's existing bridge at `http://127.0.0.1:18809/ws`. The native leader, actor,
+workspace, Mac authentication and approval checks remain on the original Mac.
+Only the exact `/ws` path is exposed, and every WebSocket still requires the
+existing bridge Secret. No router port forwarding or certificate exceptions are
+needed. Use this stable endpoint in the phone's Setup to keep the same saved
+connection when changing networks.
+
+Direct LAN `ws://` provides authentication without transport encryption and
+remains useful only on a trusted LAN. The dedicated remote route uses WSS; do
+not expose the plaintext listener directly to the Internet. The Mac must stay
+awake, online and logged into the user account that hosts the leader, bridge
+and dedicated tunnel LaunchAgents. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md) for
+exact service ownership, launch commands, recovery and verification scope.
+
+The independent M1 tests used public DNS, trusted TLS and this real WSS route
+from another Mac on the home LAN. They verified authenticated discovery,
+same-actor Terminal replay, abrupt reconnect, connector crash recovery and
+wrong-secret rejection. They do not constitute physical iPhone cellular
+verification; report actual device/mobile-data coverage separately.
 
 ## Automated tests
 

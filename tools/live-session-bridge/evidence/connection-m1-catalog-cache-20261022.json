@@ -1,0 +1,113 @@
+{
+  "catalog_identical_across_clients": true,
+  "concurrent_catalog_calls": [
+    {
+      "command_count": 326,
+      "connection_initialize_ms": 174.19,
+      "elapsed_ms": 770.15,
+      "index": 0,
+      "methods_sent": [
+        "initialize",
+        "authenticate",
+        "_x.ai/commands/list"
+      ],
+      "refresh_requested": true,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    },
+    {
+      "command_count": 326,
+      "connection_initialize_ms": 172.23,
+      "elapsed_ms": 443.28,
+      "index": 1,
+      "methods_sent": [
+        "initialize",
+        "authenticate",
+        "_x.ai/commands/list"
+      ],
+      "refresh_requested": true,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    },
+    {
+      "command_count": 326,
+      "connection_initialize_ms": 173.67,
+      "elapsed_ms": 432.28,
+      "index": 2,
+      "methods_sent": [
+        "initialize",
+        "authenticate",
+        "_x.ai/commands/list"
+      ],
+      "refresh_requested": true,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    }
+  ],
+  "connection_initialize_ms": 133.19,
+  "cooldown_seconds": 0,
+  "credential_delivery": "stdin_memory_only",
+  "endpoint": "wss://grok-mobile-ds.agentee.io/ws",
+  "fixture": {
+    "cwd": "/Users/danielstojanovic/.grok/mobile-bridge/idle-preview-20261022/workspace",
+    "sessionId": "3cb80462-a238-406f-aded-92095adc77ca"
+  },
+  "fixture_residency_unchanged": true,
+  "fixture_resident_at_start": false,
+  "history_resumes": 0,
+  "native_resident_map_unchanged": true,
+  "non_boolean_refresh_rejected": true,
+  "prompts_submitted": 0,
+  "resident_count": 2,
+  "sequential_catalog_calls": [
+    {
+      "command_count": 326,
+      "elapsed_ms": 719.42,
+      "refresh_requested": true,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 118.01,
+      "refresh_requested": false,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 221.5,
+      "refresh_requested": false,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 137.96,
+      "refresh_requested": false,
+      "response_bytes": 188804,
+      "sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8"
+    }
+  ],
+  "sequential_methods_sent": [
+    "initialize",
+    "authenticate",
+    "_x.ai/sessions/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/sessions/list"
+  ],
+  "session_creates": 0,
+  "session_loads": 0,
+  "success": true,
+  "tls_validation": true,
+  "bridge_pid_at_deployment": 58998,
+  "cache_ttl_seconds": 15,
+  "connector_pid": 90089,
+  "connector_process_type": "Interactive",
+  "host_load_before": "{ 307.30 330.51 241.55 }",
+  "host_load_after": "{ 308.23 330.31 242.00 }"
+}

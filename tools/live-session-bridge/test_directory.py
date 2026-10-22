@@ -1,6 +1,7 @@
 """Bounded federation/ownership regressions. Native interoperability is separate."""
 from __future__ import annotations
 import asyncio
+from contextlib import suppress
 import importlib.util
 import json
 import os
@@ -25,6 +26,10 @@ class NativeFixture:
         self.fail_roster = False
         self.before_owner_auth = None
         self.drop_load = False
+        self.updates = []
+        self.catalog_gate = None
+        self.catalog_entered = asyncio.Event()
+        self.catalog_error = False
         self.server = None
 
     async def start(self):
@@ -68,6 +73,18 @@ class NativeFixture:
                     result = {"result": {"sessions": [dict(row) for row in self.rows]}}
                 elif method == "_x.ai/session/info":
                     result = {"result": {"cwd": self.execution_cwd}}
+                elif method == "_x.ai/commands/list":
+                    self.catalog_entered.set()
+                    if self.catalog_gate is not None:
+                        await self.catalog_gate.wait()
+                    if self.catalog_error:
+                        await bridge.write_frame(writer, {"type": "acp", "payload": json.dumps(bridge.rpc_error(value, "Discovery failed"))})
+                        continue
+                    result = {"commands": [{"name": "test-skill", "description": "native filtered catalog"}]}
+                elif method == bridge.PREVIEW_METHOD:
+                    start, count = params["offset"], params["limit"]
+                    result = {"updates": self.updates[start:start + count],
+                        "totalCount": len(self.updates), "hasMore": start + count < len(self.updates)}
                 elif method == "session/load":
                     self.loads.append(value)
                     if self.drop_load:
@@ -93,7 +110,8 @@ class NativeFixture:
         finally:
             self.writers.discard(writer)
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionError):
+                await writer.wait_closed()
 
 
 class DirectoryTests(unittest.IsolatedAsyncioTestCase):
@@ -145,6 +163,214 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def resume(self, ws, sid="saved"):
         return await self.rpc(ws, "session/load", {"sessionId": sid, "cwd": str(self.root), "mcpServers": [], "_meta": {"x.ai/resumeSaved": True}})
+
+    async def test_idle_preview_pages_native_envelopes_without_loading_or_retaining(self):
+        sid = "019a1638-6387-7290-89fb-eb0f77d06cc8"
+        self.primary.rows.append(self.row(sid, False, "dormant"))
+        self.primary.updates = [{"timestamp": index, "method": "session/update", "params": {
+            "sessionId": sid, "_meta": {"eventId": f"{sid}-{index}"},
+            "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": f"message {index}"}},
+        }} for index in range(3)]
+        ws = await self.connect()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({(sid, str(self.root))}, None))):
+            first = bridge.unwrap_result(await self.rpc(ws, bridge.PREVIEW_METHOD, {"sessionId": sid, "cwd": str(self.root), "offset": 0, "limit": 2}))
+            self.assertEqual(first["updates"], self.primary.updates[:2])
+            self.assertEqual(first["totalCount"], 3)
+            self.assertTrue(first["hasMore"])
+            second = bridge.unwrap_result(await self.rpc(ws, bridge.PREVIEW_METHOD, {"sessionId": sid, "cwd": str(self.root), "offset": 2, "limit": 2}))
+            self.assertEqual(second["updates"], self.primary.updates[2:])
+            self.assertFalse(second["hasMore"])
+        self.assertFalse(self.primary.loads)
+        self.assertFalse(self.secondary.loads)
+        self.assertFalse(self.runtime.owners)
+        self.assertFalse(next(row for row in self.primary.rows if row["sessionId"] == sid)["resident"])
+        await ws.close()
+        self.assertFalse(self.runtime.owners)
+
+    async def test_idle_preview_rejects_traversal_unbounded_and_streaming_parameters(self):
+        sid = "019a1638-6387-7290-89fb-eb0f77d06cc8"
+        ws = await self.connect()
+        base = {"sessionId": sid, "cwd": str(self.root)}
+        invalid = [{"sessionId": "../summary.json"}, {"sessionId": "missing"},
+            {"cwd": "."}, {"cwd": str(self.root / "..")}, {"offset": -1}, {"offset": True},
+            {"limit": 0}, {"limit": 501}, {"limit": True}, {"stream": True},
+            {"_meta": {"x.ai/leaderClientId": 1}}]
+        for change in invalid:
+            with self.subTest(change=change):
+                reply = await self.rpc(ws, bridge.PREVIEW_METHOD, {**base, **change})
+                self.assertIn("error", reply)
+        self.assertFalse(any(request.get("method") == bridge.PREVIEW_METHOD for request in self.primary.seen))
+        self.assertFalse(self.primary.loads)
+
+    async def test_idle_preview_requires_canonical_membership_workspace_and_existing_row(self):
+        sid = "019a1638-6387-7290-89fb-eb0f77d06cc8"
+        self.primary.rows.append(self.row(sid, False, "dormant"))
+        ws = await self.connect()
+        params = {"sessionId": sid, "cwd": str(self.root)}
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), None))):
+            self.assertEqual((await self.rpc(ws, bridge.PREVIEW_METHOD, params))["error"]["data"]["code"], "workspace_membership_required")
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({(sid, str(self.root))}, None))):
+            self.assertEqual((await self.rpc(ws, bridge.PREVIEW_METHOD, {**params, "cwd": "/"}))["error"]["data"]["code"], "workspace_unavailable")
+            self.assertEqual((await self.rpc(ws, bridge.PREVIEW_METHOD, {**params, "sessionId": "019a1638-6387-7290-89fb-eb0f77d06cc9"}))["error"]["data"]["code"], "session_unavailable")
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), "read_timeout"))):
+            self.assertEqual((await self.rpc(ws, bridge.PREVIEW_METHOD, params))["error"]["data"]["code"], "workspace_membership_unavailable")
+        self.assertFalse(any(request.get("method") == bridge.PREVIEW_METHOD for request in self.primary.seen))
+        self.assertFalse(self.primary.loads)
+
+    async def test_idle_preview_capability_is_advertised_without_resuming(self):
+        ws = await self.connect()
+        reply = await self.rpc(ws, "initialize", {})
+        self.assertTrue(reply["result"]["_meta"]["x.ai/idleSessionPreview"])
+        self.assertTrue(reply["result"]["_meta"]["x.ai/workspaceCommands"])
+        self.assertFalse(self.primary.loads)
+
+    async def test_workspace_catalog_uses_native_no_session_path_without_actor(self):
+        ws = await self.connect()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            reply = await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)})
+            self.assertNotIn("error", reply)
+        requests = [request for request in self.primary.seen if request.get("method") == "_x.ai/commands/list"]
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["params"], {"cwd": str(self.root)})
+        self.assertFalse(self.primary.loads)
+        self.assertFalse(self.runtime.owners)
+
+    async def test_workspace_catalog_rejects_nonmember_wrong_cwd_and_policy_overrides(self):
+        ws = await self.connect()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), None))):
+            self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            for params in ({"cwd": "/"}, {"cwd": "."}, {"cwd": str(self.root / "..")},
+                {"cwd": str(self.root), "kind": "chat"}, {"cwd": str(self.root), "_meta": {}},
+                {"cwd": str(self.root), "refresh": 1}, {}):
+                with self.subTest(params=params):
+                    self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", params))
+        self.assertFalse(any(request.get("method") == "_x.ai/commands/list" for request in self.primary.seen))
+        self.assertFalse(self.primary.loads)
+
+    async def test_workspace_catalog_coalesces_connections_and_reuses_native_metadata(self):
+        first, second = await self.connect(), await self.connect()
+        self.primary.catalog_gate = asyncio.Event()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            a = asyncio.create_task(self.rpc(first, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            await asyncio.wait_for(self.primary.catalog_entered.wait(), 1)
+            b = asyncio.create_task(self.rpc(second, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            # Both directory guards finish before releasing the only native scan.
+            await asyncio.sleep(0.05)
+            self.primary.catalog_gate.set()
+            replies = await asyncio.gather(a, b)
+            self.assertTrue(all("error" not in reply for reply in replies))
+            self.assertNotIn("error", await self.rpc(second, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        requests = [r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]
+        self.assertEqual(len(requests), 1)
+        self.assertFalse(self.primary.loads)
+        self.assertFalse(self.runtime.owners)
+
+    async def test_workspace_catalog_invalidates_expiry_force_and_trust_config_writes(self):
+        ws = await self.connect()
+        async def request(**extra):
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root), **extra}))
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            await request()
+            await request(refresh=True)
+            key = next(iter(self.runtime.directory.catalogs))
+            _, result = self.runtime.directory.catalogs[key]
+            self.runtime.directory.catalogs[key] = (0, result)
+            await request()
+            (self.root / "trusted_folders.toml").write_text("changed trust decision")
+            await request()
+            grok = self.root / ".grok"; grok.mkdir()
+            (grok / "config.toml").write_text("changed policy")
+            await request()
+        requests = [r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]
+        self.assertEqual(len(requests), 5)
+        self.assertTrue(all(r["params"] == {"cwd": str(self.root)} for r in requests))
+
+    async def test_workspace_catalog_native_errors_are_not_cached_and_membership_is_rechecked(self):
+        ws = await self.connect()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            self.primary.catalog_error = True
+            self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            self.primary.catalog_error = False
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), None))):
+            self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(set(), "read_failed"))):
+            self.assertIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        self.assertEqual(len([r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]), 2)
+
+    async def test_workspace_catalog_isolates_source_and_workspace(self):
+        other = self.root / "other"; other.mkdir()
+        self.primary.rows.append({**self.row("other", False, "dormant"), "cwd": str(other)})
+        primary, secondary = await self.connect(), await self.connect(self.runtime.directory.token(self.secondary.path))
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root)), ("other", str(other))}, None))):
+            self.assertNotIn("error", await self.rpc(primary, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            self.assertNotIn("error", await self.rpc(secondary, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            self.assertNotIn("error", await self.rpc(primary, "_x.ai/commands/list", {"cwd": str(other)}))
+        self.assertEqual(len([r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]), 2)
+        self.assertEqual(len([r for r in self.secondary.seen if r.get("method") == "_x.ai/commands/list"]), 1)
+
+    async def test_workspace_catalog_owner_disconnect_and_timeout_release_other_waiters(self):
+        first, second = await self.connect(), await self.connect()
+        self.primary.catalog_gate = asyncio.Event()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            task = asyncio.create_task(self.rpc(second, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            await asyncio.wait_for(self.primary.catalog_entered.wait(), 1)
+            waiter = asyncio.create_task(self.rpc(first, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            await asyncio.sleep(0.05)
+            # Closing the scanning connection frees the shared flight; a later
+            # request can discover again instead of inheriting a dead future.
+            await second.close()
+            await asyncio.gather(task, return_exceptions=True)
+            self.assertEqual((await waiter)["error"]["data"]["code"], "catalog_unavailable")
+            async with asyncio.timeout(1):
+                while self.runtime.directory.catalog_flights:
+                    await asyncio.sleep(0)
+            self.primary.catalog_entered.clear()
+            with patch.object(bridge, "CATALOG_TIMEOUT", 0.05):
+                reply = await self.rpc(first, "_x.ai/commands/list", {"cwd": str(self.root)})
+                self.assertEqual(reply["error"]["data"]["code"], "catalog_unavailable")
+            self.assertFalse(self.runtime.directory.catalog_flights)
+            self.primary.catalog_gate.set()
+        self.assertFalse(self.runtime.owners)
+
+    async def test_workspace_catalog_cache_is_bounded_and_source_stamp_invalidates(self):
+        other = self.root / "other"; other.mkdir()
+        self.primary.rows.append({**self.row("other", False, "dormant"), "cwd": str(other)})
+        ws = await self.connect()
+        members = {("saved", str(self.root)), ("other", str(other))}
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=(members, None))), patch.object(bridge, "MAX_CATALOGS", 1):
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            os.utime(self.primary.path, ns=(1, 1))
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(other)}))
+            self.assertEqual(len(self.runtime.directory.catalogs), 1)
+        self.assertEqual(len([r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]), 3)
+
+    async def test_workspace_catalog_source_removal_does_not_reuse_cached_response(self):
+        ws = await self.connect()
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            self.primary.path.unlink()
+            # The already authenticated native connection can finish a read,
+            # but an unlinked socket must not reuse its previous cache key.
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+        self.assertEqual(len([r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]), 2)
+
+    async def test_workspace_catalog_inaccessible_config_cannot_serve_cached_metadata(self):
+        ws = await self.connect()
+        real_stat = Path.stat
+        target = self.root / "config.toml"
+        def guarded_stat(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("Optional config is inaccessible")
+            return real_stat(path, *args, **kwargs)
+        with patch.object(self.runtime.directory, "read_workspace_membership", AsyncMock(return_value=({("saved", str(self.root))}, None))):
+            self.assertNotIn("error", await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)}))
+            with patch.object(Path, "stat", guarded_stat):
+                reply = await self.rpc(ws, "_x.ai/commands/list", {"cwd": str(self.root)})
+                self.assertEqual(reply["error"]["data"]["code"], "catalog_unavailable")
+        self.assertEqual(len([r for r in self.primary.seen if r.get("method") == "_x.ai/commands/list"]), 1)
 
     async def test_union_keeps_working_idle_saved_and_resident_wins(self):
         ws = await self.connect(); result = await self.roster(ws)
@@ -334,6 +560,7 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("error", reply)
         self.assertEqual(reply["result"]["_meta"]["x.ai/residentActorId"], "new-actor")
         self.assertEqual(len(self.primary.loads), 3)
+
         self.assertNotIn("x.ai/resumeSaved", self.primary.loads[0]["params"]["_meta"])
         self.assertTrue(self.primary.loads[2]["params"]["_meta"]["x.ai/resident_only"])
         await ws.close(); await asyncio.sleep(.02)
@@ -343,6 +570,14 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         second = await self.connect(); reply = await self.resume(second)
         self.assertEqual(reply["error"]["data"]["code"], "origin_conflict")
         self.assertEqual(len(self.primary.loads), 3)
+
+    async def test_saved_resume_is_confined_to_primary_native_coordinator(self):
+        ws = await self.connect(self.runtime.directory.token(self.secondary.path))
+        reply = await self.resume(ws)
+        self.assertEqual(reply["error"]["data"]["code"], "primary_required")
+        self.assertFalse(self.primary.loads)
+        self.assertFalse(self.secondary.loads)
+        self.assertFalse(self.runtime.owners)
 
     async def test_saved_resume_rechecks_owner_after_retainer_auth_race(self):
         ws = await self.connect()

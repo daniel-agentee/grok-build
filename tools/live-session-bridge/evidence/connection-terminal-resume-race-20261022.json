@@ -1,0 +1,19 @@
+{
+  "sessionId": "0a61774b-f9c2-4d69-96e0-bc0b47d9ed1f",
+  "cwd": "/Users/danielstojanovic/.grok/mobile-bridge/terminal-resume-race-20261022/workspace",
+  "nativePrimarySocket": "/Users/danielstojanovic/.grok/leader-mobile-recovery-20261022.sock",
+  "actualTerminalColdResume": true,
+  "phoneCheckBeforeTerminalResume": true,
+  "secondCheckRejectedDuplicateActor": true,
+  "errorCode": "origin_conflict",
+  "residentCountForSID": 1,
+  "residentActorId": "01a163aa-7772-7262-b0fc-bf0b714f7e5e",
+  "phoneStrictAttachedSameActor": true,
+  "bridgeOwnersCreated": 0,
+  "phonePromptCount": 1,
+  "userMessageOccurrences": 1,
+  "assistantAckPresent": true,
+  "actorUnchangedAfterPrompt": true,
+  "mobileClient": "Real authenticated ACP WebSocket protocol client, not iOS UI",
+  "terminalExitCode": 0
+}

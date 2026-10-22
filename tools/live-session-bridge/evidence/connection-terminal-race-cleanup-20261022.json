@@ -1,0 +1,7 @@
+{
+  "test": "canonical_delete_owned_race_fixture_only",
+  "sessionId": "0a61774b-f9c2-4d69-96e0-bc0b47d9ed1f",
+  "deletedOnlyOwnedFixture": true,
+  "otherNativeRowsUnchanged": true,
+  "canonicalMembershipWasNeverAdded": true
+}

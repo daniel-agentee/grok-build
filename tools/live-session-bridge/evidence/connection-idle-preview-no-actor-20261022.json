@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "beforeResidentCount": 1,
+  "afterResidentCount": 1,
+  "beforeAfterActorMapEqual": true,
+  "previewUpdateCount": 20,
+  "idleFixtureRemainedNonresident": true,
+  "phoneDisconnectedWithoutActorStart": true
+}

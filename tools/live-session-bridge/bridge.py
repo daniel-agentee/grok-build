@@ -20,6 +20,7 @@ import secrets
 import stat
 import struct
 from typing import Any
+import uuid
 
 from aiohttp import WSMsgType, web
 
@@ -37,6 +38,11 @@ MAX_WORKSPACE_OUTPUT = 2 * 1024 * 1024
 WORKSPACE_READER_SHA256 = "cb04f8888bf2b11ea602fe2249ff08f92ca533270e7a7d2d37ab31f360bb10c1"
 CREATION_RESPONSE_TIMEOUT = 30
 ROSTER_METHOD = "_x.ai/sessions/list"
+PREVIEW_METHOD = "_x.ai/session/updates"
+MAX_PREVIEW_PAGE = 500
+CATALOG_TTL = 15
+MAX_CATALOGS = 32
+CATALOG_TIMEOUT = 20
 INTERNAL_PREFIX = "grok-mobile-preflight:"
 
 
@@ -64,6 +70,7 @@ READ_METHODS = {
     "x.ai/workspaces/list",
     "_x.ai/workspaces/list",
     "_x.ai/commands/list",
+    PREVIEW_METHOD,
 }
 SESSION_METHODS = {"session/prompt", "session/cancel", "session/set_model"}
 INITIALIZE_META_KEYS = {"clientIdentifier", "clientUserMessageEcho"}
@@ -73,6 +80,7 @@ EMPTY_PARAM_METHODS = READ_METHODS - {
     "x.ai/session/info",
     "_x.ai/session/info",
     "_x.ai/commands/list",
+    PREVIEW_METHOD,
 }
 LOAD_META_KEYS = {
     "x.ai/residentActorId",
@@ -259,7 +267,35 @@ class LeaderDirectory:
         self.workspace_reader = workspace_reader
         self.workspace_reader_sha256 = WORKSPACE_READER_SHA256
         self.workspace_members: set[tuple[str, str]] = set()
+        self.catalogs: dict[tuple, tuple[float, dict]] = {}
+        self.catalog_flights: dict[tuple, asyncio.Future] = {}
         self.refresh_paths()
+
+    def catalog_key(self, source: Path, workspace: Path) -> tuple:
+        """Cheap metadata invalidation, never a substitute for native trust checks.
+
+        Native pre-session discovery rebuilds the registry. Reuse its display-only
+        response briefly; avoid repeated recursive scans on every picker open.
+        A source replacement or trust/config write invalidates immediately. Deep
+        plugin file changes expire within CATALOG_TTL or an explicit refresh.
+        """
+        paths = [source, self.primary.parent / "trusted_folders.toml",
+                 self.primary.parent / "trusted-plugins", self.primary.parent / "config.toml",
+                 self.primary.parent / "managed_config.toml", Path("/etc/grok/managed_config.toml"),
+                 Path.home() / ".claude/settings.json",
+                 Path("/Library/Application Support/ClaudeCode/managed-settings.json")]
+        for root in (workspace, *workspace.parents, Path.home()):
+            paths.extend(root / name for name in (
+                ".grok/config.toml", ".grok/skills", ".grok/plugins",
+                ".claude/skills", ".claude/commands", ".agents/skills"))
+        def stamp(path):
+            try:
+                info = path.stat()
+                return (str(path), info.st_dev, info.st_ino, info.st_mtime_ns,
+                        info.st_ctime_ns, info.st_size)
+            except FileNotFoundError:
+                return (str(path), None)
+        return (str(source), str(workspace), tuple(stamp(path) for path in paths))
 
     async def read_workspace_membership(self) -> tuple[set[tuple[str, str]], str | None]:
         """Native typed-store export; membership is separate from actor residence.
@@ -698,6 +734,7 @@ class Bridge:
         attachment_ended = False
         counter = 0
         background: set[asyncio.Task] = set()
+        catalog_requests: dict[str, tuple[tuple, asyncio.Future, Path]] = {}
         selected_token = self.directory.token(self.socket)
 
         async def forward(value: dict[str, Any]) -> None:
@@ -763,6 +800,21 @@ class Bridge:
                         )
                         return
                 is_response = "method" not in value and ("result" in value or "error" in value)
+                catalog = catalog_requests.pop(str(value.get("id")), None) if is_response else None
+                if catalog is not None:
+                    cache_key, future, workspace = catalog
+                    if self.directory.catalog_flights.get(cache_key) is future:
+                        self.directory.catalog_flights.pop(cache_key, None)
+                    if not future.done():
+                        future.set_result(value)
+                    if "error" not in value:
+                        with suppress(OSError, RuntimeError):
+                            if self.directory.catalog_key(self.socket, workspace) == cache_key:
+                                if len(self.directory.catalogs) >= MAX_CATALOGS:
+                                    oldest = min(self.directory.catalogs, key=lambda k: self.directory.catalogs[k][0])
+                                    self.directory.catalogs.pop(oldest)
+                                self.directory.catalogs[cache_key] = (asyncio.get_running_loop().time(), value)
+                    continue
                 if is_response:
                     inflight.discard(request_key(value))
                     if request_key(value) in initializing:
@@ -776,6 +828,8 @@ class Bridge:
                         if isinstance(metadata, dict):
                             metadata.update({"x.ai/mobileLeaderDirectory": True,
                                              "x.ai/explicitSavedResume": True,
+                                             "x.ai/idleSessionPreview": True,
+                                             "x.ai/workspaceCommands": True,
                                              "x.ai/bridgeLeaderId": selected_token})
                             payload = json.dumps(value)
                 preflight_entry = pending.pop(str(value.get("id")), None) if is_response else None
@@ -865,6 +919,129 @@ class Bridge:
             except (OSError, RuntimeError, ValueError):
                 return source_error(value, "workspace_unavailable", "Saved session requires its existing absolute Mac workspace")
             return None
+
+        async def preview_saved(value):
+            """Read native persisted updates without loading or retaining an actor.
+
+            Native session/updates has an id-scan fallback. Validate against the
+            canonical roster and dashboard membership before exposing that read,
+            so a supplied cwd cannot redirect a history read to a different row.
+            """
+            key = request_key(value)
+            forwarded = False
+            try:
+                params = value["params"]
+                try:
+                    sid, cwd = params["sessionId"], params["cwd"]
+                    if (params.keys() - {"sessionId", "cwd", "offset", "limit"}
+                        or str(uuid.UUID(sid)) != sid
+                        or not isinstance(cwd, str) or not Path(cwd).is_absolute()
+                        or ".." in Path(cwd).parts
+                        or type(params.get("offset", 0)) is not int
+                        or not 0 <= params.get("offset", 0) <= 2**53 - 1
+                        or type(params.get("limit", MAX_PREVIEW_PAGE)) is not int
+                        or not 1 <= params.get("limit", MAX_PREVIEW_PAGE) <= MAX_PREVIEW_PAGE):
+                        raise ValueError()
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    await ws.send_json(rpc_error(value, "Preview requires a session UUID, its absolute workspace, and a bounded nonnegative page"))
+                    return
+                snapshot = await self.directory.snapshot(fresh=True)
+                if snapshot.get("bridgeWorkspaceMembershipError"):
+                    await ws.send_json(source_error(value, "workspace_membership_unavailable", "Open session membership is unavailable; refresh before previewing"))
+                    return
+                rows = [row for row in snapshot["sessions"] if row.get("sessionId") == sid]
+                if not rows:
+                    await ws.send_json(source_error(value, "session_unavailable", "Session no longer exists; refresh sessions"))
+                    return
+                if not any(row.get("workspaceMember") is True for row in rows):
+                    await ws.send_json(source_error(value, "workspace_membership_required", "Select an open Mac session to preview its conversation"))
+                    return
+                try:
+                    workspace = Path(cwd).resolve(strict=True)
+                    if (not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK)
+                        or not any(row.get("workspaceMember") is True
+                            and os.path.normpath(cwd) == os.path.normpath(row.get("cwd", ""))
+                            and workspace == Path(row["cwd"]).resolve(strict=True) for row in rows)):
+                        raise ValueError()
+                except (OSError, RuntimeError, ValueError):
+                    await ws.send_json(source_error(value, "workspace_unavailable", "Preview requires the session's existing absolute Mac workspace"))
+                    return
+                # Explicit bounds only; client streaming/routing metadata is never
+                # forwarded. The native primitive filters rewound history itself.
+                params.update(offset=params.get("offset", 0), limit=params.get("limit", MAX_PREVIEW_PAGE))
+                await forward(value)
+                forwarded = True
+            except (ConnectionError, RuntimeError):
+                pass
+            finally:
+                if not forwarded:
+                    inflight.discard(key)
+
+        async def workspace_commands(value):
+            """Use native pre-session discovery for a canonical open workspace."""
+            nonlocal counter
+            key = request_key(value)
+            try:
+                params = value["params"]
+                cwd = params.get("cwd")
+                if (params.keys() - {"cwd", "refresh"} or type(params.get("refresh", False)) is not bool
+                    or not isinstance(cwd, str)
+                    or not Path(cwd).is_absolute() or ".." in Path(cwd).parts):
+                    await ws.send_json(rpc_error(value, "Workspace commands require one absolute open-session workspace"))
+                    return
+                snapshot = await self.directory.snapshot(fresh=True)
+                if snapshot.get("bridgeWorkspaceMembershipError"):
+                    await ws.send_json(source_error(value, "workspace_membership_unavailable", "Open session membership is unavailable; refresh before listing commands"))
+                    return
+                try:
+                    workspace = Path(cwd).resolve(strict=True)
+                    if (not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK)
+                        or not any(row.get("workspaceMember") is True
+                            and os.path.normpath(cwd) == os.path.normpath(row.get("cwd", ""))
+                            and workspace == Path(row["cwd"]).resolve(strict=True)
+                            for row in snapshot["sessions"])):
+                        raise ValueError()
+                except (OSError, RuntimeError, ValueError):
+                    await ws.send_json(source_error(value, "workspace_unavailable", "Choose an existing open Mac session workspace to list its commands"))
+                    return
+                # Omitting sessionId selects native build_for_cwd discovery;
+                # native folder trust, compatibility and skill policy still apply.
+                cache_key = self.directory.catalog_key(self.socket, workspace)
+                now = asyncio.get_running_loop().time()
+                cached = self.directory.catalogs.get(cache_key)
+                if not params.get("refresh", False) and cached and now - cached[0] < CATALOG_TTL:
+                    await ws.send_json({**cached[1], "id": value["id"]})
+                    return
+                future = self.directory.catalog_flights.get(cache_key)
+                if future is None:
+                    if len(self.directory.catalog_flights) >= MAX_CATALOGS:
+                        await ws.send_json(source_error(value, "catalog_busy", "Command discovery is busy; try again shortly"))
+                        return
+                    future = asyncio.get_running_loop().create_future()
+                    self.directory.catalog_flights[cache_key] = future
+                    counter += 1
+                    native_id = f"{INTERNAL_PREFIX}catalog:{counter}"
+                    catalog_requests[native_id] = (cache_key, future, workspace)
+                    def expired_catalog(cache_key=cache_key, future=future, native_id=native_id):
+                        catalog_requests.pop(native_id, None)
+                        if self.directory.catalog_flights.get(cache_key) is future:
+                            self.directory.catalog_flights.pop(cache_key, None)
+                        if not future.done():
+                            future.set_result(None)
+                    timer = asyncio.get_running_loop().call_later(CATALOG_TIMEOUT, expired_catalog)
+                    future.add_done_callback(lambda _, timer=timer: timer.cancel())
+                    # Bridge-only refresh is consumed, never a native override.
+                    await forward({**value, "id": native_id, "params": {"cwd": cwd}})
+                response = await asyncio.wait_for(asyncio.shield(future), CATALOG_TIMEOUT)
+                if response is None:
+                    raise ConnectionError()
+                await ws.send_json({**response, "id": value["id"]})
+            except (ConnectionError, RuntimeError, OSError, asyncio.TimeoutError):
+                if not ws.closed:
+                    with suppress(ConnectionError, RuntimeError):
+                        await ws.send_json(source_error(value, "catalog_unavailable", "Command discovery unavailable; reconnect or refresh"))
+            finally:
+                inflight.discard(key)
 
         async def resume_saved(value):
             key = request_key(value)
@@ -1041,6 +1218,11 @@ class Bridge:
                     continue
                 if method == "_x.ai/commands/list":
                     sid = params.get("sessionId")
+                    if "sessionId" not in params:
+                        if "id" in value:
+                            inflight.add(request_key(value))
+                            spawn_background(workspace_commands(value))
+                        continue
                     if (
                         params.keys() - {"sessionId", "cwd"}
                         or sid not in attached
@@ -1093,6 +1275,12 @@ class Bridge:
                         continue
                     inflight.add(request_key(value))
                     spawn_background(discover(value))
+                    continue
+                if method == PREVIEW_METHOD:
+                    if "id" not in value:
+                        continue
+                    inflight.add(request_key(value))
+                    spawn_background(preview_saved(value))
                     continue
                 if method in {"x.ai/session/info", "_x.ai/session/info"} and params.keys() - {
                     "sessionId"
@@ -1161,6 +1349,9 @@ class Bridge:
                         if meta["x.ai/resumeSaved"] is not True or "x.ai/residentActorId" in meta or "cursor" in meta:
                             await ws.send_json(rpc_error(value, "Explicit saved resume cannot reuse a live actor or replay cursor"))
                             continue
+                        if self.socket != self.directory.primary:
+                            await ws.send_json(source_error(value, "primary_required", "Resume saved sessions on the configured primary Mac connection"))
+                            continue
                         if creating:
                             await ws.send_json(rpc_error(value, "A session creation or resume is already pending; reconcile before retrying"))
                             continue
@@ -1227,6 +1418,11 @@ class Bridge:
         finally:
             for _, timer in pending.values():
                 timer.cancel()
+            for cache_key, future, _ in catalog_requests.values():
+                if self.directory.catalog_flights.get(cache_key) is future:
+                    self.directory.catalog_flights.pop(cache_key, None)
+                if not future.done():
+                    future.set_result(None)
             for task in tasks + list(background):
                 task.cancel()
             await asyncio.gather(*tasks, *list(background), return_exceptions=True)

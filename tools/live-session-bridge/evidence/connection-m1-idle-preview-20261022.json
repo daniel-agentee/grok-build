@@ -1,0 +1,119 @@
+{
+  "capabilities": {
+    "idleSessionPreview": true,
+    "workspaceCommands": true
+  },
+  "catalog_calls": [
+    {
+      "command_count": 326,
+      "elapsed_ms": 7776.46,
+      "index": 0,
+      "response_bytes": 188804
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 6496.03,
+      "index": 1,
+      "response_bytes": 188804
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 9517.24,
+      "index": 2,
+      "response_bytes": 188804
+    },
+    {
+      "command_count": 326,
+      "elapsed_ms": 1095.88,
+      "index": 3,
+      "response_bytes": 188804
+    }
+  ],
+  "catalog_sha256": "bea4fe5ed4b089bc55b662d9e32f667af67931cf25f53f612d86f4d347709ab8",
+  "catalog_stable": true,
+  "credential_delivery": "stdin_memory_only",
+  "endpoint": "wss://grok-mobile-ds.agentee.io/ws",
+  "fixture": {
+    "cwd": "/Users/danielstojanovic/.grok/mobile-bridge/idle-preview-20261022/workspace",
+    "sessionId": "3cb80462-a238-406f-aded-92095adc77ca"
+  },
+  "fixture_still_idle": true,
+  "history_resumes": 0,
+  "idle_preview": {
+    "envelope_count": 20,
+    "has_more": false,
+    "pagination_matches": true,
+    "repeat_unchanged": true,
+    "sha256": "04e452ba7569d25b21e256c99b27f2b17d1d0f193ed6ac087b9c7a2d1a006c24",
+    "total_count": 20
+  },
+  "invalid_request_rejections": [
+    {
+      "case": "relative_catalog_workspace",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "nonmember_catalog_workspace",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "preview_wrong_workspace",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "preview_negative_offset",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "preview_oversized_page",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "preview_stream_routing_forbidden",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    },
+    {
+      "case": "preview_unknown_session",
+      "code": "rpc_error_-32602",
+      "rejected": true
+    }
+  ],
+  "methods_sent": [
+    "initialize",
+    "authenticate",
+    "_x.ai/sessions/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/commands/list",
+    "_x.ai/commands/list",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/session/updates",
+    "_x.ai/sessions/list"
+  ],
+  "native_resident_map_unchanged": true,
+  "prompts_submitted": 0,
+  "resident_count": 2,
+  "session_creates": 0,
+  "session_loads": 0,
+  "success": true,
+  "timings": {
+    "initialize_cached_auth_ms": 1855.5,
+    "persisted_preview_20_envelopes_ms": 177.25,
+    "trusted_tls_websocket_ms": 2411.34
+  },
+  "tls_validation": true
+}

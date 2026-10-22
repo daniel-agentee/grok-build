@@ -1113,7 +1113,13 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         for method in ["x.ai/skills/list", "x.ai/skills/toggle", "x.ai/skills/add", "x.ai/commands/list"]:
             await ws.send_json({"jsonrpc": "2.0", "id": 8, "method": method, "params": {"sessionId": "live-1"}})
             self.assertIn("error", await ws.receive_json(), method)
-        self.assertTrue(self.seen.empty())
+        # Cwd-only discovery now checks canonical membership through native
+        # read-only discovery, but must never forward this nonmember catalog.
+        while not self.seen.empty():
+            frame = await self.seen.get()
+            if frame.get("type") == "acp":
+                request = json.loads(frame["payload"])
+                self.assertNotEqual(request.get("method"), "_x.ai/commands/list")
         await ws.close()
 
     async def test_out_of_order_replies_allow_identifier_reuse_after_completion(self):

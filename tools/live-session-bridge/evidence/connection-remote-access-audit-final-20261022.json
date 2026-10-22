@@ -1,0 +1,58 @@
+{
+  "success": true,
+  "audited_at": "2026-10-22T12:58:28.627628+00:00",
+  "endpoint": "wss://grok-mobile-ds.agentee.io/ws",
+  "dedicated_connector": {
+    "version": "cloudflared version 2026.7.2 (built 2026-07-15-13:30 UTC)",
+    "registered_connections": 4.0,
+    "optional_loopback_metrics": "read",
+    "run_at_load": true,
+    "keep_alive": true,
+    "process_type": "Interactive",
+    "plist_mode": "0o600"
+  },
+  "jobs": {
+    "io.grok.mobile.bridge": {
+      "pid": 27124,
+      "last_exit": "0"
+    },
+    "io.grok.mobile.leader": {
+      "pid": 77030,
+      "last_exit": "-9"
+    },
+    "io.agentee.grok-mobile-tunnel": {
+      "pid": 90089,
+      "last_exit": "0"
+    }
+  },
+  "tunnels": [
+    {
+      "name": "daniel-m1-worker",
+      "status": "healthy"
+    },
+    {
+      "name": "datev-connect-dev",
+      "status": "healthy"
+    },
+    {
+      "name": "grok-mobile-ds",
+      "status": "healthy"
+    },
+    {
+      "name": "ship-hub",
+      "status": "healthy"
+    }
+  ],
+  "runtime_permissions": {
+    ".": "0o700",
+    "config.yml": "0o600",
+    "tunnel-credentials.json": "0o600"
+  },
+  "handoff_secret_scan": {
+    "file_count": 22,
+    "known_secret_matches": 0
+  },
+  "testing_scope": "M1 public DNS/TLS/WSS from same home subnet; physical iPhone cellular is separate",
+  "other_tunnels_modified": false,
+  "global_sleep_settings_changed": false
+}

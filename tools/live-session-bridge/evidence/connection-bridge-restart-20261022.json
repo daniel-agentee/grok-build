@@ -1,0 +1,13 @@
+{
+  "test": "bridge_crash_preserves_native_actor",
+  "oldBridgePID": 67447,
+  "newBridgePID": 85304,
+  "unchangedLeaderPID": 77030,
+  "sameActorUUID": true,
+  "sameSessionId": true,
+  "sameWorkspace": true,
+  "recoveredSeconds": 1.042,
+  "observedUnavailable": true,
+  "authenticatedWebSocket": true,
+  "modelPromptsSubmitted": 0
+}

@@ -1,0 +1,17 @@
+{
+  "dedicated_label": "io.agentee.grok-mobile-tunnel",
+  "bootstrap_attempts": [
+    {
+      "attempt": 0,
+      "returncode": 0,
+      "stderr": null
+    }
+  ],
+  "jobs": {
+    "io.grok.mobile.bridge": 58998,
+    "io.grok.mobile.leader": 77030,
+    "io.agentee.grok-mobile-tunnel": 90089
+  },
+  "success": true,
+  "recovery_check_seconds": 0.026
+}

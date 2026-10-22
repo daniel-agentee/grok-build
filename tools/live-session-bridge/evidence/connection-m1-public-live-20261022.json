@@ -1,0 +1,87 @@
+{
+  "browser_origin": {
+    "redirected": false,
+    "status": 403
+  },
+  "certificate_expires": "Jan 11 10:38:05 2027 GMT",
+  "conversation_replay_unchanged": true,
+  "credential_delivery": "stdin_memory_only",
+  "endpoint": "wss://grok-mobile-ds.agentee.io/ws",
+  "history_resumes": 0,
+  "initial": {
+    "count": 123,
+    "identity_sha256": "e26a1ab5315bb101c4644b729dab275a6b611cf965544fb7bd1883b3a9751a34",
+    "resident_count": 2,
+    "workspace_member_count": 14
+  },
+  "initial_replay": {
+    "distinctive_marker_present": true,
+    "duplicate_event_ids": 0,
+    "event_count": 20,
+    "event_ids_sha256": "e9d98b6fc554ce66837356b256ea33eaa11e72a9404561853e6942fc3576b9dd",
+    "message_count": 20,
+    "notification_sha256": "a46c0ea1eca39d03d63374afdcab8328df07f37a2abd55f0d17df3065d20348f",
+    "update_kinds": {
+      "agent_message_chunk": 1,
+      "background_tasks": 14,
+      "hook_execution": 3,
+      "turn_completed": 1,
+      "user_message_chunk": 1
+    }
+  },
+  "missing_auth": {
+    "redirected": false,
+    "status": 401
+  },
+  "original_replay_events_preserved": true,
+  "owned_actor_preserved_after_disconnect": true,
+  "owned_live_attach": true,
+  "paths": {
+    "/": {
+      "redirected": false,
+      "status": 404
+    },
+    "/health": {
+      "redirected": false,
+      "status": 404
+    },
+    "/ws/": {
+      "redirected": false,
+      "status": 404
+    }
+  },
+  "prompts_submitted": 0,
+  "reconnect_replay": {
+    "distinctive_marker_present": true,
+    "duplicate_event_ids": 0,
+    "event_count": 21,
+    "event_ids_sha256": "d15592a8f361b8028fc934693bcafddccac6421dbc451d675ab10a089b23d6dc",
+    "message_count": 21,
+    "notification_sha256": "34dd31e3b29159ab628fe12b788b6b16445b88926ca1dce543763a2ba5c4d2c5",
+    "update_kinds": {
+      "agent_message_chunk": 1,
+      "background_tasks": 15,
+      "hook_execution": 3,
+      "turn_completed": 1,
+      "user_message_chunk": 1
+    }
+  },
+  "reconnected": {
+    "count": 123,
+    "identity_sha256": "e26a1ab5315bb101c4644b729dab275a6b611cf965544fb7bd1883b3a9751a34",
+    "resident_count": 2,
+    "workspace_member_count": 14
+  },
+  "redirects_followed": 0,
+  "replay_duplicate_ids": 0,
+  "replay_event_ids_unchanged": false,
+  "roster_identity_unchanged": true,
+  "session_creates": 0,
+  "strict_live_capability": true,
+  "success": true,
+  "tls_validation": true,
+  "wrong_auth": {
+    "redirected": false,
+    "status": 401
+  }
+}

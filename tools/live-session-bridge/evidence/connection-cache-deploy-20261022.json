@@ -1,0 +1,13 @@
+{
+  "bridge_before": 67768,
+  "bridge_after": 58998,
+  "nativePID": 77030,
+  "native_unchanged": true,
+  "resident_actor_map_unchanged": true,
+  "resident_count": 2,
+  "recovery_seconds": 1.287,
+  "deployed": [
+    "primary_only_resume_guard",
+    "actorless_catalog_cache_15s"
+  ]
+}

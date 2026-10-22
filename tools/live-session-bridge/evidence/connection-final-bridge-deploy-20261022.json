@@ -1,0 +1,16 @@
+{
+  "deployedSourceSHA256": "d935de7ab50cf47c1628d9d5ce65001936c882ec93ce1adf44971c11cdd0f8b3",
+  "bridgeBefore": 58998,
+  "bridgeAfter": 27124,
+  "nativePID": 77030,
+  "nativeUnchanged": true,
+  "residentActorMapUnchanged": true,
+  "residentCount": 3,
+  "recoveredSeconds": 1.184,
+  "deployedFeatures": [
+    "primary-only-cold-resume",
+    "read-only-idle-history",
+    "coalesced-workspace-catalog",
+    "canonical-trust-and-config-stamp-invalidation"
+  ]
+}

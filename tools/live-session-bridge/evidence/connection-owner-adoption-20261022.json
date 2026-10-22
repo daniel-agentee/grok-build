@@ -1,0 +1,7 @@
+{
+  "test": "existing_live_native_owner_adopted_without_replacement",
+  "guardPID": 97841,
+  "nativeActorUUIDUnchanged": true,
+  "guardRemainsPythonNotSecondNative": true,
+  "savedHistoryLoaded": false
+}

@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "public_wss_ready": true,
+  "initialize_cached_auth_ms": 260.15,
+  "strict_live_capabilities": true,
+  "host_load_after": "{ 363.49 344.23 238.42 }",
+  "old_pid": 39880,
+  "new_pid": 90089,
+  "process_type": "Interactive",
+  "native_pid": 77030,
+  "bridge_pid": 58998,
+  "other_jobs_modified": false,
+  "global_priorities_changed": false,
+  "global_sleep_settings_changed": false
+}

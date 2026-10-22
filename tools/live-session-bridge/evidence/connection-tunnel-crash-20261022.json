@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "dedicated_label": "io.agentee.grok-mobile-tunnel",
+  "old_pid": 18377,
+  "new_pid": 39880,
+  "launchd_restart_seconds": 0.01,
+  "public_recovery_since_kill_seconds": 7.884,
+  "new_parent_pid": "1",
+  "native_pid_unchanged": true,
+  "bridge_pid_unchanged": true,
+  "public_m1_result": {
+    "success": true,
+    "phase": "completed",
+    "endpoint": "wss://grok-mobile-ds.agentee.io/ws",
+    "tls_verified": true,
+    "same_live_actor": true,
+    "original_events_preserved": true,
+    "conversation_unchanged": true,
+    "replay": {
+      "message_count": 17,
+      "event_count": 17,
+      "duplicate_event_ids": 0,
+      "event_ids_sha256": "7514edcb7fa29f0f72b7919e0d22a57bfc1b78fe282d86ec4e48c9db2271519b",
+      "notification_sha256": "805e20f65e929b66aa06e7d95a5104584a04a4c8f718843f71c8b1d5f256a87d",
+      "update_kinds": {
+        "hook_execution": 3,
+        "background_tasks": 11,
+        "user_message_chunk": 1,
+        "agent_message_chunk": 1,
+        "turn_completed": 1
+      },
+      "distinctive_marker_present": true
+    },
+    "attempts": 2,
+    "transient_error_codes": [
+      "upgrade_http_502"
+    ],
+    "recovered_after_seconds": 7.865,
+    "prompts_submitted": 0,
+    "history_resumes": 0,
+    "session_creates": 0,
+    "credential_delivery": "stdin_memory_only"
+  },
+  "other_tunnel_jobs_targeted": 0,
+  "global_sleep_settings_changed": false,
+  "bridge_credential_on_argv_or_disk": false,
+  "comparison": "eventId+semantic update; excludes per-connection leaderClientId"
+}
