@@ -59,7 +59,8 @@ path with the frozen artifact whose SHA256 and source commit were verified:
 ```sh
 #!/bin/sh
 GROK_CONFIG='{"features":{"subagent_model_inheritance":false}}'
-export GROK_CONFIG
+PATH="/absolute/frozen/path:$PATH"
+export GROK_CONFIG PATH
 exec /absolute/frozen/path/grok --no-auto-update --leader \
   --leader-socket "$HOME/.grok/leader-profiles.sock" "$@"
 ```
@@ -69,6 +70,7 @@ the reviewed executable's leader on that same explicit socket:
 
 ```sh
 GROK_CONFIG='{"features":{"subagent_model_inheritance":false}}' \
+PATH="/absolute/frozen/path:$PATH" \
 /absolute/frozen/path/grok --no-auto-update \
   --leader-socket "$HOME/.grok/leader-profiles.sock" \
   agent leader --no-exit-on-disconnect --relay-on-demand
@@ -80,6 +82,10 @@ Configure the phone bridge's primary source to this socket and its `--profile-cl
 to the same executable. Configure the Hub's `AGENTEE_GROK_PROFILES_BIN` to the same
 artifact. Preserve older leader sockets as additional discovery sources; their
 resident conversations stay with their original owners.
+
+The frozen directory must contain the executable as `grok`. Its scoped `PATH`
+lets the routing skill's `grok profiles ...` command use the same tested CLI in
+the parent and children; the user's ordinary npm command stays unchanged.
 
 `grok-profiles --resume SESSION_UUID --cwd /absolute/workspace` resumes on this
 profile leader. Use it only for a conversation whose actual source is this
