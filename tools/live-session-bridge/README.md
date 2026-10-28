@@ -22,12 +22,23 @@ The configured primary socket must live directly inside that leader's Grok home;
 all sockets discovered by this bridge share that home. Listing and creation both
 use the canonical absolute workspace. The helper inherits the bridge environment
 so existing provider credential references keep working; it returns no credentials.
-Deployments use an immutable, hash-receipted CLI release path. File ownership/mode
-checks protect the configured executable; they do not replace release verification.
+Deployments use an immutable, hash-receipted CLI release path. The executable and
+its parent-directory chain must belong to the user or root and disallow writes
+by other principals (a root-owned sticky temporary ancestor is safe). Symlinked
+parent paths are resolved before execution; the executable itself cannot be a
+symlink. These checks do not replace release verification or guard against the
+owning user deliberately replacing their own release.
 The catalog envelope is capped at 256 rows and 2 MiB. Malformed individual display
 rows are disabled or omitted without hiding valid assistants. Browsing has two
 helper slots and creation admission has its own slot; every helper is time bounded,
 and a disconnected browsing client cancels and reaps its helper process group.
+A small keeper embedded in this pinned bridge owns that group and stays alive
+until its control pipe closes. Native stdout is unchanged, native stderr is
+discarded, and a separate bounded control pipe carries only the exit status.
+Closing the control pipe makes the keeper signal its own current group, including
+remaining descendants, and the bridge reaps it. The bridge never signals a saved
+PGID after asyncio may have reaped its owner. The keeper closes its own output
+pipes after the native child exits, so it cannot hold successful output open.
 
 New clients send named profiles as `session/new._meta` containing only
 `{agentProfile: "researcher", profileRevision: "native-profile-revision"}`.

@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -1096,6 +1097,92 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(processes[0].wait(), timeout=5)
             self.assertIsNotNone(processes[0].returncode)
             self.assertNotIn("session/cancel", self.native_methods)
+
+    async def test_exited_failure_and_parse_errors_never_signal_a_saved_process_group(self):
+        cli = self.install_profile_cli()
+        original_spawn = asyncio.create_subprocess_exec
+        processes = []
+        async def observe_spawn(*args, **kwargs):
+            process = await original_spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+        for script, expected in [
+            ("import sys; sys.exit(2)", "profiles_unavailable"),
+            ("print('not-json')", "profiles_invalid"),
+            ("print('{\"version\":2}')", "profiles_invalid"),
+            ("import sys; sys.stdout.buffer.write(bytes([255]))", "profiles_invalid"),
+            ("print('{\"version\":NaN}')", "profiles_invalid"),
+        ]:
+            cli.write_text("#!/usr/bin/env python3\n" + script + "\n")
+            with patch.object(asyncio, "create_subprocess_exec", side_effect=observe_spawn), \
+                 patch.object(bridge.os, "killpg", side_effect=AssertionError("Bridge must never signal a saved PGID")):
+                with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
+                    await self.bridge.directory.profile_catalog(self.temp.name)
+            self.assertIsNotNone(processes[-1].returncode)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(processes[-1].pid, 0)
+
+    async def assert_profile_descendant_stopped(self, pid):
+        async with asyncio.timeout(5):
+            while True:
+                state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                       capture_output=True, text=True, check=False).stdout.strip()
+                if not state or state.startswith("Z"):
+                    return
+                await asyncio.sleep(0.02)
+
+    async def test_profile_keeper_cleans_descendants_after_exit_timeout_and_cancellation(self):
+        cli = self.install_profile_cli()
+        descendant = Path(self.temp.name) / "descendant-pid"
+        base = ("import subprocess,sys,time\nfrom pathlib import Path\n"
+                "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'], "
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+                + "Path(" + repr(str(descendant)) + ").write_text(str(p.pid))\n")
+        for scenario in ("exited", "timeout", "cancelled"):
+            descendant.unlink(missing_ok=True)
+            cli.write_text("#!/usr/bin/env python3\n" + base
+                           + ("sys.exit(2)\n" if scenario == "exited" else "time.sleep(30)\n"))
+            with patch.object(bridge, "PROFILE_TIMEOUT", 0.6 if scenario == "timeout" else 5), \
+                 patch.object(bridge.os, "killpg", side_effect=AssertionError("No external group signal")):
+                task = asyncio.create_task(self.bridge.directory.profile_catalog(self.temp.name))
+                async with asyncio.timeout(5):
+                    while not descendant.exists():
+                        await asyncio.sleep(0.01)
+                if scenario == "cancelled":
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                else:
+                    expected = "profiles_unavailable" if scenario == "exited" else "profiles_timeout"
+                    with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
+                        await task
+            await self.assert_profile_descendant_stopped(int(descendant.read_text()))
+
+    async def test_profile_cli_rejects_writable_parents_and_spawns_a_canonical_path(self):
+        cli = self.install_profile_cli()
+        trusted = Path(self.temp.name) / "release"
+        trusted.mkdir()
+        packaged = trusted / "grok"
+        packaged.write_bytes(cli.read_bytes())
+        packaged.chmod(0o755)
+        alias = Path(self.temp.name) / "release-alias"
+        alias.symlink_to(trusted, target_is_directory=True)
+        self.bridge.directory.profile_cli = alias / "grok"
+        original_spawn = asyncio.create_subprocess_exec
+        arguments = []
+        async def observe_spawn(*args, **kwargs):
+            arguments.append(args)
+            return await original_spawn(*args, **kwargs)
+        with patch.object(asyncio, "create_subprocess_exec", side_effect=observe_spawn):
+            self.assertEqual((await self.bridge.directory.profile_catalog(self.temp.name))["revision"], "catalog-revision")
+        self.assertIn(str(packaged.resolve()), arguments[0])
+        self.assertNotIn(str(alias / "grok"), arguments[0])
+        try:
+            trusted.chmod(0o775)
+            with self.assertRaisesRegex(ValueError, "^profiles_untrusted$"):
+                await self.bridge.directory.profile_catalog(self.temp.name)
+        finally:
+            trusted.chmod(0o755)
 
     async def test_new_session_model_settings_capability_requires_native_actor_guarantees(self):
         for supported in (True, False):

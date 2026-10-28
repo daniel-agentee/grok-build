@@ -20,6 +20,7 @@ import secrets
 import signal
 import stat
 import struct
+import sys
 from typing import Any
 import uuid
 
@@ -49,6 +50,37 @@ PROFILE_TIMEOUT = 12
 MAX_PROFILE_OUTPUT = 2 * 1024 * 1024
 MAX_PROFILE_ROWS = 256
 INTERNAL_PREFIX = "grok-mobile-preflight:"
+
+
+# The keeper stays the process-group leader until the bridge closes stdin.
+# asyncio may reap an exited process before wait(), so the bridge must never
+# signal a stored PGID. The keeper only signals its own still-current group.
+PROFILE_READER_KEEPER = r"""
+import os, signal, subprocess, sys, threading
+
+def release_group():
+    try:
+        sys.stdin.buffer.read(1)
+    finally:
+        os.killpg(0, signal.SIGKILL)
+
+threading.Thread(target=release_group, daemon=True).start()
+try:
+    try:
+        result = subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL,
+                                 stdout=sys.stdout, stderr=subprocess.DEVNULL)
+        sys.stderr.write(str(result))
+    except OSError:
+        sys.stderr.write("spawn_failed")
+    sys.stderr.flush()
+    # Close our copies after the native child exits. Descendants that still
+    # hold stdout are bounded by the parent's deadline and group cleanup.
+    os.close(1)
+    os.close(2)
+    threading.Event().wait()
+finally:
+    os.killpg(0, signal.SIGKILL)
+"""
 
 
 def default_workspace_reader() -> Path:
@@ -384,18 +416,25 @@ class LeaderDirectory:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_mode & 0o022 or not info.st_mode & 0o111):
                 raise ValueError("profiles_untrusted")
+            path = path.resolve(strict=True)
+            for parent in path.parents:
+                owner = parent.stat()
+                root_sticky = owner.st_uid == 0 and owner.st_mode & stat.S_ISVTX
+                if (not stat.S_ISDIR(owner.st_mode) or owner.st_uid not in {0, os.getuid()}
+                    or owner.st_mode & 0o022 and not root_sticky):
+                    raise ValueError("profiles_untrusted")
         except OSError:
             raise ValueError("profiles_unavailable") from None
         process = None
-        complete = False
         try:
             slots = self.profile_admissions if admission else self.profile_reads
             async with asyncio.timeout(PROFILE_TIMEOUT), slots:
                 process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-c", PROFILE_READER_KEEPER,
                     str(path), "profiles", "--cwd", cwd, "list", "--json",
                     env={**os.environ, "GROK_HOME": str(self.primary.parent)},
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
                 )
                 output = bytearray()
@@ -403,25 +442,30 @@ class LeaderDirectory:
                     output.extend(chunk)
                     if len(output) > MAX_PROFILE_OUTPUT:
                         raise ValueError("profiles_invalid")
-                if await process.wait() != 0:
+                # Only the keeper writes this bounded control pipe; native
+                # stderr is /dev/null and never becomes client output.
+                status = await process.stderr.read(32)
+                if status != b"0":
                     raise ValueError("profiles_unavailable")
-                catalog = json.loads(output, parse_constant=reject_nonfinite)
+                try:
+                    catalog = json.loads(output, parse_constant=reject_nonfinite)
+                except (ValueError, UnicodeError, RecursionError):
+                    raise ValueError("profiles_invalid") from None
                 if (not isinstance(catalog, dict) or catalog.get("version") != 1
                     or not isinstance(catalog.get("revision"), str)
                     or not isinstance(catalog.get("profiles"), list)
                     or len(catalog["profiles"]) > MAX_PROFILE_ROWS):
                     raise ValueError("profiles_invalid")
-                complete = True
                 return catalog
         except asyncio.TimeoutError:
             raise ValueError("profiles_timeout") from None
-        except (OSError, TypeError, RecursionError, json.JSONDecodeError):
+        except (OSError, TypeError, UnicodeError, RecursionError, json.JSONDecodeError):
             raise ValueError("profiles_invalid") from None
         finally:
             if process is not None:
-                if not complete or process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGKILL)
+                # EOF asks the live keeper to kill its own group, then it is
+                # reaped. No signal ever targets a saved or already-reaped PID.
+                process.stdin.close()
                 await process.wait()
 
     async def check_profile(self, request: dict[str, Any]) -> dict[str, Any] | None:

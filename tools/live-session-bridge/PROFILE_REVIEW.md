@@ -12,6 +12,15 @@ This is the ISSUE-3352 repair ledger, not an independent acceptance result.
   Spamming catalog reads cannot consume admission capacity. Helpers run in their
   own process group; timeout, oversize, cancellation and disconnect kill/reap the
   group before completion. Tests assert exact errors and reaped process ids.
+- R2 removed SIGKILL to saved process-group ids. An embedded keeper remains the
+  group leader, reports native status separately, closes its output after native
+  exit, and kills only its own current group when the parent control pipe closes.
+  Asyncio may reap the keeper at any time without making the bridge signal an
+  unrelated process. Tests cover exited native failures, malformed/invalid UTF-8
+  and non-finite JSON, timeout/cancellation/disconnect, and real descendants.
+- The executable is resolved to its canonical path. Its directory chain must be
+  owned by the current user or root and unwritable by other principals; only a
+  root-owned sticky ancestor is allowed. A writable release parent is rejected.
 - Display strings, skills and rule counts have bounds. Native envelope limits
   remain 256 rows and 2 MiB; a 257-row test asserts a clear envelope error instead
   of letting an incompatible catalog consume unbounded resources.
@@ -45,6 +54,6 @@ This is the ISSUE-3352 repair ledger, not an independent acceptance result.
 ## Verification
 
 `python3 -m unittest discover -s tools/live-session-bridge -p test_bridge.py -q`
-passes 72 tests. This includes transport fixtures and real helper processes, not
+passes 75 tests (`/tmp/grok-profile-bridge-keeper-tests.log`). This includes transport fixtures and real helper processes, not
 model-provider interoperability. Final native Terminal/Simulator proof uses the
 separately frozen compatible native build and is delivered separately.
