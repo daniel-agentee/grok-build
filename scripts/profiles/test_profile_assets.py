@@ -51,7 +51,7 @@ def test_import_preserves_source_and_does_not_copy_permission_bypass(tmp_path: P
     assert definition["model"] == "catalog-strong"
     assert definition["effort"] == "medium"
     assert definition["speed"] == "standard"
-    assert definition["permissionMode"] == "default"
+    assert "permissionMode" not in definition
     assert definition["promptFiles"] == [str(home / ".claude" / "agents" / "CFO.md")]
     assert len(definition["ruleFiles"]) == 2
     assert "Confidential body" not in definition["promptBody"]
@@ -69,8 +69,23 @@ def test_import_requires_existing_shared_rules(tmp_path: Path) -> None:
 
 
 def test_import_requires_explicit_configured_avatar_and_slack_identity(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="Explicit Slack identity"):
+    with pytest.raises(ValueError, match="configured metadata"):
         IMPORT.make_definition(role_home(tmp_path), "cfo", {})
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {**IDENTITY, "token": "private-token-material"},
+        {**IDENTITY, "slack": {**IDENTITY["slack"], "token": "private-token-material"}},
+        {**IDENTITY, "slack": {**IDENTITY["slack"], "credentialRef": "private-token-material"}},
+        {**IDENTITY, "avatar": "https://example.org/avatar?token=private-token-material"},
+    ],
+)
+def test_preview_rejects_credential_values_without_echo(identity: dict[str, object]) -> None:
+    with pytest.raises(ValueError) as error:
+        IMPORT.checked_identity(identity)
+    assert "private-token-material" not in str(error.value)
 
 
 def test_malformed_yaml_error_does_not_echo_source_text(tmp_path: Path) -> None:

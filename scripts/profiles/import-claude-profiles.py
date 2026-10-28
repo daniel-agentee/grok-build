@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -26,6 +28,40 @@ SEATS = {
     "cto": ("CTO", "CTO"),
     "sdr": ("SDR", "SDR"),
 }
+
+
+def checked_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    """Allow references only, including in the default stdout preview."""
+    refused = "Identity input must contain configured metadata and credential references only"
+    if set(identity) - {"displayName", "avatar", "slack"}:
+        raise ValueError(refused)
+    if any(not isinstance(identity.get(key), str) for key in ("displayName", "avatar")):
+        raise ValueError(refused)
+    slack = identity.get("slack")
+    if not isinstance(slack, dict) or set(slack) != {"botKey", "botUserId", "credentialRef"}:
+        raise ValueError(refused)
+    if any(not isinstance(value, str) for value in slack.values()):
+        raise ValueError(refused)
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", slack["botKey"]) or not re.fullmatch(
+        r"U[A-Z0-9]+", slack["botUserId"]
+    ):
+        raise ValueError(refused)
+    reference = slack["credentialRef"]
+    env_reference = re.fullmatch(r"env:[A-Z_][A-Z0-9_]*", reference)
+    op_reference = re.fullmatch(r"op://[^/\r\n?#]+/[^/\r\n?#]+/[^/\r\n?#]+", reference)
+    if not env_reference and not op_reference:
+        raise ValueError(refused)
+    avatar = urlsplit(identity["avatar"])
+    if (
+        avatar.scheme != "https"
+        or not avatar.hostname
+        or avatar.username
+        or avatar.password
+        or avatar.query
+        or avatar.fragment
+    ):
+        raise ValueError(refused)
+    return identity
 
 
 def frontmatter(path: Path) -> dict[str, Any]:
@@ -47,6 +83,7 @@ def make_definition(
     home: Path, seat: str, identity: dict[str, Any], model: str | None = None
 ) -> dict[str, Any]:
     """Create a native wrapper; the source prompt and rules remain authoritative."""
+    identity = checked_identity(identity)
     role, workspace = SEATS[seat]
     source = home / ".claude" / "agents" / f"{role}.md"
     metadata = frontmatter(source)
@@ -59,15 +96,12 @@ def make_definition(
     effort = metadata.get("effort", "medium")
     if not isinstance(selected_model, str) or not isinstance(effort, str):
         raise ValueError(f"Role model and effort must be strings: {source}")
-    if not isinstance(identity.get("slack"), dict) or not identity.get("avatar"):
-        raise ValueError(f"Explicit Slack identity and configured avatar required for {seat}")
     return {
         "name": seat,
         "description": str(metadata.get("description") or f"{role} specialist"),
         "model": selected_model,
         "effort": effort,
         "speed": "standard",
-        "permissionMode": "default",
         "skills": [],
         "promptBody": (
             f"Use the referenced {role} instructions and shared rules for this task. "
