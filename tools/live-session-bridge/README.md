@@ -32,6 +32,8 @@ The catalog envelope is capped at 256 rows and 2 MiB. Malformed individual displ
 rows are disabled or omitted without hiding valid assistants. Browsing has two
 helper slots and creation admission has its own slot; every helper is time bounded,
 and a disconnected browsing client cancels and reaps its helper process group.
+Keeper imports run in Python isolated mode. Spawn ownership is retained through
+early or repeated cancellation until the keeper and native descendants are stopped.
 A small keeper embedded in this pinned bridge owns that group and stays alive
 until its control pipe closes. Native stdout is unchanged, native stderr is
 discarded, and a separate bounded control pipe carries only the exit status.

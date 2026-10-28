@@ -897,6 +897,18 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(bridge.PROFILE_METHOD, self.native_methods, "Display adapter never forwards unknown methods to an old agent")
         await ws.close()
 
+    async def test_profile_catalog_missing_params_returns_error_and_keeps_connection_usable(self):
+        self.install_profile_cli()
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": "missing-params", "method": bridge.PROFILE_METHOD})
+        response = await asyncio.wait_for(ws.receive_json(), timeout=2)
+        self.assertEqual(response["id"], "missing-params")
+        self.assertEqual(response["error"]["data"]["code"], "profiles_unavailable")
+        await ws.send_json({"jsonrpc": "2.0", "id": "valid-params", "method": bridge.PROFILE_METHOD,
+                            "params": {"cwd": self.temp.name}})
+        self.assertEqual((await ws.receive_json())["result"]["profiles"][0]["id"], "researcher")
+        await ws.close()
+
     async def test_invalid_native_source_without_revision_does_not_hide_valid_profiles(self):
         self.install_profile_cli()
         self.profile_fixture["profiles"].append({
@@ -1158,6 +1170,42 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                         await task
             await self.assert_profile_descendant_stopped(int(descendant.read_text()))
 
+    async def test_cancellation_during_spawn_keeps_ownership_until_native_and_descendants_are_reaped(self):
+        cli = self.install_profile_cli()
+        pids = Path(self.temp.name) / "early-cancel-pids"
+        cli.write_text("#!/usr/bin/env python3\nimport os,subprocess,sys,time\nfrom pathlib import Path\n"
+            "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'], "
+            "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            + "Path(" + repr(str(pids)) + ").write_text(str(os.getpid())+','+str(p.pid))\ntime.sleep(30)\n")
+        original_spawn = asyncio.create_subprocess_exec
+        processes = []
+        release_transport = asyncio.Event()
+        async def delayed_transport(*args, **kwargs):
+            process = await original_spawn(*args, **kwargs)
+            processes.append(process)
+            await release_transport.wait()
+            return process
+        with patch.object(asyncio, "create_subprocess_exec", side_effect=delayed_transport):
+            task = asyncio.create_task(self.bridge.directory.profile_catalog(self.temp.name))
+            try:
+                async with asyncio.timeout(5):
+                    while not pids.exists():
+                        await asyncio.sleep(0.01)
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done(), "Cancellation must retain the not-yet-returned spawn transport")
+                task.cancel()  # A second disconnect cannot cancel the retained spawn.
+                await asyncio.sleep(0)
+            finally:
+                release_transport.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        self.assertIsNotNone(processes[0].returncode)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(processes[0].pid, 0)
+        for pid in pids.read_text().split(','):
+            await self.assert_profile_descendant_stopped(int(pid))
+
     async def test_profile_cli_rejects_writable_parents_and_spawns_a_canonical_path(self):
         cli = self.install_profile_cli()
         trusted = Path(self.temp.name) / "release"
@@ -1175,6 +1223,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             return await original_spawn(*args, **kwargs)
         with patch.object(asyncio, "create_subprocess_exec", side_effect=observe_spawn):
             self.assertEqual((await self.bridge.directory.profile_catalog(self.temp.name))["revision"], "catalog-revision")
+        self.assertEqual(arguments[0][1:3], ("-I", "-c"), "Keeper imports must ignore cwd and PYTHON* settings")
         self.assertIn(str(packaged.resolve()), arguments[0])
         self.assertNotIn(str(alias / "grok"), arguments[0])
         try:

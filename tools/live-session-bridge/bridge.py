@@ -425,18 +425,21 @@ class LeaderDirectory:
                     raise ValueError("profiles_untrusted")
         except OSError:
             raise ValueError("profiles_unavailable") from None
-        process = None
+        spawn_task = None
         try:
             slots = self.profile_admissions if admission else self.profile_reads
             async with asyncio.timeout(PROFILE_TIMEOUT), slots:
-                process = await asyncio.create_subprocess_exec(
-                    sys.executable, "-c", PROFILE_READER_KEEPER,
+                # Retain ownership even if cancellation lands before asyncio
+                # returns the newly spawned keeper transport.
+                spawn_task = asyncio.create_task(asyncio.create_subprocess_exec(
+                    sys.executable, "-I", "-c", PROFILE_READER_KEEPER,
                     str(path), "profiles", "--cwd", cwd, "list", "--json",
                     env={**os.environ, "GROK_HOME": str(self.primary.parent)},
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
-                )
+                ))
+                process = await asyncio.shield(spawn_task)
                 output = bytearray()
                 while chunk := await process.stdout.read(65536):
                     output.extend(chunk)
@@ -462,11 +465,29 @@ class LeaderDirectory:
         except (OSError, TypeError, UnicodeError, RecursionError, json.JSONDecodeError):
             raise ValueError("profiles_invalid") from None
         finally:
-            if process is not None:
-                # EOF asks the live keeper to kill its own group, then it is
-                # reaped. No signal ever targets a saved or already-reaped PID.
-                process.stdin.close()
-                await process.wait()
+            if spawn_task is not None:
+                async def release_owned_helper():
+                    try:
+                        owned = await spawn_task
+                    except Exception:
+                        return  # Spawn already failed in the caller.
+                    # EOF asks the live keeper to kill its own group, then it is
+                    # reaped. Never signal a saved or already-reaped process id.
+                    owned.stdin.close()
+                    await owned.wait()
+
+                cleanup = asyncio.create_task(release_owned_helper())
+                cancelled = False
+                while True:
+                    try:
+                        await asyncio.shield(cleanup)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup.cancelled():
+                            raise
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
 
     async def check_profile(self, request: dict[str, Any]) -> dict[str, Any] | None:
         meta = request["params"].get("_meta", {})
@@ -1169,7 +1190,7 @@ class Bridge:
 
         async def list_profiles(value):
             try:
-                params = value["params"]
+                params = value.get("params", {})
                 cwd = params.get("cwd")
                 if (params.keys() != {"cwd"} or not isinstance(cwd, str)
                     or not Path(cwd).is_absolute() or ".." in Path(cwd).parts
@@ -1193,7 +1214,8 @@ class Bridge:
                     }})
             except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
                 if not ws.closed:
-                    await ws.send_json(source_error(value, "profiles_unavailable", "Profiles are unavailable for this workspace. Check the pinned Mac CLI and refresh."))
+                    with suppress(ConnectionError, RuntimeError):
+                        await ws.send_json(source_error(value, "profiles_unavailable", "Profiles are unavailable for this workspace. Check the pinned Mac CLI and refresh."))
             finally:
                 inflight.discard(request_key(value))
 

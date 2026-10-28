@@ -18,6 +18,12 @@ This is the ISSUE-3352 repair ledger, not an independent acceptance result.
   Asyncio may reap the keeper at any time without making the bridge signal an
   unrelated process. Tests cover exited native failures, malformed/invalid UTF-8
   and non-finite JSON, timeout/cancellation/disconnect, and real descendants.
+- R3 rejects missing catalog parameters with an error and leaves the authenticated
+  connection usable. Keeper Python imports use isolated mode; the native child
+  still inherits approved provider credential references. Spawn ownership is
+  shielded and retained until EOF cleanup completes, including repeated cancellation
+  before the subprocess transport returns. A delayed-transport regression proves
+  the native helper and its real descendant are stopped and keeper is reaped.
 - The executable is resolved to its canonical path. Its directory chain must be
   owned by the current user or root and unwritable by other principals; only a
   root-owned sticky ancestor is allowed. A writable release parent is rejected.
@@ -54,6 +60,6 @@ This is the ISSUE-3352 repair ledger, not an independent acceptance result.
 ## Verification
 
 `python3 -m unittest discover -s tools/live-session-bridge -p test_bridge.py -q`
-passes 75 tests (`/tmp/grok-profile-bridge-keeper-tests.log`). This includes transport fixtures and real helper processes, not
+passes 77 tests (`/tmp/grok-profile-bridge-r3-repair-tests.log`). This includes transport fixtures and real helper processes, not
 model-provider interoperability. Final native Terminal/Simulator proof uses the
 separately frozen compatible native build and is delivered separately.
