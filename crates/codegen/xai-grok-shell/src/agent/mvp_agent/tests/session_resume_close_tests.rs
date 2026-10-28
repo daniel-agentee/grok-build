@@ -9,6 +9,7 @@ use crate::agent::mvp_agent::session_setup::{
     load_request_for_resume,
 };
 use crate::session::SessionLiveState;
+use crate::session::storage::StorageAdapter as _;
 use agent_client_protocol as acp;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -955,11 +956,8 @@ fn profile_restore_overrides_refuse_before_workspace_or_history_side_effects() {
             let sid = acp::SessionId::new("saved-profile-refusal");
             let error = agent
                 .load_session_inner(
-                    acp::LoadSessionRequest::new(
-                        sid.clone(),
-                        "/invalid/uninitialized/workspace".into(),
-                    )
-                    .meta(meta_of(meta.clone())),
+                    acp::LoadSessionRequest::new(sid.clone(), "/invalid/uninitialized/workspace")
+                        .meta(meta_of(meta.clone())),
                 )
                 .await
                 .expect_err("profile changes cannot enter the attach path");
@@ -1022,7 +1020,8 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
         let storage =
             crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
         let frozen = storage
-            .read_summary_sync(&info)
+            .load_summary(&info)
+            .await
             .unwrap()
             .agent_profile()
             .unwrap()
@@ -1075,7 +1074,8 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
         agent.close_active_session(&sid).await;
         assert_eq!(
             storage
-                .read_summary_sync(&info)
+                .load_summary(&info)
+                .await
                 .unwrap()
                 .agent_profile()
                 .unwrap()
@@ -1095,7 +1095,7 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
         agent.close_active_session(&sid).await;
         let storage =
             crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
-        let before = storage.read_summary_sync(&info).unwrap();
+        let before = storage.load_summary(&info).await.unwrap();
         let name = before.agent_name().unwrap().to_owned();
         assert_ne!(name, "general-purpose");
         agent.cfg.borrow_mut().agent.name = Some("general-purpose".into());
@@ -1108,7 +1108,7 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
             .expect("ordinary saved session keeps its prior profile");
         agent.close_active_session(&sid).await;
         assert_eq!(
-            storage.read_summary_sync(&info).unwrap().agent_name(),
+            storage.load_summary(&info).await.unwrap().agent_name(),
             Some(name.as_str())
         );
     });
