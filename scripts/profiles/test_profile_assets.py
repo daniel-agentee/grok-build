@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 from types import ModuleType
 from unittest.mock import patch
 
@@ -193,3 +194,70 @@ def test_skill_install_preserves_local_source_and_is_idempotent(tmp_path: Path) 
     assert (backup / "SKILL.md").read_text() == "local user change"
     assert (target / "SKILL.md").read_text() == "canonical"
     assert INSTALL.install(source, target) is None
+
+
+@pytest.mark.parametrize("prefix,newline", [("", "\n"), ("\ufeff", "\r\n")])
+def test_frontmatter_inline_delimiters_preserve_model_and_effort(
+    tmp_path: Path, prefix: str, newline: str
+) -> None:
+    home = role_home(tmp_path)
+    source = home / ".claude" / "agents" / "CFO.md"
+    source.write_bytes((prefix + newline.join([
+        "---", 'description: "Finance --- reporting"',
+        "model: catalog-exact", "effort: high", "---", "Source body --- untouched",
+    ])).encode("utf-8"))
+    definition = IMPORT.make_definition(home, "cfo", IDENTITY)
+    assert definition["model"] == "catalog-exact"
+    assert definition["effort"] == "high"
+    assert definition["description"] == "Finance --- reporting"
+
+
+@pytest.mark.parametrize("source", ["model: no-header", "---\nmodel: no-close", " ---\nmodel: wrong\n---"])
+def test_frontmatter_requires_complete_delimiter_lines(tmp_path: Path, source: str) -> None:
+    path = tmp_path / "role.md"
+    path.write_text(source)
+    with pytest.raises(ValueError, match="frontmatter"):
+        IMPORT.frontmatter(path)
+
+
+@pytest.mark.parametrize("avatar", ["💼", "👩‍💻", "⚙️", "https://example.org/cfo.png"])
+def test_import_accepts_native_avatar_forms(avatar: str) -> None:
+    identity = {**IDENTITY, "avatar": avatar}
+    assert IMPORT.checked_identity(identity) == identity
+
+
+@pytest.mark.parametrize("avatar", ["CFO", "", "💼 ", "💼" * 17, "file:///tmp/avatar.png", "https://user:secret@example.org/a", "https://[invalid"])
+def test_import_refuses_invalid_avatar_without_echoing_it(avatar: str) -> None:
+    with pytest.raises(ValueError, match="configured metadata") as error:
+        IMPORT.checked_identity({**IDENTITY, "avatar": avatar})
+    assert "secret" not in str(error.value)
+
+
+def test_import_accepts_reference_only_one_password_identity() -> None:
+    identity = {**IDENTITY, "slack": {**IDENTITY["slack"], "credentialRef": "op://Shared/CFO/token"}}
+    assert IMPORT.checked_identity(identity) == identity
+
+
+@pytest.mark.parametrize("catalog", [
+    {}, {"profiles": None}, {"profiles": {}}, {"profiles": [None]},
+    {"profiles": [{"revision": "r1"}]},
+    {"profiles": [{"id": "cfo"}]},
+    {"profiles": [{"id": "cfo", "revision": None}]},
+    {"profiles": [{"id": "../cfo", "revision": "r1"}]},
+    {"profiles": [{"id": "cfo", "revision": 1}]},
+    {"profiles": [{"id": "cfo", "revision": "r1"}, {"id": "cfo", "revision": "r2"}]},
+])
+def test_malformed_catalog_refuses_before_validation_or_writes(tmp_path: Path, catalog: object) -> None:
+    with patch.object(IMPORT, "grok_json", return_value=catalog) as native:
+        with pytest.raises(ValueError, match="catalog.*malformed"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}}, True)
+    assert native.call_count == 1
+
+
+@pytest.mark.parametrize("failure", [OSError("private-process-material"), subprocess.TimeoutExpired("private-process-material", 30)])
+def test_partial_apply_report_survives_process_failure(tmp_path: Path, failure: Exception) -> None:
+    with patch.object(IMPORT, "grok_json", side_effect=[{"profiles": []}, {}, {}, {}, failure]) as native:
+        with pytest.raises(ValueError, match="stopped at cro; already applied: cfo") as error:
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}, "cro": {}}, False)
+    assert "private-process-material" not in str(error.value)
+    assert native.call_count == 5

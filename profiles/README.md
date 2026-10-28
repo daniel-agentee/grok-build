@@ -231,7 +231,9 @@ Historical seat launch, permission and Slack-watchdog prose does not change the
 native admitted settings or register a newly spawned child as that persistent
 seat. Existing seats, inbox routing and bot watchers are preserved.
 
-Slack identity uses `botKey`, `botUserId` and an `env:NAME` credential reference.
+Slack identity uses `botKey`, `botUserId` and an `env:NAME` or
+`op://vault/item/field` credential reference. Avatars accept the native bounded
+emoji form or an HTTPS URL without credentials, query parameters or fragments.
 The importer never reads token files. Identity metadata does not authorize a
 Slack send or provide credential isolation. The runtime must resolve references
 in its approved credential path and preserve permission checks.
@@ -251,3 +253,29 @@ The installer preserves prior local skills under `~/.grok/backups/skills/`
 both the canonical skill and the short `/sub` pointer into `~/.grok/skills/`.
 Keep the checkout available while the links are installed, or run the installer
 from a durable checkout after merging.
+
+
+### Isolated live fixture and Terminal handoff
+
+`scripts/profiles/verify-native-profiles-live.py` launches only its owned leader
+and Terminal process groups in an owner-only disposable directory. It forwards
+basic process/locale variables and the existing cached-auth file reference;
+provider, Slack, 1Password and other service credentials from the launching shell
+are excluded. Optional model metadata and credential variable **names** can remain
+in the private config, but their environment values are unavailable. The fixture
+does not turn off safety hooks or lower its default permission mode. Its startup
+trust handler recognizes only the exact welcome question and disposable workspace,
+and consents once before waiting for the interactive prompt. It never approves a
+tool request automatically.
+
+For `--keep-open` verification, the coordinator must first obtain exclusive prompt
+ownership from the current tester. Publish a request with the module's
+`write_prompt_request(root, {"id": "unique-id", "marker": "EXPECTED-ACK", "prompt": "..."})`
+helper. It uses an owner-only temporary file and atomic publication, refuses to
+overwrite a pending request, and never places prompt text on argv. The fixture
+atomically claims each request before reading it. Partial JSON, non-objects,
+invalid IDs/control characters, duplicate IDs, symlinks and files with broad
+permissions are discarded with a content-free refusal; they do not stop the
+fixture or remove a newer replacement. Successful results are published atomically
+as owner-only `prompt-result-<id>.json` files. Test receipts distinguish these
+fixture/helper checks from live-agent, Simulator and physical-device results.

@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from typing import Any
+import unicodedata
 from urllib.parse import urlsplit
 
 import yaml
@@ -51,29 +52,58 @@ def checked_identity(identity: dict[str, Any]) -> dict[str, Any]:
     op_reference = re.fullmatch(r"op://[^/\r\n?#]+/[^/\r\n?#]+/[^/\r\n?#]+", reference)
     if not env_reference and not op_reference:
         raise ValueError(refused)
-    avatar = urlsplit(identity["avatar"])
-    if (
-        avatar.scheme != "https"
-        or not avatar.hostname
-        or avatar.username
-        or avatar.password
-        or avatar.query
-        or avatar.fragment
-    ):
+    if not valid_avatar(identity["avatar"]):
         raise ValueError(refused)
     return identity
 
 
-def frontmatter(path: Path) -> dict[str, Any]:
-    """Read the role metadata without copying its prompt or launch flags."""
-    text = path.read_text(encoding="utf-8")
-    sections = text.split("---", 2)
-    if len(sections) != 3 or sections[0].strip():
-        raise ValueError(f"Role has no YAML frontmatter: {path}")
+def valid_avatar(value: str) -> bool:
+    """Match the native emoji/HTTPS policy without resolving remote content."""
     try:
-        metadata = yaml.safe_load(sections[1])
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Role YAML is malformed: {path}") from exc
+        avatar = urlsplit(value)
+    except ValueError:
+        return False
+    if avatar.scheme or avatar.netloc:
+        return bool(
+            avatar.scheme == "https"
+            and avatar.hostname
+            and not avatar.username
+            and not avatar.password
+            and not avatar.query
+            and not avatar.fragment
+        )
+    return (
+        0 < len(value) <= 16
+        and all(
+            not char.isascii()
+            and not char.isalnum()
+            and not char.isspace()
+            and unicodedata.category(char) != "Cc"
+            for char in value
+        )
+        and any(
+            ord(char) in (0x00A9, 0x00AE)
+            or 0x203C <= ord(char) <= 0x3299
+            or 0x1F000 <= ord(char) <= 0x1FAFF
+            for char in value
+        )
+    )
+
+
+def frontmatter(path: Path) -> dict[str, Any]:
+    """Read line-delimited role metadata without copying prompt or launch flags."""
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    delimiter = re.compile(r"---[ \t]*")
+    if not lines or not delimiter.fullmatch(lines[0]):
+        raise ValueError(f"Role has no YAML frontmatter: {path}")
+    end = next((index for index in range(1, len(lines))
+                if delimiter.fullmatch(lines[index])), None)
+    if end is None:
+        raise ValueError(f"Role has no closing YAML frontmatter delimiter: {path}")
+    try:
+        metadata = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError:
+        raise ValueError(f"Role YAML is malformed: {path}") from None
     if not isinstance(metadata, dict):
         raise ValueError(f"Role frontmatter must be a mapping: {path}")
     return metadata
@@ -170,7 +200,21 @@ def apply_definitions(
     scope: str = "user",
 ) -> list[str]:
     catalog = grok_json(binary, cwd, ["list"], scope=scope)
-    existing = {entry["id"]: entry for entry in catalog.get("profiles", [])}
+    rows = catalog.get("profiles") if isinstance(catalog, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("Native profile catalog is malformed; nothing was written")
+    existing = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Native profile catalog is malformed; nothing was written")
+        profile_id, revision = row.get("id"), row.get("revision")
+        if (not isinstance(profile_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", profile_id)
+                or not isinstance(revision, str) or not revision
+                or len(revision) > 256 or any(ord(char) < 32 for char in revision)
+                or profile_id in existing):
+            raise ValueError("Native profile catalog identity or revision is malformed; nothing was written")
+        existing[profile_id] = row
     collisions = sorted(set(definitions) & set(existing))
     if collisions and not update:
         raise ValueError(
@@ -201,7 +245,7 @@ def apply_definitions(
                 },
                 scope=scope,
             )
-        except ValueError as exc:
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
             raise ValueError(
                 f"Import stopped at {profile_id}; already applied: {', '.join(applied) or 'none'}. Refresh the catalog before retrying"
             ) from exc

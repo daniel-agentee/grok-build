@@ -15,11 +15,14 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import secrets
 import signal
+import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from urllib.parse import urlsplit
@@ -31,36 +34,243 @@ class Native:
         self.reader, self.writer, self.bridge = reader, writer, bridge
         self.pending, self.events, self.sequence = {}, [], 0
         self.event_log = event_log
+        self.failure = None
         self.receiver = asyncio.create_task(self.receive())
 
+    def fail_transport(self, reason):
+        self.failure = self.failure or reason
+        pending, self.pending = self.pending, {}
+        for future in pending.values():
+            if not future.done():
+                future.set_exception(ConnectionError(self.failure))
+
     async def receive(self):
-        while True:
-            frame = await self.bridge.read_frame(self.reader)
-            if frame.get("type") != "acp":
-                continue
-            value = json.loads(frame["payload"])
-            if "method" not in value and value.get("id") in self.pending:
-                future = self.pending.pop(value["id"])
-                if not future.done():
-                    future.set_result(value)
-            else:
-                self.events.append(value)
-                with self.event_log.open("a") as out:
-                    out.write(json.dumps(value) + "\n")
+        try:
+            while True:
+                frame = await self.bridge.read_frame(self.reader)
+                if frame.get("type") != "acp":
+                    continue
+                value = json.loads(frame["payload"])
+                if not isinstance(value, dict):
+                    raise ValueError("Invalid ACP message shape")
+                if "method" not in value and value.get("id") in self.pending:
+                    future = self.pending.pop(value["id"])
+                    if not future.done():
+                        future.set_result(value)
+                else:
+                    self.events.append(value)
+                    descriptor = os.open(self.event_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(descriptor, "a") as out:
+                        out.write(json.dumps(value) + "\n")
+        except asyncio.CancelledError:
+            self.fail_transport("Native transport closed")
+            raise
+        except Exception as exc:
+            # Class names diagnose the failed layer without copying payloads or secrets.
+            self.fail_transport(f"Native transport failed ({type(exc).__name__})")
 
     async def rpc(self, method, params, timeout=300):
+        if self.failure:
+            raise ConnectionError(self.failure)
         self.sequence += 1
         number = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[number] = future
-        await self.bridge.write_frame(self.writer, {"type": "acp", "payload": json.dumps({"jsonrpc": "2.0", "id": number, "method": method, "params": params})})
-        return await asyncio.wait_for(future, timeout)
+        try:
+            try:
+                await self.bridge.write_frame(self.writer, {"type": "acp", "payload": json.dumps({"jsonrpc": "2.0", "id": number, "method": method, "params": params})})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.fail_transport(f"Native transport write failed ({type(exc).__name__})")
+                raise ConnectionError(self.failure) from None
+            try:
+                return await asyncio.wait_for(future, timeout)
+            except TimeoutError:
+                raise TimeoutError("Native RPC timed out") from None
+        finally:
+            self.pending.pop(number, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()  # Also consume a receiver failure racing a write failure.
 
     async def close(self):
+        self.fail_transport("Native transport closed")
         self.receiver.cancel()
         await asyncio.gather(self.receiver, return_exceptions=True)
         self.writer.close()
-        await self.writer.wait_closed()
+        await asyncio.wait_for(self.writer.wait_closed(), 3)
+
+
+def fixture_environment(home, installed_home, execution_path, environ=None):
+    """Pass only process basics and the cached auth reference, never provider/Slack/OP keys."""
+    source = os.environ if environ is None else environ
+    allowed = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SHELL")
+    env = {key: source[key] for key in allowed if key in source}
+    env.update(GROK_HOME=str(home),
+               GROK_AUTH_PATH=source.get("GROK_AUTH_PATH", str(installed_home / "auth.json")),
+               TERM="xterm-256color", PATH=execution_path)
+    return env
+
+
+def require_private_directory(root):
+    metadata = root.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o077):
+        raise ValueError("Fixture handoff requires an owner-only directory")
+
+
+def atomic_private_json(path, value, replace=True):
+    """Publish complete owner-only JSON; handoff writers never overwrite pending requests."""
+    require_private_directory(path.parent)
+    descriptor, temporary = tempfile.mkstemp(prefix=".profile-json-", dir=path.parent)
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+            json.dump(value, out, indent=2)
+            out.flush()
+            os.fsync(out.fileno())
+        if replace:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path, follow_symlinks=False)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def checked_prompt_request(request, seen):
+    if not isinstance(request, dict) or set(request) != {"id", "marker", "prompt"}:
+        raise ValueError("invalid-shape")
+    request_id, marker, text = request["id"], request["marker"], request["prompt"]
+    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", request_id):
+        raise ValueError("invalid-id")
+    if request_id in seen:
+        raise ValueError("duplicate-id")
+    if (not isinstance(marker, str) or not 0 < len(marker) <= 512
+            or any(ord(char) < 32 or ord(char) == 127 for char in marker)):
+        raise ValueError("invalid-marker")
+    if (not isinstance(text, str) or not 0 < len(text) <= 32768
+            or any((ord(char) < 32 and char not in "\n\t") or ord(char) == 127 for char in text)):
+        raise ValueError("invalid-prompt")
+    return request
+
+
+def write_prompt_request(root, request):
+    """Coordinator API: use only after the prior owner has released this fixture session."""
+    checked_prompt_request(request, set())
+    atomic_private_json(root / "prompt-request.json", request, replace=False)
+
+
+def take_prompt_request(root, seen):
+    """Claim before reading so a replacement cannot be removed by this consumer."""
+    require_private_directory(root)
+    source = root / "prompt-request.json"
+    claimed = root / (".prompt-claimed-" + uuid.uuid4().hex)
+    try:
+        os.rename(source, claimed)
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "claim-failed"
+    try:
+        descriptor = os.open(claimed, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as incoming:
+            metadata = os.fstat(incoming.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o077 or metadata.st_size > 131072):
+                return None, "insecure-file"
+            request = json.loads(incoming.read(131073))
+        request = checked_prompt_request(request, seen)
+        seen.add(request["id"])
+        return request, None
+    except (OSError, ValueError, UnicodeError):
+        return None, "malformed-or-duplicate-request"
+    finally:
+        with contextlib.suppress(OSError):
+            claimed.unlink()
+
+
+class WelcomeTrust:
+    """Consent exactly once to the known welcome dialog for this disposable folder."""
+    def __init__(self, workspace):
+        self.workspace = re.compile(rb"(?:^|[\r\n\t ])" + re.escape(os.fsencode(workspace)) + rb"(?=$|[\r\n\t ])")
+        self.accepted = False
+
+    def accept(self, output):
+        if self.accepted:
+            return False
+        question = b"Do you trust the contents of this directory?"
+        offset = output.rfind(question)
+        if offset < 0:
+            return False
+        dialog = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"\n", output[offset:offset + 8192])
+        if not self.workspace.search(dialog) or b"Yes, proceed" not in dialog or b"No, quit" not in dialog:
+            return False
+        self.accepted = True
+        return True
+
+
+async def wait_terminal_ready(terminal, output, master, workspace, timeout=30):
+    deadline = time.monotonic() + timeout
+    trust = WelcomeTrust(workspace)
+    while True:
+        if trust.accept(output):
+            os.write(master, b"y")
+        if "❯".encode() in output:
+            return
+        if terminal.poll() is not None or time.monotonic() > deadline:
+            raise RuntimeError("Interactive Terminal welcome did not render")
+        await asyncio.sleep(0.1)
+
+
+async def stop_owned_process(process, timeout=15):
+    """Both callers create a new session; only signal their still-running owned groups."""
+    if process is None:
+        return
+    if process.poll() is None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(process.wait, timeout), timeout + 1)
+        except (subprocess.TimeoutExpired, TimeoutError):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await asyncio.wait_for(asyncio.to_thread(process.wait, timeout), timeout + 1)
+    else:
+        await asyncio.wait_for(asyncio.to_thread(process.wait, timeout), timeout + 1)
+
+
+async def cleanup_fixture(terminal=None, native=None, leader=None, drainer=None, master=None, slave=None, log=None):
+    failures = []
+    if drainer is not None:
+        try:
+            drainer.cancel()
+            await asyncio.wait_for(asyncio.gather(drainer, return_exceptions=True), 2)
+        except Exception as exc:
+            failures.append("drainer:" + type(exc).__name__)
+    for name, process in (("terminal", terminal), ("leader", leader)):
+        try:
+            await stop_owned_process(process)
+        except Exception as exc:
+            failures.append(name + ":" + type(exc).__name__)
+    if native is not None:
+        try:
+            await asyncio.wait_for(native.close(), 5)
+        except Exception as exc:
+            failures.append("native:" + type(exc).__name__)
+    for descriptor in (master, slave):
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                failures.append("pty:" + type(exc).__name__)
+    if log is not None:
+        try:
+            log.close()
+        except Exception as exc:
+            failures.append("log:" + type(exc).__name__)
+    return failures
 
 
 def assistant_text(events, sid):
@@ -171,7 +381,7 @@ async def verify(args):
     command_dir.mkdir()
     (command_dir / "grok").symlink_to(binary)
     execution_path = os.pathsep.join((str(command_dir), str(Path.home() / ".cargo/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin", "/opt/homebrew/bin", os.environ.get("PATH", "")))
-    env = dict(os.environ, GROK_HOME=str(home), GROK_AUTH_PATH=os.environ.get("GROK_AUTH_PATH", str(installed_home / "auth.json")), TERM="xterm-256color", PATH=execution_path)
+    env = fixture_environment(home, installed_home, execution_path)
     subprocess.run(["git", "init", "-q", str(workspace)], env=env, check=True)
     subprocess.run([sys.executable, str(source / "scripts/profiles/install-routing-skill.py"), "--grok-home", str(home)], env=env, check=True, stdout=subprocess.DEVNULL)
     profile_dir = workspace / ".grok/agents"
@@ -188,10 +398,10 @@ async def verify(args):
     bridge = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = bridge
     spec.loader.exec_module(bridge)
-    log = (root / "leader.log").open("w")
-    process = subprocess.Popen([str(binary), "--permission-mode", "default", "--leader-socket", str(socket), "agent", "leader", "--no-auto-update", "--no-exit-on-disconnect", "--relay-on-demand"], env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    native, terminal, master = None, None, None
+    log, process, native, terminal, master, slave, drainer = (None,) * 7
     try:
+        log = (root / "leader.log").open("w")
+        process = subprocess.Popen([str(binary), "--permission-mode", "default", "--leader-socket", str(socket), "agent", "leader", "--no-auto-update", "--no-exit-on-disconnect", "--relay-on-demand"], env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic() + 90
         while True:
             try:
@@ -215,6 +425,7 @@ async def verify(args):
             terminal_args.extend(("--agent", args.terminal_profile))
         terminal = subprocess.Popen(terminal_args, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
+        slave = None
         os.set_blocking(master, False)
         terminal_output = bytearray()
         async def drain():
@@ -228,11 +439,7 @@ async def verify(args):
                     return
                 await asyncio.sleep(0.05)
         drainer = asyncio.create_task(drain())
-        deadline = time.monotonic() + 30
-        while "❯".encode() not in terminal_output:
-            if terminal.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError("Interactive Terminal welcome did not render")
-            await asyncio.sleep(0.1)
+        await wait_terminal_ready(terminal, terminal_output, master, workspace)
         os.write(master, b"\x1b[200~Reply exactly PROFILE-TERMINAL-READY-20261028. Use no tools.\x1b[201~\r")
         deadline = time.monotonic() + 90
         while True:
@@ -243,9 +450,6 @@ async def verify(args):
             if terminal.poll() is not None or time.monotonic() > deadline:
                 (root / "terminal.txt").write_bytes(terminal_output)
                 raise RuntimeError("Real interactive Terminal did not create its resident session")
-            # Trust/intro prompts, if present, stay inside this disposable workspace.
-            if b"trust" in terminal_output[-10000:].lower():
-                os.write(master, b"\r")
             await asyncio.sleep(1)
         await native.rpc("session/load", {"sessionId": sid, "cwd": str(workspace), "mcpServers": [], "_meta": {"x.ai/resident_only": True}})
         catalog = subprocess.run([str(binary), "--no-auto-update", "profiles", "--cwd", str(workspace), "list", "--json"], env=env, input="", capture_output=True, text=True, check=True)
@@ -303,21 +507,11 @@ async def verify(args):
             # owner has released the session.
             seen_requests = set()
             while not (root / "finish").exists():
-                request_path = root / "prompt-request.json"
-                if request_path.is_file():
-                    request = json.loads(request_path.read_text())
-                    request_id = request.get("id", "")
-                    marker = request.get("marker", "")
-                    text = request.get("prompt", "")
-                    if (not request_id or not request_id.isascii()
-                            or not all(char.isalnum() or char in "-_" for char in request_id)
-                            or request_id in seen_requests
-                            or not isinstance(marker, str) or not marker
-                            or not isinstance(text, str) or not text
-                            or "\x1b" in text):
-                        raise RuntimeError("Malformed or duplicate private Terminal prompt request")
-                    seen_requests.add(request_id)
-                    request_path.unlink()
+                request, refusal = take_prompt_request(root, seen_requests)
+                if refusal:
+                    print(json.dumps({"status": "terminal_prompt_request_refused", "reason": refusal}), flush=True)
+                if request is not None:
+                    request_id, marker, text = request["id"], request["marker"], request["prompt"]
                     request_start = len(native.events)
                     os.write(master, b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
                     await wait_turn_idle(native, bridge, sid, marker, request_start)
@@ -327,7 +521,7 @@ async def verify(args):
                               "spawnInputs": parent_spawn_inputs(native.events[request_start:], sid),
                               "spawned": child_updates(native.events[request_start:], sid, "subagent_spawned"),
                               "finished": child_updates(native.events[request_start:], sid, "subagent_finished")}
-                    (root / f"prompt-result-{request_id}.json").write_text(json.dumps(result, indent=2))
+                    atomic_private_json(root / f"prompt-result-{request_id}.json", result)
                     print(json.dumps({"status": "terminal_prompt_completed", "id": request_id}), flush=True)
                 (root / "terminal.txt").write_bytes(terminal_output)
                 await asyncio.sleep(1)
@@ -335,17 +529,9 @@ async def verify(args):
         drainer.cancel()
         await asyncio.gather(drainer, return_exceptions=True)
     finally:
-        if terminal is not None and terminal.poll() is None:
-            terminal.send_signal(signal.SIGTERM)
-            await asyncio.to_thread(terminal.wait, 15)
-        if master is not None:
-            os.close(master)
-        if native is not None:
-            await native.close()
-        if process.poll() is None:
-            process.terminate()
-            await asyncio.to_thread(process.wait, 15)
-        log.close()
+        failures = await cleanup_fixture(terminal, native, process, drainer, master, slave, log)
+        if failures:
+            print(json.dumps({"status": "fixture_cleanup_incomplete", "layers": failures}), file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
