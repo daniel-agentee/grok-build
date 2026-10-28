@@ -346,6 +346,13 @@ pub(crate) async fn spawn_session_actor(
             "max_turns must be greater than 0".to_string(),
         ));
     }
+    let applied_profile = agent_definition
+        .applied_profile_revision
+        .as_ref()
+        .map(|revision| crate::profiles::AppliedProfile {
+            id: agent_definition.name.clone(),
+            revision: revision.clone(),
+        });
     let wf_sid: String = session_info.id.0.to_string();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let mut mcp_servers = mcp_servers;
@@ -2387,6 +2394,7 @@ pub(crate) async fn spawn_session_actor(
     }
     let (session_done_tx, session_done_rx) = tokio::sync::oneshot::channel::<()>();
     let spawn_snapshot = crate::session::SpawnSnapshot {
+        applied_profile,
         applied_tool_overrides: session.effective_tool_overrides(),
         memory_mode: session.memory.mode(),
     };

@@ -456,19 +456,16 @@ impl xai_tool_runtime::Tool for TaskTool {
             xai_tool_types::is_not_sentinel(trimmed).then(|| trimmed.to_string())
         });
 
-        // Model overrides are soft-ignored on resume (source model is always pinned).
         let model = xai_tool_types::sanitize_optional_arg(input.model);
-        let model = if resume_from.is_some() {
-            if let Some(ref ignored) = model {
-                tracing::debug!(
-                    model = %ignored,
-                    "ignoring model override because resume_from is set"
-                );
-            }
-            None
-        } else {
-            model
-        };
+        let reasoning_effort = xai_tool_types::sanitize_optional_arg(input.reasoning_effort);
+        let speed = xai_tool_types::sanitize_optional_arg(input.speed);
+        if resume_from.is_some()
+            && (model.is_some() || reasoning_effort.is_some() || speed.is_some())
+        {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "A resumed child retains its model, reasoning and speed. Omit model, reasoning_effort and speed, or start a fresh child. No child was started.",
+            ));
+        }
 
         // Before validation and bootstrap, so a forbidden choice costs no child work
         if model.is_some() && model_selection == model_policy::TaskModelSelection::Inherited {
@@ -616,7 +613,8 @@ impl xai_tool_runtime::Tool for TaskTool {
                 model_override_provenance: ModelOverrideProvenance::Tool {
                     selection: model_selection,
                 },
-                reasoning_effort: None,
+                reasoning_effort,
+                speed,
                 persona: None,
                 // JSON cannot set this field. Compat-harness adapters still
                 // populate it in-process; model-facing spawns stay `None`.
@@ -754,6 +752,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 result.subagent_type
             };
             Ok(ToolOutput::SubagentCompleted(SubagentCompletedOutput {
+                execution: result.execution,
                 // SubagentCompletedOutput.output is `String` (serde-visible
                 // boundary). One allocation per completion; cheaper paths
                 // (pending_completions / snapshot) keep the Arc<str>.
@@ -926,6 +925,9 @@ mod tests {
             &tool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
@@ -989,6 +991,9 @@ mod tests {
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "nested ok".into(),
                 prompt: "should be allowed at max_depth=2".into(),
                 subagent_type: "explore".into(),
@@ -1025,6 +1030,9 @@ mod tests {
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "nested spawn".into(),
                 prompt: "should be rejected".into(),
                 subagent_type: "explore".into(),
@@ -1058,6 +1066,9 @@ mod tests {
             &tool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
@@ -1118,6 +1129,9 @@ mod tests {
             &tool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "Find auth middleware".into(),
                 prompt: "Search for authentication middleware files".into(),
                 subagent_type: "explore".into(),
@@ -1176,6 +1190,9 @@ mod tests {
             &tool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
@@ -1221,6 +1238,9 @@ mod tests {
             &tool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
@@ -1331,6 +1351,9 @@ mod tests {
 
     fn task_input(subagent_type: &str, background: bool) -> TaskToolInput {
         TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             description: "test".into(),
             prompt: "do it".into(),
             subagent_type: subagent_type.into(),
@@ -2240,6 +2263,9 @@ mod tests {
     #[test]
     fn task_input_roundtrips_through_json() {
         let input = TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             description: "find bugs".into(),
             prompt: "search for bugs".into(),
             subagent_type: "explore".into(),
@@ -2527,6 +2553,9 @@ mod tests {
             "TaskToolInput JSON schema must not expose fork_context"
         );
         let serialized = serde_json::to_string(&TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
@@ -2578,6 +2607,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "d".into(),
                 prompt: "p".into(),
                 subagent_type: "general-purpose".into(),
@@ -2616,6 +2648,9 @@ mod tests {
     #[test]
     fn resume_from_not_serialized_when_none() {
         let input = TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
@@ -2664,6 +2699,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "resume".into(),
                 prompt: "continue".into(),
                 subagent_type: "general-purpose".into(),
@@ -2732,6 +2770,9 @@ mod tests {
                 &TaskTool,
                 test_ctx(shared),
                 TaskToolInput {
+                    reasoning_effort: None,
+                    speed: None,
+
                     description: "test sentinel".into(),
                     prompt: "work".into(),
                     subagent_type: "general-purpose".into(),
@@ -2780,6 +2821,9 @@ mod tests {
     #[test]
     fn cwd_not_serialized_when_none() {
         let input = TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
@@ -2810,6 +2854,9 @@ mod tests {
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test cwd conflict".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -2866,6 +2913,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test empty cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -2918,6 +2968,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test null cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -2970,6 +3023,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test whitespace cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3025,6 +3081,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test nonexistent cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3061,6 +3120,9 @@ mod tests {
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "test nonexistent cwd no worktree".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3118,6 +3180,9 @@ mod tests {
                 &TaskTool,
                 test_ctx(shared.clone()),
                 TaskToolInput {
+                    reasoning_effort: None,
+                    speed: None,
+
                     description: "test sentinel cwd".into(),
                     prompt: "work".into(),
                     subagent_type: "general-purpose".into(),
@@ -3173,6 +3238,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "cwd test".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3232,6 +3300,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "stray quote cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3286,6 +3357,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "cwd with none".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3336,6 +3410,9 @@ mod tests {
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 description: "cwd + resume".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
@@ -3365,7 +3442,7 @@ mod tests {
     // ── model override tests ─────────────────────────────────────
 
     #[tokio::test]
-    async fn model_threads_to_runtime_overrides() {
+    async fn model_effort_speed_thread_to_runtime_overrides() {
         let (backend, mut rx) = make_backend();
         let resources = resources_for_task(backend);
         let shared = resources.into_shared();
@@ -3383,7 +3460,11 @@ mod tests {
                     selection: model_policy::TaskModelSelection::Selectable,
                 },
             );
-            assert!(request.runtime_overrides.reasoning_effort.is_none());
+            assert_eq!(
+                request.runtime_overrides.reasoning_effort.as_deref(),
+                Some("high")
+            );
+            assert_eq!(request.runtime_overrides.speed.as_deref(), Some("fast"));
             assert!(request.runtime_overrides.persona.is_none());
             let id = request.id.clone();
             request
@@ -3400,6 +3481,8 @@ mod tests {
 
         let mut input = task_input("general-purpose", false);
         input.model = Some("test-model".into());
+        input.reasoning_effort = Some("high".into());
+        input.speed = Some("fast".into());
         let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
@@ -3536,50 +3619,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_from_with_model_soft_ignores_model() {
-        let (backend, mut rx) = make_backend();
-        let resources = resources_for_task(backend);
-        let shared = resources.into_shared();
-
-        let handle = tokio::spawn(async move {
-            let request = unwrap_spawn(rx.recv().await.unwrap());
-            assert_eq!(request.resume_from.as_deref(), Some("prev-id"));
+    async fn resume_from_with_model_effort_or_speed_refuses_before_dispatch() {
+        for field in ["model", "reasoning_effort", "speed"] {
+            let (backend, mut rx) = make_backend();
+            let shared = resources_for_task(backend).into_shared();
+            let mut input = task_input("general-purpose", false);
+            input.resume_from = Some("prev-id".into());
+            match field {
+                "model" => input.model = Some("test-model".into()),
+                "reasoning_effort" => input.reasoning_effort = Some("high".into()),
+                "speed" => input.speed = Some("fast".into()),
+                _ => unreachable!(),
+            }
+            let error = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+                .await
+                .unwrap_err();
             assert!(
-                request.runtime_overrides.model.is_none(),
-                "model must be soft-ignored when resume_from is set, got {:?}",
-                request.runtime_overrides.model
+                error
+                    .to_string()
+                    .contains("retains its model, reasoning and speed")
             );
-            assert_eq!(
-                request.runtime_overrides.model_override_provenance,
-                ModelOverrideProvenance::Tool {
-                    selection: model_policy::TaskModelSelection::Selectable,
-                },
-            );
-            assert!(request.runtime_overrides.reasoning_effort.is_none());
-            assert!(request.runtime_overrides.persona.is_none());
-            let id = request.id.clone();
-            request
-                .result_tx
-                .send(SubagentResult {
-                    success: true,
-                    output: "resumed".into(),
-                    subagent_id: id.clone(),
-                    child_session_id: id,
-                    ..Default::default()
-                })
-                .unwrap();
-        });
-
-        let mut input = task_input("general-purpose", false);
-        input.resume_from = Some("prev-id".into());
-        input.model = Some("test-model".into());
-        let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
-            .await
-            .unwrap();
-        handle.await.unwrap();
-        match result {
-            ToolOutput::SubagentCompleted(sub) => assert!(sub.output.contains("resumed")),
-            other => panic!("Expected SubagentCompleted, got {other:?}"),
+            assert!(matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty
+                    | tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
         }
     }
 

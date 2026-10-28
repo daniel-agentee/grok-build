@@ -26,6 +26,8 @@ fn summary(
     };
     SubagentCompletionSummary {
         snapshot: SubagentSnapshot {
+            execution: None,
+
             subagent_id: id.into(),
             description: desc.into(),
             subagent_type: typ.into(),

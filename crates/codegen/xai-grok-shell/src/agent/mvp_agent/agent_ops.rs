@@ -3467,6 +3467,9 @@ impl MvpAgent {
             serde_json::json!({ "options": config_options }),
         );
         meta.insert("x.ai/sessionDetail".to_string(), serde_json::json!(detail));
+        if let Some(profile) = self.resident_handle(session_id).and_then(|handle| handle.spawn_snapshot.applied_profile.clone()) {
+            meta.insert("x.ai/agentProfile".into(), serde_json::json!(profile));
+        }
         if let Some(memory_mode) = self
             .resident_handle(session_id)
             .and_then(|handle| handle.spawn_snapshot.memory_mode)
@@ -3911,6 +3914,9 @@ impl MvpAgent {
         model_agent_type: Option<&str>,
     ) -> xai_grok_agent::AgentDefinition {
         use xai_grok_agent::AgentDefinition;
+        if let Some(def) = acp_agent_profile {
+            return def;
+        }
         let grok_agent_env_set = std::env::var("GROK_AGENT")
             .ok()
             .is_some_and(|s| !s.trim().is_empty());
@@ -3924,13 +3930,6 @@ impl MvpAgent {
             tracing::info!(
                 agent_name = %def.name,
                 "Using agent definition from model agent_type"
-            );
-            return def;
-        }
-        if let Some(def) = acp_agent_profile {
-            tracing::info!(
-                agent_name = %def.name,
-                "Using agent profile from ACP _meta.agentProfile"
             );
             return def;
         }
@@ -4445,7 +4444,7 @@ impl MvpAgent {
         let skills = self.cfg.borrow().skills.clone();
         let compat = self.cfg.borrow().compat_resolved;
         let paths_config = self.cfg.borrow().paths.clone();
-        let acp_agent_profile = parse_agent_profile_from_meta(session_meta)
+        let acp_agent_profile = parse_agent_profile_from_meta(session_meta, cwd.as_path())?
             .or(persisted_agent_profile);
         let session_default_agent_profile = acp_agent_profile
             .as_ref()
@@ -4479,23 +4478,17 @@ impl MvpAgent {
         {
             xai_grok_agent::config::ModelOverride::Override(id) => {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
-                match self.resolve_model_id(&mid) {
-                    Ok(entry) => Some((mid, entry)),
-                    Err(_) => {
-                        tracing::warn!(
-                            agent = %agent_definition.name,
-                            model = %id,
-                            "agent profile model not in catalog, keeping session default"
-                        );
-                        None
-                    }
+                let entry = self.resolve_model_id(&mid).map_err(|_| acp::Error::invalid_params().data("Profile model is unavailable; select an allowed model before retrying"))?;
+                if !entry.info.user_selectable || entry.info.hidden {
+                    return Err(acp::Error::invalid_params().data("Profile model is not allowed; select an allowed model before retrying"));
                 }
+                Some((mid, entry))
             }
             xai_grok_agent::config::ModelOverride::Inherit => None,
         };
         if let Some(template) = inherited_harness_template(
             &agent_definition.user_message_template,
-            pinned_model.as_ref().map(|(_, e)| e.info().agent_type.as_str()),
+            pinned_model.as_ref().map(|(_, e)| e.info().agent_type.as_str()).or(model_agent_type),
             cwd.as_path(),
         ) {
             tracing::info!(
@@ -4540,7 +4533,7 @@ impl MvpAgent {
         self.models_manager
             .apply_supported_effort(
                 &mut sampling_config,
-                initial_reasoning_effort,
+                agent_definition.effort.and_then(|effort| <&'static str>::from(effort).parse().ok()).or(initial_reasoning_effort),
                 &session_info.id,
                 EffortTarget::NewSession,
             );

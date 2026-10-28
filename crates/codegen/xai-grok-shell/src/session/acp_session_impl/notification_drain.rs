@@ -815,6 +815,11 @@ mod live_orphan_hook_tests {
 
     fn running_meta(id: &str, parent: &str) -> SubagentMeta {
         SubagentMeta {
+            provider_route_fingerprint: None,
+            frozen_definition: None,
+            frozen_runtime: None,
+            execution: None,
+
             subagent_id: id.into(),
             attempt_id: None,
             parent_session_id: parent.into(),
@@ -853,6 +858,8 @@ mod live_orphan_hook_tests {
     fn running_inspection(id: &str) -> SubagentInspection {
         SubagentInspection {
             snapshot: SubagentSnapshot {
+                execution: None,
+
                 subagent_id: id.to_string(),
                 description: "task".to_string(),
                 subagent_type: "explore".to_string(),

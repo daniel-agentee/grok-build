@@ -74,6 +74,8 @@ impl ChildRunner for ToolTestRunner {
             let _ = run
                 .reporter
                 .started(StartedChild {
+                    execution: None,
+
                     child_session_id: id.clone(),
                     persona: None,
                     resumed_from: None,

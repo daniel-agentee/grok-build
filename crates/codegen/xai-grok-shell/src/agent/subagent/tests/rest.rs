@@ -326,6 +326,9 @@ fn compaction_no_prefix_passes_through() {
 #[test]
 fn resumed_from_field_in_meta_roundtrips() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-resumed".into(),
         description: "resumed task".into(),
         prompt: "continue".into(),
@@ -356,6 +359,9 @@ fn resumed_from_field_in_meta_roundtrips() {
 #[test]
 fn resumed_from_none_not_serialized_in_meta() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-fresh".into(),
         parent_session_id: "p".into(),
         child_session_id: "c".into(),
@@ -391,6 +397,9 @@ fn backward_compat_meta_ignores_legacy_identity_fields() {
 #[test]
 fn snapshot_ref_field_in_meta_roundtrips() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-snap".into(),
         description: "snapshot task".into(),
         status: "completed".into(),
@@ -429,6 +438,11 @@ fn backward_compat_meta_without_snapshot_ref() {
 /// Canonical running-status `SubagentMeta`; tests override only the fields under test via `..base_meta()`.
 fn base_meta() -> SubagentMeta {
     SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
+        execution: None,
+
         subagent_id: "sa".into(),
         attempt_id: None,
         parent_session_id: "parent".into(),
@@ -457,6 +471,9 @@ fn base_meta() -> SubagentMeta {
 /// Minimal completed-status meta for the snapshot-ref persistence tests.
 fn snapshot_test_meta(id: &str) -> SubagentMeta {
     SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: id.into(),
         parent_session_id: "session-A".into(),
         child_session_id: format!("child-{id}"),
@@ -703,6 +720,9 @@ async fn disposal_names_a_reflog_only_commit_before_removing_the_worktree() {
 #[test]
 fn subagent_session_metadata_roundtrip() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-1".into(),
         parent_session_id: "parent-1".into(),
         child_session_id: "child-1".into(),
@@ -754,6 +774,9 @@ fn subagent_session_metadata_roundtrip() {
 #[test]
 fn subagent_session_metadata_non_forked() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-2".into(),
         parent_session_id: "parent-2".into(),
         child_session_id: "child-2".into(),
@@ -805,6 +828,9 @@ fn subagent_session_metadata_backward_compat_deserialization() {
 #[test]
 fn upload_lifecycle_spawn_then_completion_preserves_fields() {
     let spawn_meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-lifecycle".into(),
         parent_session_id: "parent-1".into(),
         child_session_id: "child-1".into(),
@@ -875,6 +901,9 @@ fn upload_lifecycle_spawn_then_completion_preserves_fields() {
 #[test]
 fn upload_lifecycle_failure_preserves_error() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-fail".into(),
         parent_session_id: "p".into(),
         child_session_id: "c".into(),
@@ -915,6 +944,9 @@ fn initial_context_source_resumed_variant() {
 #[test]
 fn session_metadata_session_kind_for_resumed() {
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-resume".into(),
         parent_session_id: "p".into(),
         child_session_id: "c".into(),
@@ -1000,6 +1032,10 @@ fn resume_prefix_len_counts_consecutive_system_head() {
 #[test]
 fn resume_source_worktree_reuse() {
     let source_with_worktree = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-wt".into(),
         child_session_id: "child-wt".into(),
         child_cwd: "/tmp/worktree".into(),
@@ -1020,6 +1056,10 @@ fn resume_source_worktree_reuse() {
             "should reuse source worktree"
         );
     let source_without_worktree = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-no-wt".into(),
         child_session_id: "child-no-wt".into(),
         child_cwd: "/workspace".into(),
@@ -1064,6 +1104,10 @@ fn resume_inherited_cwd_requires_existing_non_worktree_dir() {
     let dir = tempfile::TempDir::new().unwrap();
     let existing = dir.path().to_string_lossy().into_owned();
     let present = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-present".into(),
         child_session_id: "child-present".into(),
         child_cwd: existing.clone(),
@@ -1093,6 +1137,10 @@ fn resume_inherited_cwd_requires_existing_non_worktree_dir() {
 #[test]
 fn select_override_cwd_resume_never_falls_through_to_request_cwd() {
     let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-wt".into(),
         child_session_id: "child-wt".into(),
         child_cwd: "/tmp/whatever".into(),
@@ -1195,6 +1243,9 @@ fn durable_fallback_roundtrips_child_cwd_and_worktree() {
         .join(uuid::Uuid::now_v7().to_string());
     let _ = std::fs::create_dir_all(&dir);
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-dur".into(),
         parent_session_id: "parent-dur".into(),
         child_session_id: "child-dur".into(),
@@ -1227,6 +1278,9 @@ fn durable_fallback_rejects_running_status() {
     let parent_dir = dir.join("subagents").join("sa-running");
     let _ = std::fs::create_dir_all(&parent_dir);
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-running".into(),
         parent_session_id: "parent-x".into(),
         child_session_id: "child-running".into(),
@@ -1308,6 +1362,9 @@ fn drain_cancelled_finish_broadcasts(
 /// A `running` meta with no terminal counterpart, as left by a dead process.
 fn running_test_meta(id: &str, parent_session_id: &str) -> SubagentMeta {
     SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: id.into(),
         parent_session_id: parent_session_id.into(),
         child_session_id: format!("child-{id}"),
@@ -1319,6 +1376,8 @@ fn running_test_meta(id: &str, parent_session_id: &str) -> SubagentMeta {
 fn inspection(id: &str, status: SubagentSnapshotStatus) -> SubagentInspection {
     SubagentInspection {
         snapshot: SubagentSnapshot {
+            execution: None,
+
             subagent_id: id.to_string(),
             description: "task".to_string(),
             subagent_type: "explore".to_string(),
@@ -1894,6 +1953,10 @@ async fn reconcile_dedups_replay_and_running_meta_sources() {
 #[test]
 fn resume_rejects_conflicting_subagent_type() {
     let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-gp".into(),
         child_session_id: "child-gp".into(),
         child_cwd: "/workspace".into(),
@@ -1912,6 +1975,10 @@ fn resume_rejects_conflicting_subagent_type() {
 #[test]
 fn resume_rejects_conflicting_persona() {
     let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-impl".into(),
         child_session_id: "child-impl".into(),
         child_cwd: "/workspace".into(),
@@ -1928,6 +1995,10 @@ fn resume_rejects_conflicting_persona() {
 #[test]
 fn resume_allows_matching_identity() {
     let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-ok".into(),
         child_session_id: "child-ok".into(),
         child_cwd: "/workspace".into(),
@@ -1944,6 +2015,10 @@ fn resume_allows_matching_identity() {
 #[test]
 fn resume_identity_does_not_gate_on_model() {
     let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sub-model".into(),
         child_session_id: "child-model".into(),
         child_cwd: "/workspace".into(),
@@ -1974,6 +2049,9 @@ fn durable_meta_roundtrips_effective_model_id() {
         .join(uuid::Uuid::now_v7().to_string());
     let _ = std::fs::create_dir_all(&dir);
     let meta = SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "sa-model".into(),
         description: "d".into(),
         prompt: "p".into(),
@@ -2034,6 +2112,7 @@ fn notification_subagent_spawned_includes_resumed_from() {
         capability_mode: None,
         persona: Some("implementer".into()),
         role: None,
+        execution: None,
         model: None,
         resumed_from: Some("prev-agent-id".into()),
         workflow_run_id: None,
@@ -2063,6 +2142,7 @@ fn notification_subagent_spawned_includes_resumed_from() {
         capability_mode: None,
         persona: None,
         role: None,
+        execution: None,
         model: None,
         resumed_from: None,
         workflow_run_id: None,
@@ -2448,7 +2528,7 @@ async fn read_parent_sampling_config_fallback_resolves_compactions_remaining_fro
 }
 /// Drive the real precedence path (`resolve_effective_model_config`, which `run_shell_child` calls).
 /// With both an explicit `runtime_override_model` and a `[subagents.models]` pin for the same agent present, the runtime override wins.
-/// With `None` (inherit) the pin wins, and an unknown override falls through to the pin.
+/// With `None` (inherit) the pin wins; an unknown explicit override is refused.
 #[tokio::test]
 async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
     use xai_grok_agent::config::ModelOverride;
@@ -2470,7 +2550,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(
             config.model, "goal-model",
             "the goal runtime override must win over the `[subagents.models]` pin",
@@ -2483,24 +2563,20 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(
             config.model, "pinned-model",
             "with no runtime override, the `[subagents.models]` pin wins",
         );
     assert_eq!(model_id.0.as_ref(), "pinned-model");
     let ctx = build_ctx();
-    let (config, _) = resolve_effective_model_config(
-            Some("does-not-exist"),
-            "explore",
-            &ModelOverride::Inherit,
-            &ctx,
-        )
-        .await;
-    assert_eq!(
-            config.model, "pinned-model",
-            "an unknown override falls through to the pin",
-        );
+    let error = resolve_effective_model_config(
+        Some("does-not-exist"), "explore", &ModelOverride::Inherit, &ctx,
+    ).await.unwrap_err();
+    assert!(error.contains("runtime override"));
+    assert!(!error.contains("does-not-exist"));
+    assert!(error.contains("goal-model, pinned-model"));
+
 }
 /// A `fork_context = true` spawn must infer on the parent session model (`ctx.model_id`) for per-model radix reuse. That holds even when a `[subagents.models]` pin and an `AgentDefinition.model` override are both present.
 /// `run_shell_child` forces `effective_runtime.model = Some(ctx.model_id)` on the fork path after other override sources. The runtime override wins in `resolve_effective_model_config`.
@@ -2534,7 +2610,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
             &agent_def,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(
             config.model, "parent-model",
             "fork_context must pin the parent model over the [subagents.models] pin and agent-def override",
@@ -2547,7 +2623,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
             &agent_def,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(
             config.model, "pinned-model",
             "without the fork pin the [subagents.models] override wins",
@@ -2568,7 +2644,7 @@ async fn resolve_subagent_inherits_parent_model_without_pins() {
                 &ModelOverride::Inherit,
                 &ctx,
             )
-            .await;
+            .await.unwrap();
         assert_eq!(
                 config.model, parent_model,
                 "subagent must inherit parent model {parent_model:?} when no pin is set",
@@ -2593,7 +2669,7 @@ async fn resolve_subagent_config_override_pin_applies_for_any_parent() {
                 &ModelOverride::Inherit,
                 &ctx,
             )
-            .await;
+            .await.unwrap();
         assert_eq!(
                 config.model, "pinned-model",
                 "config pin must win for parent {parent_model:?}",
@@ -2616,7 +2692,7 @@ async fn resolve_subagent_agent_definition_pin_applies_for_light_parent() {
             &agent_model,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(config.model, "pinned-model");
     assert_eq!(model_id.0.as_ref(), "pinned-model");
 }
@@ -2638,15 +2714,14 @@ async fn resolve_subagent_config_override_wins_over_agent_definition() {
             &agent_model,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(config.model, "config-pin");
     assert_eq!(model_id.0.as_ref(), "config-pin");
 }
 /// A named subagent model that is in the catalog but not user-selectable
-/// (fleet `allowed_models` pin) must not run inference. Same fall-through
-/// as an unknown id — inherit the parent.
+/// (fleet `allowed_models` pin) must refuse the spawn without running another model.
 #[tokio::test]
-async fn resolve_subagent_config_override_unselectable_model_falls_through_to_inherit() {
+async fn resolve_subagent_config_override_unselectable_model_is_refused() {
     use xai_grok_agent::config::ModelOverride;
     let mut ctx = ctx_with_toggle(HashMap::new());
     ctx.sampling_config.model = "grok-4.5".to_string();
@@ -2665,14 +2740,14 @@ async fn resolve_subagent_config_override_unselectable_model_falls_through_to_in
             crate::config::RequirementSource::Unknown,
         );
     ctx.agent_config = Some(cfg);
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let error = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
-    assert_eq!(config.model, "grok-4.5");
-    assert_eq!(model_id.0.as_ref(), "grok-4.5");
+        .await.unwrap_err();
+    assert!(error.contains("unavailable or disallowed model"));
+    assert!(error.contains("no child was started"));
 }
 /// A user's own `allowed_models` picker filter does not block named
 /// subagent overrides. Only a fleet pin does.
@@ -2696,13 +2771,13 @@ async fn resolve_subagent_config_override_user_allowlist_still_applies() {
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(config.model, "subagent-only");
     assert_eq!(model_id.0.as_ref(), "subagent-only");
 }
 /// Missing `agent_config` cannot be told from a fleet pin — fail closed.
 #[tokio::test]
-async fn resolve_subagent_config_override_none_agent_config_blocks_unselectable() {
+async fn resolve_subagent_config_override_none_agent_config_refuses_unselectable() {
     use xai_grok_agent::config::ModelOverride;
     let mut ctx = ctx_with_toggle(HashMap::new());
     ctx.sampling_config.model = "grok-4.5".to_string();
@@ -2713,49 +2788,49 @@ async fn resolve_subagent_config_override_none_agent_config_blocks_unselectable(
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "blocked-model".to_string());
     assert!(ctx.agent_config.is_none());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let error = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
-    assert_eq!(config.model, "grok-4.5");
-    assert_eq!(model_id.0.as_ref(), "grok-4.5");
+        .await.unwrap_err();
+    assert!(error.contains("unavailable or disallowed model"));
+    assert!(error.contains("no child was started"));
 }
-/// An unresolvable `[subagents.models]` pin (model absent from `available_models`) falls through to inherit the parent model.
+/// An unresolvable `[subagents.models]` pin (model absent from `available_models`) refuses the spawn instead of inheriting the parent model.
 #[tokio::test]
-async fn resolve_subagent_config_override_unknown_model_falls_through_to_inherit() {
+async fn resolve_subagent_config_override_unknown_model_is_refused() {
     use xai_grok_agent::config::ModelOverride;
     let mut ctx = ctx_with_toggle(HashMap::new());
     ctx.sampling_config.model = "grok-4.5".to_string();
     ctx.model_id = acp::ModelId::new("grok-4.5");
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let error = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
-    assert_eq!(config.model, "grok-4.5");
-    assert_eq!(model_id.0.as_ref(), "grok-4.5");
+        .await.unwrap_err();
+    assert!(error.contains("unavailable or disallowed model"));
+    assert!(error.contains("no child was started"));
 }
-/// An unresolvable `AgentDefinition.model` pin (model absent from `available_models`) falls through to inherit the parent model.
+/// An unresolvable `AgentDefinition.model` pin (model absent from `available_models`) refuses the spawn instead of inheriting the parent model.
 #[tokio::test]
-async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inherit() {
+async fn resolve_subagent_agent_definition_unknown_model_is_refused() {
     use xai_grok_agent::config::ModelOverride;
     let mut ctx = ctx_with_toggle(HashMap::new());
     ctx.sampling_config.model = "grok-4.5".to_string();
     ctx.model_id = acp::ModelId::new("grok-4.5");
     let agent_model = ModelOverride::Override("does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let error = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
             &ctx,
         )
-        .await;
-    assert_eq!(config.model, "grok-4.5");
-    assert_eq!(model_id.0.as_ref(), "grok-4.5");
+        .await.unwrap_err();
+    assert!(error.contains("unavailable or disallowed model"));
+    assert!(error.contains("no child was started"));
 }
 /// Spawn-time credentials are cache-only: a cold spawn has no key, never the parent session key.
 #[tokio::test]
@@ -2785,7 +2860,7 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(model_id.0.as_ref(), "proxied");
     assert_eq!(
             config.api_key, None,
@@ -2797,28 +2872,194 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
             &ModelOverride::Inherit,
             &ctx,
         )
-        .await;
+        .await.unwrap();
     assert_eq!(config.api_key.as_deref(), Some("tok-1"));
     assert_eq!(config.base_url, "https://gateway.example/v1");
 }
-#[test]
-fn key_prefix_truncates_to_8_chars() {
-    let key = Some("eyJ0eXAiOiJhbGciOiJSUzI1NiJ9".to_string());
-    assert_eq!(key_prefix(&key), "eyJ0eXAi");
+
+#[tokio::test]
+async fn profile_custom_provider_without_own_credentials_refuses_parent_token() {
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.auth = Some(xai_grok_login::GrokAuth {
+        key: "parent-private-fixture-token".into(),
+        ..Default::default()
+    });
+    let mut entry = test_model_entry("custom-route");
+    entry.info.base_url = "https://other-provider.example/v1".into();
+    ctx.available_models.insert("custom-route".into(), entry);
+    let error = resolve_requested_subagent_model("custom-route", "runtime override", &ctx).unwrap_err();
+    assert!(error.contains("unavailable or disallowed model"));
+    assert!(!error.contains("parent-private"));
+    let error = resolve_requested_subagent_model("private-invalid-route", "runtime override", &ctx).unwrap_err();
+    assert!(!error.contains("private-invalid-route"));
 }
 #[test]
-fn key_prefix_short_key_not_truncated() {
-    let key = Some("abc".to_string());
-    assert_eq!(key_prefix(&key), "abc");
+fn profile_fast_only_model_refuses_standard_speed_and_advertises_only_fast() {
+    let mut models = indexmap::IndexMap::new();
+    models.insert("fast-alias".into(), test_model_entry("grok-4.7-build-fast"));
+    models.insert("standard-alias".into(), test_model_entry("grok-4.7-build"));
+    assert_eq!(crate::profiles::speed_choices("fast-alias", &models), vec!["fast"]);
+    assert!(!crate::profiles::validate_settings(Some("fast-alias"), None, Some("standard"), &models).is_empty());
+    assert!(crate::profiles::validate_settings(Some("fast-alias"), None, Some("fast"), &models).is_empty());
+    assert_eq!(crate::profiles::speed_choices("standard-alias", &models), vec!["standard", "fast"]);
+    assert!(crate::profiles::validate_settings(Some("standard-alias"), None, Some("standard"), &models).is_empty());
+    assert!(crate::profiles::validate_settings(Some("standard-alias"), None, Some("fast"), &models).is_empty());
+    let mut other_provider = test_model_entry("grok-4.7-build");
+    other_provider.info.base_url = "https://different-provider.example/v1".into();
+    other_provider.api_key = Some("fixture-provider-key".into());
+    models.insert("other-provider".into(), other_provider);
+    assert_eq!(crate::profiles::speed_choices("other-provider", &models), vec!["standard"]);
+    assert!(!crate::profiles::validate_settings(Some("other-provider"), None, Some("fast"), &models).is_empty());
 }
 #[test]
-fn key_prefix_none_returns_placeholder() {
-    assert_eq!(key_prefix(&None), "<none>");
+fn profile_admitted_child_does_not_read_changed_or_malformed_routing_policy_on_resume() {
+    let resumed = child_admission_policy(true, || -> anyhow::Result<_> {
+        panic!("a resumed child must not read current routing policy")
+    }).unwrap();
+    assert_eq!(resumed.mode, "automatic");
+    assert!(resumed.defaults.model.is_none());
+    assert!(resumed.defaults.effort.is_none());
+    assert!(resumed.defaults.speed.is_none());
+    assert!(child_admission_policy(false, || Err(anyhow::anyhow!("malformed policy"))).is_err());
+    let fresh = child_admission_policy(false, || Ok(crate::profiles::DelegationPolicy {
+        mode: "general-only".into(),
+        defaults: crate::profiles::DelegationDefaults {
+            model: Some("new-model".into()), effort: Some("high".into()), speed: Some("fast".into()),
+        },
+    })).unwrap();
+    assert_eq!(fresh.mode, "general-only");
+    assert_eq!(fresh.defaults.effort.as_deref(), Some("high"));
 }
 #[test]
-fn key_prefix_empty_string() {
-    let key = Some(String::new());
-    assert_eq!(key_prefix(&key), "");
+fn profile_frozen_route_fingerprint_covers_full_endpoint_and_backend_but_not_keys() {
+    let mut sampling = ctx_with_toggle(HashMap::new()).sampling_config;
+    sampling.base_url = "https://EXAMPLE.test:443/a/../v1#display-only".into();
+    sampling.api_backend = crate::sampling::ApiBackend::Responses;
+    sampling.api_key = Some("fixture-original-key".into());
+    let frozen = provider_route_fingerprint(&sampling).unwrap();
+    assert_eq!(frozen.len(), 64);
+    sampling.base_url = "https://example.test/v1".into();
+    sampling.api_key = Some("fixture-rotated-key".into());
+    assert_eq!(provider_route_fingerprint(&sampling).as_deref(), Some(frozen.as_str()));
+    for endpoint in [
+        "https://example.test:8443/v1", "https://example.test/v2",
+        "https://example.test/v1?route=other", "https://other.test/v1",
+    ] {
+        sampling.base_url = endpoint.into();
+        assert_ne!(provider_route_fingerprint(&sampling).as_deref(), Some(frozen.as_str()));
+    }
+    sampling.base_url = "https://example.test/v1".into();
+    sampling.api_backend = crate::sampling::ApiBackend::ChatCompletions;
+    assert_ne!(provider_route_fingerprint(&sampling).as_deref(), Some(frozen.as_str()));
+    sampling.base_url = "invalid endpoint".into();
+    assert!(provider_route_fingerprint(&sampling).is_none());
+}
+#[test]
+fn profile_frozen_route_refuses_execution_drift_and_incomplete_snapshots() {
+    let frozen = xai_tool_types::SubagentExecution {
+        profile: "cfo".into(), provider: "example.test".into(), model: "wire-model".into(),
+        reasoning_effort: Some("low".into()), speed: "standard".into(),
+        fallback: Some("historical explicit retry".into()),
+    };
+    let mut actual = frozen.clone();
+    actual.fallback = None;
+    assert!(resumed_route_matches(Some(&frozen), Some("route-proof"), &actual, "route-proof"));
+    for changed in [
+        xai_tool_types::SubagentExecution { profile: "other".into(), ..actual.clone() },
+        xai_tool_types::SubagentExecution { provider: "other.test".into(), ..actual.clone() },
+        xai_tool_types::SubagentExecution { model: "other-model".into(), ..actual.clone() },
+        xai_tool_types::SubagentExecution { reasoning_effort: Some("high".into()), ..actual.clone() },
+        xai_tool_types::SubagentExecution { speed: "fast".into(), ..actual.clone() },
+    ] {
+        assert!(!resumed_route_matches(Some(&frozen), Some("route-proof"), &changed, "route-proof"));
+    }
+    assert!(!resumed_route_matches(Some(&frozen), Some("route-proof"), &actual, "other-route"));
+    assert!(!resumed_route_matches(Some(&frozen), None, &actual, "route-proof"));
+    assert!(!resumed_route_matches(None, Some("route-proof"), &actual, "route-proof"));
+    assert!(resumed_route_matches(None, None, &actual, "route-proof"));
+}
+#[test]
+fn credential_diagnostics_report_presence_only() {
+    assert!(has_credential(&Some("test-credential".into())));
+    assert!(!has_credential(&Some(String::new())));
+    assert!(!has_credential(&None));
+}
+
+#[test]
+fn profile_frozen_metadata_debug_does_not_expose_instruction_bodies() {
+    let runtime = xai_grok_subagent_resolution::EffectiveRuntimeConfig {
+        role_prompt: Some("private-role-body".into()),
+        ..Default::default()
+    };
+    let meta: SubagentMeta = serde_json::from_value(serde_json::json!({
+        "subagent_id":"debug-child", "parent_session_id":"parent", "child_session_id":"child",
+        "subagent_type":"cfo", "description":"Fixture", "prompt":"private-assignment-body",
+        "status":"completed", "started_at":"2026-10-28T00:00:00Z",
+        "frozen_definition":{"promptBody":"private-system-body"}, "frozen_runtime":runtime
+    })).unwrap();
+    let rendered = format!("{meta:?}");
+    assert!(rendered.contains("debug-child"));
+    assert!(!rendered.contains("private-"));
+    let source = ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: meta.frozen_definition.clone(),
+        frozen_runtime: meta.frozen_runtime.clone(),
+        subagent_id: meta.subagent_id.clone(),
+        subagent_type: meta.subagent_type.clone(),
+        persona: None,
+        model_id: None,
+        child_cwd: "/private/workspace".into(),
+        worktree_path: None,
+        snapshot_ref: None,
+        child_session_id: meta.child_session_id.clone(),
+    };
+    let rendered = format!("{source:?}");
+    assert!(rendered.contains("debug-child"));
+    assert!(!rendered.contains("private-"));
+}
+#[test]
+fn subagent_effort_rejects_invalid_and_unsupported_choices_without_mutation() {
+    use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    let mut model = test_model_entry("strict-model");
+    model.info.supports_reasoning_effort = true;
+    model.info.reasoning_efforts = vec![ReasoningEffortOption {
+        id: "medium".into(), value: ReasoningEffort::Medium, label: "Medium".into(),
+        description: None, default: true,
+    }];
+    ctx.available_models.insert("strict-model".into(), model);
+    let id = acp::ModelId::new("strict-model");
+    let mut sampling = ctx.sampling_config.clone();
+    sampling.model = "strict-model".into();
+    sampling.reasoning_effort = None;
+    for raw in ["typo", "high", "", "none"] {
+        let error = apply_requested_subagent_effort(Some(raw), &id, &mut sampling, &ctx).unwrap_err();
+        assert!(error.contains("Supported reasoning choices: medium"), "{error}");
+        assert_eq!(sampling.model, "strict-model");
+        assert_eq!(sampling.reasoning_effort, None);
+    }
+    apply_requested_subagent_effort(Some("medium"), &id, &mut sampling, &ctx).unwrap();
+    assert_eq!(sampling.reasoning_effort, Some(ReasoningEffort::Medium));
+}
+#[test]
+fn subagent_effort_on_non_reasoning_model_is_refused_instead_of_ignored() {
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.available_models.insert("plain-model".into(), test_model_entry("plain-model"));
+    let mut sampling = ctx.sampling_config.clone();
+    let error = apply_requested_subagent_effort(
+        Some("high"), &acp::ModelId::new("plain-model"), &mut sampling, &ctx,
+    ).unwrap_err();
+    assert!(error.contains("none (omit reasoning_effort)"));
+    apply_requested_subagent_effort(None, &acp::ModelId::new("plain-model"), &mut sampling, &ctx).unwrap();
+}
+#[test]
+fn subagent_effort_unknown_model_is_refused() {
+    let ctx = ctx_with_toggle(HashMap::new());
+    let mut sampling = ctx.sampling_config.clone();
+    assert!(apply_requested_subagent_effort(
+        Some("high"), &acp::ModelId::new("unknown-model"), &mut sampling, &ctx,
+    ).is_err());
 }
 #[test]
 fn non_cursor_persona_injected_as_system_reminder() {

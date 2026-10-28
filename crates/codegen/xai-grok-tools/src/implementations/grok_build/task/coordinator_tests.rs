@@ -236,6 +236,8 @@ impl ChildRunner for TestRunner {
                 }
             }
             let child = StartedChild {
+                execution: None,
+
                 child_session_id: if request.subagent_type == "divergent-session" {
                     format!("{}-session", request.id)
                 } else {

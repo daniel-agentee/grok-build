@@ -1036,6 +1036,8 @@ async fn subagent_completed_drops_matching_pending_input() {
                     .push(bash_completed_notification("bg-survives"));
             }
             let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
+                execution: None,
+
                 output: "done".into(),
                 subagent_id: "sub-target".into(),
                 subagent_type: "general-purpose".into(),

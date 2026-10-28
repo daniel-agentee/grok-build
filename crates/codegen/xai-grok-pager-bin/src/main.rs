@@ -65,6 +65,7 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
             | Command::Plugin(_)
             | Command::Memory(_)
             | Command::Models
+            | Command::Profiles(_)
             | Command::Sessions(_)
             | Command::Usage(_)
             | Command::Setup { .. }
@@ -98,6 +99,7 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         | Some(Command::Worktree(_)) => true,
         Some(
             Command::Inspect { .. }
+            | Command::Profiles(_)
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
@@ -2255,6 +2257,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 xai_grok_shell::inspect::inspect(&cwd, json).await?;
                 return Ok(());
+            }
+            Command::Profiles(profile_args) => {
+                return xai_grok_shell::profiles::run(profile_args).await;
             }
             Command::Setup { json } => {
                 init_tracing_simple("cli");

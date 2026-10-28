@@ -1048,6 +1048,17 @@ pub(crate) async fn run(
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
 ) -> anyhow::Result<RunResult> {
+    if args.agent.as_ref().is_some_and(|agent| {
+        matches!(
+            crate::headless::resolve_agent_arg(agent),
+            crate::headless::ResolvedAgent::Name(_)
+        )
+    }) && (args.model.is_some() || args.reasoning_effort.is_some())
+    {
+        anyhow::bail!(
+            "A named profile owns its model and reasoning defaults. Edit the profile, or omit --model and --reasoning-effort."
+        );
+    }
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::AppInit);

@@ -16,7 +16,6 @@ use crate::agent::remote_config::task_model_policy::{
     TaskModelSelection, selection_telemetry_kind,
 };
 use crate::upload::trace::PromptMetadataParams;
-use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_telemetry::events::{SubagentModelOverrideRejected, SubagentModelRejectionReason};
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
@@ -30,6 +29,50 @@ static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
     );
+/// Routing edits govern new children. A previously admitted child keeps its
+/// frozen route even if the current policy excludes that profile or is broken.
+pub(super) fn child_admission_policy(
+    resuming: bool,
+    read: impl FnOnce() -> anyhow::Result<crate::profiles::DelegationPolicy>,
+) -> anyhow::Result<crate::profiles::DelegationPolicy> {
+    if resuming {
+        Ok(crate::profiles::DelegationPolicy::default())
+    } else {
+        read()
+    }
+}
+/// Compare endpoint and transport identity without persisting or displaying a
+/// raw URL (which may itself carry authentication). Resolved keys are excluded.
+pub(super) fn provider_route_fingerprint(
+    sampling: &xai_grok_sampler::SamplerConfig,
+) -> Option<String> {
+    let mut endpoint = url::Url::parse(&sampling.base_url).ok()?;
+    endpoint.set_fragment(None);
+    let identity =
+        serde_json::to_vec(&(endpoint.as_str(), format!("{:?}", sampling.api_backend))).ok()?;
+    Some(blake3::hash(&identity).to_hex().to_string())
+}
+/// Pre-profile legacy children have no route proof. They retain their existing
+/// source-model recovery path; partial profile snapshots fail closed.
+pub(super) fn resumed_route_matches(
+    frozen: Option<&xai_tool_types::SubagentExecution>,
+    fingerprint: Option<&str>,
+    actual: &xai_tool_types::SubagentExecution,
+    actual_fingerprint: &str,
+) -> bool {
+    match (frozen, fingerprint) {
+        (None, None) => true,
+        (Some(frozen), Some(fingerprint)) => {
+            frozen.profile == actual.profile
+                && frozen.provider == actual.provider
+                && frozen.model == actual.model
+                && frozen.reasoning_effort == actual.reasoning_effort
+                && frozen.speed == actual.speed
+                && fingerprint == actual_fingerprint
+        }
+        _ => false,
+    }
+}
 /// Bounds each parent-side await in the child completion path. The parent's biased select polls its event channels ahead of `cmd_rx`, so a busy turn can starve `cmd_rx` and park a completed child (leaking its session thread, fs watchers, and fds) forever.
 pub(super) const PARENT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// `PARENT_ACK_TIMEOUT`-bounded acks in the completion path: usage fold,
@@ -452,7 +495,10 @@ pub(crate) async fn run_shell_child(
                 );
                 return child_run_output(failure_result(&request, &error), completion_data, None);
             }
-            SubagentResumeLookup::Completed(info) => Some(ResumeSourceData::from(*info)),
+            SubagentResumeLookup::Completed(info) => {
+                durable_resume_source_for(resume_id, &ctx.parent_session_id, &ctx.parent_cwd)
+                    .or_else(|| Some(ResumeSourceData::from(*info)))
+            }
             SubagentResumeLookup::Missing => {
                 match durable_resume_source_for(resume_id, &ctx.parent_session_id, &ctx.parent_cwd)
                 {
@@ -487,7 +533,14 @@ pub(crate) async fn run_shell_child(
             .set_resolved_subagent_type(source.subagent_type.clone())
             .await;
     }
-    let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
+    let frozen_definition = resume_source
+        .as_ref()
+        .and_then(|source| source.frozen_definition.as_ref());
+    let definition = match frozen_definition {
+        Some(value) => xai_grok_agent::AgentDefinition::from_json(value).ok(),
+        None => resolve_agent_definition(&request.subagent_type, &ctx),
+    };
+    let Some(mut definition) = definition else {
         let msg = format!("Unknown subagent type: {}", request.subagent_type);
         return child_run_output(failure_result(&request, &msg), completion_data, None);
     };
@@ -513,6 +566,57 @@ pub(crate) async fn run_shell_child(
             return child_run_output(failure_result(&request, &msg), completion_data, None);
         }
     }
+    let policy = match child_admission_policy(resume_source.is_some(), crate::profiles::read_policy)
+    {
+        Ok(policy) => policy,
+        Err(_) => {
+            return child_run_output(
+                failure_result(
+                    &request,
+                    "Delegation policy could not be read. Repair it before retrying; no child was started.",
+                ),
+                completion_data,
+                None,
+            );
+        }
+    };
+    if (policy.mode == "profiles-only" && request.subagent_type == "general-purpose")
+        || (policy.mode == "general-only" && request.subagent_type != "general-purpose")
+        || !["automatic", "profiles-only", "general-only"].contains(&policy.mode.as_str())
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "The selected profile is forbidden by the current routing mode. Select an allowed profile and retry; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    }
+    if resume_source.is_some()
+        && (request.runtime_overrides.model.is_some()
+            || request.runtime_overrides.reasoning_effort.is_some()
+            || request.runtime_overrides.speed.is_some())
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "A resumed child retains its model, reasoning and speed. Omit overrides or start a fresh child; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    }
+    if let Err(_) = definition.resolve_prompt_references() {
+        return child_run_output(
+            failure_result(
+                &request,
+                "Profile instructions or rules could not be resolved; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    }
     resolve_subagent_toolset(
         &request.subagent_type,
         request.runtime_overrides.harness_agent_type.as_deref(),
@@ -523,14 +627,44 @@ pub(crate) async fn run_shell_child(
         .parent_session_info
         .as_ref()
         .map(|i| std::path::Path::new(&i.cwd));
-    let mut effective_runtime = xai_grok_subagent_resolution::resolve_runtime_config(
-        &request.subagent_type,
-        &request.runtime_overrides,
-        &ctx.subagent_roles,
-        &ctx.subagent_personas,
-        cwd,
-        &definition,
-    );
+    let mut effective_runtime = resume_source
+        .as_ref()
+        .and_then(|source| source.frozen_runtime.clone())
+        .unwrap_or_else(|| {
+            xai_grok_subagent_resolution::resolve_runtime_config(
+                &request.subagent_type,
+                &request.runtime_overrides,
+                &ctx.subagent_roles,
+                &ctx.subagent_personas,
+                cwd,
+                &definition,
+            )
+        });
+    if resume_source.is_none()
+        && effective_runtime.model.is_none()
+        && matches!(
+            definition.model,
+            xai_grok_agent::config::ModelOverride::Inherit
+        )
+        && !ctx
+            .subagent_model_overrides
+            .contains_key(&request.subagent_type)
+    {
+        effective_runtime.model = policy.defaults.model.clone();
+    }
+    if resume_source.is_none() && effective_runtime.reasoning_effort.is_none() {
+        effective_runtime.reasoning_effort = policy.defaults.effort.clone();
+    }
+    let mut requested_speed = if resume_source.is_none() {
+        request
+            .runtime_overrides
+            .speed
+            .clone()
+            .or_else(|| definition.speed.clone())
+            .or_else(|| policy.defaults.speed.clone())
+    } else {
+        None
+    };
     let prompt = request.prompt.clone();
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
@@ -548,12 +682,6 @@ pub(crate) async fn run_shell_child(
         );
     }
     if let Some(ref source) = resume_source {
-        if request.runtime_overrides.model.is_some() {
-            tracing::debug!(
-                subagent_id = %request.id,
-                "Ignoring caller model override on resume; source model will be pinned"
-            );
-        }
         effective_runtime.model = None;
         if let Err(e) = xai_grok_subagent_resolution::validate_resume_identity(
             &request.subagent_type,
@@ -591,6 +719,119 @@ pub(crate) async fn run_shell_child(
         };
         return child_run_output(failure_result(&request, &message), completion_data, None);
     }
+    if request.fork_context {
+        effective_runtime.model = Some(ctx.model_id.0.to_string());
+    }
+    if let Some(source) = resume_source.as_ref() {
+        effective_runtime.model = source.model_id.clone();
+        if let Some(execution) = &source.execution {
+            effective_runtime.reasoning_effort = execution.reasoning_effort.clone();
+            requested_speed = Some(execution.speed.clone());
+        } else if source.frozen_runtime.is_none() {
+            // Legacy children predate route snapshots. Keep the source model
+            // and its provider defaults, never new profile/policy effort/speed.
+            effective_runtime.reasoning_effort = None;
+        }
+    }
+    let (mut effective_sampling_config, mut effective_model_id) =
+        match resolve_effective_model_config(
+            effective_runtime.model.as_deref(),
+            &request.subagent_type,
+            &definition.model,
+            &ctx,
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return child_run_output(failure_result(&request, &error), completion_data, None);
+            }
+        };
+    if let Some(speed) = requested_speed.as_deref() {
+        if !crate::profiles::speed_choices(&effective_model_id.0, &ctx.available_models)
+            .contains(&speed)
+        {
+            return child_run_output(
+                failure_result(
+                    &request,
+                    "Requested speed is unsupported by the selected model. Choose a speed advertised for that catalog model and retry; no child was started.",
+                ),
+                completion_data,
+                None,
+            );
+        }
+        if speed == "fast" && effective_sampling_config.model != "grok-4.7-build-fast" {
+            match resolve_requested_subagent_model("grok-4.7-build-fast", "speed", &ctx) {
+                Ok((sampling, model)) => {
+                    effective_sampling_config = sampling;
+                    effective_model_id = model;
+                }
+                Err(error) => {
+                    return child_run_output(
+                        failure_result(&request, &error),
+                        completion_data,
+                        None,
+                    );
+                }
+            }
+        }
+    }
+    if let Err(error) = apply_requested_subagent_effort(
+        effective_runtime.reasoning_effort.as_deref(),
+        &effective_model_id,
+        &mut effective_sampling_config,
+        &ctx,
+    ) {
+        return child_run_output(failure_result(&request, &error), completion_data, None);
+    }
+    let execution = xai_tool_types::SubagentExecution {
+        profile: definition.name.clone(),
+        provider: crate::profiles::safe_provider(&effective_sampling_config.base_url),
+        model: effective_sampling_config.model.clone(),
+        reasoning_effort: effective_sampling_config
+            .reasoning_effort
+            .map(|e| e.to_string()),
+        speed: if effective_sampling_config.model == "grok-4.7-build-fast" {
+            "fast"
+        } else {
+            "standard"
+        }
+        .into(),
+        fallback: None,
+    };
+    let Some(route_fingerprint) = provider_route_fingerprint(&effective_sampling_config) else {
+        return child_run_output(
+            failure_result(
+                &request,
+                "The selected provider endpoint is invalid; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    };
+    if let Some(source) = resume_source.as_ref()
+        && !resumed_route_matches(
+            source.execution.as_ref(),
+            source.provider_route_fingerprint.as_deref(),
+            &execution,
+            &route_fingerprint,
+        )
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "The child's frozen provider, model, reasoning or speed cannot be restored exactly. Restore its original catalog route or start a fresh child; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    }
+    // Route reconstruction proves admission, but its freshly synthesized
+    // metadata must not erase historical details such as an applied fallback.
+    let execution = resume_source
+        .as_ref()
+        .and_then(|source| source.execution.clone())
+        .unwrap_or(execution);
     let worktree_path = if let Some(ref source) = resume_source {
         if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
             && source.worktree_path.is_none()
@@ -814,82 +1055,7 @@ pub(crate) async fn run_shell_child(
             )
         });
     }
-    if request.fork_context {
-        effective_runtime.model = Some(ctx.model_id.0.to_string());
-    }
-    let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
-        effective_runtime.model.as_deref(),
-        &request.subagent_type,
-        &definition.model,
-        &ctx,
-    )
-    .await;
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
-    {
-        let model_str = &effective_sampling_config.model;
-        let model_unknown = !model_str.is_empty()
-            && !ctx.available_models.is_empty()
-            && !ctx.available_models.contains_key(model_str)
-            && !ctx
-                .available_models
-                .values()
-                .any(|e| e.info().has_model_id(model_str));
-        if model_unknown {
-            let (parent_config, parent_mid) = read_parent_sampling_config(&ctx).await;
-            tracing::warn!(
-                subagent_id = %request.id,
-                resolved_model = %model_str,
-                parent_model = %parent_config.model,
-                "Resolved subagent model not found in available models — \
-                 falling back to parent model"
-            );
-            effective_sampling_config = parent_config;
-            effective_model_id = parent_mid;
-        }
-    }
-    if let Some(ref source) = resume_source
-        && let Some(ref source_model) = source.model_id
-        && effective_model_id.0.as_ref() != source_model.as_str()
-    {
-        if let Some(resolved) = resolve_model_override_to_config(source_model, &ctx) {
-            tracing::info!(
-                subagent_id = %request.id,
-                resolved_model = %effective_model_id.0,
-                source_model = source_model,
-                "Pinning resumed child to source model"
-            );
-            effective_sampling_config = resolved.0;
-            effective_model_id = resolved.1;
-        } else {
-            let msg = format!(
-                "Cannot resume from subagent '{}': source model '{source_model}' \
-                 is no longer available in the model catalogue.",
-                source.subagent_id,
-            );
-            return child_run_output(failure_result(&request, &msg), completion_data, None);
-        }
-    }
-    if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
-        && ctx
-            .models_manager
-            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
-    {
-        match raw.parse::<ReasoningEffort>() {
-            Ok(eff) => ctx.models_manager.apply_supported_effort(
-                &mut effective_sampling_config,
-                Some(eff),
-                &acp::SessionId::new(request.id.clone()),
-                crate::sampling::EffortTarget::NewSession,
-            ),
-            Err(err) => {
-                tracing::warn!(
-                    value = raw,
-                    error = %err,
-                    "subagent reasoning_effort: parse failed, ignoring override"
-                )
-            }
-        }
-    }
     if effective_sampling_config.conversation_group_id.is_none() {
         let inherited_group_id = if let Some(parent_chat_state) = ctx.parent_chat_state.as_ref() {
             parent_chat_state
@@ -996,6 +1162,10 @@ pub(crate) async fn run_shell_child(
         InitialContextSource::Resumed => "resumed",
     };
     let subagent_meta = SubagentMeta {
+        provider_route_fingerprint: Some(route_fingerprint),
+        frozen_definition: Some(definition.to_json_value()),
+        frozen_runtime: Some(effective_runtime.clone()),
+        execution: Some(execution.clone()),
         subagent_id: subagent_id.clone(),
         attempt_id: attempt_id.clone(),
         parent_session_id: ctx.parent_session_id.clone(),
@@ -1044,6 +1214,7 @@ pub(crate) async fn run_shell_child(
     )
     .map(str::to_owned);
     let spawned = SessionUpdate::SubagentSpawned {
+        execution: Some(execution.clone()),
         subagent_id: subagent_id.clone(),
         attempt_id: attempt_id.clone(),
         child_session_id: child_session_id.0.to_string(),
@@ -1261,12 +1432,12 @@ pub(crate) async fn run_shell_child(
             "effective_model": effective_model_id.0.as_ref(),
             "effective_model_raw": &effective_sampling_config.model,
             "base_url": &effective_sampling_config.base_url,
-            "key_prefix": key_prefix(&effective_sampling_config.api_key),
+            "has_key": has_credential(&effective_sampling_config.api_key),
             "auth_type": format!("{:?}", inherited_auth_type),
             "model_has_own_creds": model_has_own_creds,
             "auth_method_id": ctx.auth_method_id.0.as_ref(),
             "parent_model": ctx.model_id.0.as_ref(),
-            "parent_key_prefix": key_prefix(&ctx.sampling_config.api_key),
+            "parent_has_key": has_credential(&ctx.sampling_config.api_key),
             "context_window": effective_sampling_config.context_window,
         })),
     );
@@ -1478,7 +1649,10 @@ pub(crate) async fn run_shell_child(
     let spawn_phase_parent = session_bootstrap_span.span().clone();
     let bootstrap_started_at = std::time::Instant::now();
     let pins = ctx.compaction_pins_for_child(&definition.user_message_template);
-    let spawn_result = session::spawn_session_on_thread(
+    // Keep session bootstrap's large future out of the child runner's state
+    // machine. Frozen profile metadata otherwise pushes nested debug spawns
+    // beyond an ordinary runtime/test thread's stack.
+    let spawn_result = Box::pin(session::spawn_session_on_thread(
         child_session_info,
         gateway.clone(),
         effective_sampling_config,
@@ -1648,7 +1822,7 @@ pub(crate) async fn run_shell_child(
         }),
         Some(ctx.subagent_sampling_semaphore.clone()),
         None,
-    )
+    ))
     .await;
     crate::waterfall::mark(&request.id, crate::waterfall::stage::SESSION_UP);
     spawn_timer.record(
@@ -1744,6 +1918,7 @@ pub(crate) async fn run_shell_child(
     let promoted = match readiness {
         InitialChildPromptReadiness::Admitted(release) => {
             let child = StartedChild {
+                execution: Some(execution.clone()),
                 child_session_id: child_session_id.0.to_string(),
                 persona: effective_runtime.persona.clone(),
                 resumed_from: request.resume_from.clone(),

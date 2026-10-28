@@ -455,6 +455,7 @@ pub(super) fn handle_session_notification_with_origin(
             }
         }
         XaiSessionUpdate::SubagentSpawned {
+            execution,
             subagent_id,
             attempt_id: _,
             child_session_id,
@@ -501,6 +502,10 @@ pub(super) fn handle_session_notification_with_origin(
                 .unwrap_or(is_wake);
             let persona_display = persona.clone();
             let role_display = role.clone();
+            let model = execution
+                .as_ref()
+                .map(|execution| execution.display())
+                .or(model);
             let model_display = model.clone();
             let retained_terminal_finish = if meta.is_replay
                 && committed_lifecycle

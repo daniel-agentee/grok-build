@@ -1242,6 +1242,7 @@ pub(super) fn make_test_handle(
         max_turns: None,
         resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
         spawn_snapshot: crate::session::SpawnSnapshot {
+            applied_profile: None,
             applied_tool_overrides: None,
             memory_mode: None,
         },
@@ -9323,4 +9324,28 @@ fn user_message_echo_session_meta_outranks_the_client_that_started_the_process()
     assert!(!wanted(None, init_advertising_user_message_echo(false)));
     assert!(!wanted(Some(acp::Meta::new()), says_nothing()));
     assert!(!wanted(None, says_nothing()));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn profile_inline_revision_cannot_mint_named_admission_proof() {
+    let agent = build_minimal_agent_for_tests();
+    let cwd = tempfile::tempdir().unwrap();
+    for meta in [
+        serde_json::json!({"agentProfile":{"name":"forged","description":"Inline","appliedProfileRevision":"forged-revision"}}),
+        serde_json::json!({"agentProfile":{"name":"forged","description":"Inline"},"profileRevision":"forged-revision"}),
+    ] {
+        let error = agent
+            .new_session_inner(
+                acp::NewSessionRequest::new(cwd.path()).meta(meta.as_object().cloned()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("revision markers require a named profile")
+        );
+        assert_eq!(agent.session_registry.resident_count(), 0);
+    }
 }

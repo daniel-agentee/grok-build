@@ -1449,6 +1449,7 @@ pub(super) fn test_subagent_spawned_for_workflow(
     workflow_run_id: Option<String>,
 ) -> XaiSessionUpdate {
     XaiSessionUpdate::SubagentSpawned {
+        execution: None,
         subagent_id: child_sid.into(),
         attempt_id: Some("at1.one".into()),
         parent_session_id: parent_sid.into(),
@@ -2313,6 +2314,7 @@ mod session_routing;
 mod plugins;
 mod subagents;
 mod subagent_attempt_lifecycle;
+mod profile_execution;
 mod goals;
 mod interactions;
 mod background_tasks;

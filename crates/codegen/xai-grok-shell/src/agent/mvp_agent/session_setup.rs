@@ -390,11 +390,107 @@ impl MvpAgent {
     }
     async fn new_session_inner_impl(
         &self,
-        arguments: acp::NewSessionRequest,
+        mut arguments: acp::NewSessionRequest,
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let session_started_at = std::time::Instant::now();
+        // Freeze the named profile before persistence/workspace/actor side effects.
+        // A bridge preflight alone cannot protect against concurrent profile edits.
+        if let Some(value) = arguments
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("agentProfile"))
+            .cloned()
+        {
+            if let Some(id) = value.as_str() {
+                let expected = arguments
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.get("profileRevision"))
+                    .and_then(|v| v.as_str());
+                if arguments
+                    .meta
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key("profileRevision"))
+                    && expected.is_none()
+                {
+                    return Err(
+                        acp::Error::invalid_params().data("profileRevision must be a string")
+                    );
+                }
+                let cfg = self.cfg.borrow();
+                let (definition, _) =
+                    crate::profiles::admit_profile(arguments.cwd.as_path(), id, expected, &cfg)
+                        .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
+                arguments
+                    .meta
+                    .get_or_insert_with(Default::default)
+                    .insert("agentProfile".into(), definition.to_json_value());
+            } else if !value.is_object() {
+                return Err(acp::Error::invalid_params().data("agentProfile must be a profile name or definition object; no agent was started"));
+            } else {
+                if value.get("appliedProfileRevision").is_some()
+                    || arguments
+                        .meta
+                        .as_ref()
+                        .is_some_and(|m| m.contains_key("profileRevision"))
+                {
+                    return Err(acp::Error::invalid_params().data("Profile revision markers require a named profile admitted by the native runtime; no agent was started"));
+                }
+                let mut definition =
+                    xai_grok_agent::AgentDefinition::from_json(&value).map_err(|_| {
+                        acp::Error::invalid_params().data("Invalid agentProfile object")
+                    })?;
+                definition.resolve_prompt_references().map_err(|_| {
+                    acp::Error::invalid_params().data("Profile references could not be read")
+                })?;
+                arguments
+                    .meta
+                    .get_or_insert_with(Default::default)
+                    .insert("agentProfile".into(), definition.to_json_value());
+            }
+        }
+        if let Some(value) = arguments.meta.as_ref().and_then(|m| m.get("agentProfile")) {
+            let mut definition =
+                xai_grok_agent::AgentDefinition::from_json(value).map_err(|_| {
+                    acp::Error::invalid_params()
+                        .data("Invalid profile definition; no agent was started")
+                })?;
+            if definition.applied_profile_revision.is_some()
+                && arguments
+                    .meta
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key("modelId") || m.contains_key("reasoningEffort"))
+            {
+                return Err(acp::Error::invalid_params().data("A named profile owns its model and reasoning defaults. Edit the profile or omit session overrides; no agent was started"));
+            }
+            let inherited = self.models_manager.current_model_id();
+            let selected = match &definition.model {
+                xai_grok_agent::config::ModelOverride::Override(id) => id.as_str(),
+                xai_grok_agent::config::ModelOverride::Inherit => inherited.0.as_ref(),
+            };
+            let models = self.models_manager.models();
+            let effort = definition.effort.map(<&'static str>::from);
+            let errors = crate::profiles::validate_settings(
+                Some(selected),
+                effort,
+                definition.speed.as_deref(),
+                &models,
+            );
+            if !errors.is_empty() {
+                return Err(acp::Error::invalid_params()
+                    .data(format!("{} No agent was started.", errors.join(" "))));
+            }
+            if definition.speed.as_deref() == Some("fast") {
+                definition.model =
+                    xai_grok_agent::config::ModelOverride::Override("grok-4.7-build-fast".into());
+            }
+            arguments
+                .meta
+                .get_or_insert_with(Default::default)
+                .insert("agentProfile".into(), definition.to_json_value());
+        }
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
-        tracing::debug!(config = ?self.sampling_config, "Received new session request {arguments:?}");
+        tracing::debug!(cwd = %arguments.cwd.as_path().display(), has_profile = arguments.meta.as_ref().is_some_and(|m| m.contains_key("agentProfile")), "Received new session request");
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
         })?;

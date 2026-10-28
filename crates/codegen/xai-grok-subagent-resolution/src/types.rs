@@ -16,7 +16,7 @@ pub enum ContextSource {
 /// Resolved effective runtime configuration for a child agent.
 ///
 /// Precedence: explicit spawn-time override > role default > persona default > parent inheritance (None).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct EffectiveRuntimeConfig {
     /// Resolved model ID override (if any).
     pub model: Option<String>,
@@ -44,8 +44,13 @@ pub struct EffectiveRuntimeConfig {
 }
 
 /// Data about a completed source subagent, needed to validate a resume and to spawn the resumed child.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResumeSourceData {
+    /// Opaque identity of the admitted endpoint and API backend, never credentials.
+    pub provider_route_fingerprint: Option<String>,
+    pub execution: Option<xai_tool_types::SubagentExecution>,
+    pub frozen_definition: Option<serde_json::Value>,
+    pub frozen_runtime: Option<EffectiveRuntimeConfig>,
     /// Source subagent ID.
     pub subagent_id: String,
     /// Source subagent type (e.g. "general-purpose", "explore").
@@ -55,7 +60,7 @@ pub struct ResumeSourceData {
     /// Used by `validate_resume_identity` to check persona match.
     pub persona: Option<String>,
     /// Effective model ID used by the source child session.
-    /// The shell pins this model on resume; a model override on resume is silently ignored rather than rejected.
+    /// The shell pins this model on resume; explicit overrides are refused.
     pub model_id: Option<String>,
     /// Effective cwd the source child used.
     /// The shell uses it to reconstruct `SessionInfo` so the raw transcript continues and the worktree can be reused.
@@ -70,6 +75,19 @@ pub struct ResumeSourceData {
     /// The shell uses it to locate the source's session directory and copy the raw transcript (`copy_session_data_sync`).
     pub child_session_id: String,
 }
+impl std::fmt::Debug for ResumeSourceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResumeSourceData")
+            .field("execution", &self.execution)
+            .field("has_frozen_definition", &self.frozen_definition.is_some())
+            .field("has_frozen_runtime", &self.frozen_runtime.is_some())
+            .field("subagent_id", &self.subagent_id)
+            .field("subagent_type", &self.subagent_type)
+            .field("model_id", &self.model_id)
+            .field("child_session_id", &self.child_session_id)
+            .finish_non_exhaustive()
+    }
+}
 
 impl From<xai_grok_tools::implementations::grok_build::task::types::SubagentResumeSource>
     for ResumeSourceData
@@ -78,6 +96,10 @@ impl From<xai_grok_tools::implementations::grok_build::task::types::SubagentResu
         source: xai_grok_tools::implementations::grok_build::task::types::SubagentResumeSource,
     ) -> Self {
         ResumeSourceData {
+            execution: source.execution,
+            provider_route_fingerprint: None,
+            frozen_definition: None,
+            frozen_runtime: None,
             subagent_id: source.subagent_id,
             subagent_type: source.subagent_type,
             persona: source.persona,

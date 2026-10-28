@@ -1013,6 +1013,8 @@ pub(crate) async fn disk_full_actor() -> SessionActor {
 pub(crate) fn subagent_summary(id: &str) -> SubagentCompletionSummary {
     SubagentCompletionSummary {
         snapshot: SubagentSnapshot {
+            execution: None,
+
             subagent_id: id.into(),
             description: format!("desc {id}"),
             subagent_type: "general-purpose".into(),

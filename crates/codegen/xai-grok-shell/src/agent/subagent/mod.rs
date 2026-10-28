@@ -612,50 +612,42 @@ impl SubagentPresentation {
         Arc::clone(&self.is_turn_active)
     }
 }
-/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the parent session's live sampling config.
-/// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
+/// Resolve a configured model exactly. A broken pin is a refused spawn, never a different model.
+fn resolve_requested_subagent_model(
+    model_id: &str,
+    source: &str,
+    ctx: &SubagentSpawnContext,
+) -> Result<(xai_grok_sampler::SamplerConfig, acp::ModelId), String> {
+    resolve_model_override_to_config(model_id, ctx).ok_or_else(|| {
+        let mut choices = ctx.available_models.iter()
+            .filter(|(_, entry)| entry.info.user_selectable)
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>();
+        choices.sort_unstable();
+        let choices = if choices.is_empty() { "none currently available".to_string() } else { choices.join(", ") };
+        format!("Cannot spawn subagent: {source} selects an unavailable or disallowed model. Available model choices: {choices}. Select a supported model and retry; no child was started.")
+    })
+}
+/// Precedence: config pin > definition model > live parent. Invalid pins do not fall through.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &xai_grok_agent::config::ModelOverride,
     ctx: &SubagentSpawnContext,
-) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
+) -> Result<(xai_grok_sampler::SamplerConfig, acp::ModelId), String> {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
-    let try_pin = |model_id: &str, source: &'static str, unknown_msg: &'static str| {
-        match resolve_model_override_to_config(model_id, ctx) {
-            Some((config, canonical_id)) => {
-                log_subagent_model_resolution(
-                    agent_name,
-                    source,
-                    &config,
-                    &canonical_id,
-                    &parent_config,
-                );
-                Some((config, canonical_id))
-            }
-            None => {
-                tracing::warn!(agent = agent_name, model_id, "{unknown_msg}");
-                None
-            }
-        }
-    };
-    if let Some(model_id) = ctx.subagent_model_overrides.get(agent_name)
-        && let Some(resolved) = try_pin(
-            model_id,
-            "config_override",
-            "Subagent model override references unknown model, falling through to inherit",
-        )
-    {
-        return resolved;
-    }
-    if let ModelOverride::Override(model_id) = agent_model
-        && let Some(resolved) = try_pin(
-            model_id,
-            "agent_definition",
-            "Agent definition model references unknown model, falling through to inherit",
-        )
-    {
-        return resolved;
+    let requested = ctx
+        .subagent_model_overrides
+        .get(agent_name)
+        .map(|id| (id.as_str(), "config override"))
+        .or_else(|| match agent_model {
+            ModelOverride::Override(id) => Some((id.as_str(), "agent definition")),
+            ModelOverride::Inherit => None,
+        });
+    if let Some((id, source)) = requested {
+        let (config, canonical_id) = resolve_requested_subagent_model(id, source, ctx)?;
+        log_subagent_model_resolution(agent_name, source, &config, &canonical_id, &parent_config);
+        return Ok((config, canonical_id));
     }
     log_subagent_model_resolution(
         agent_name,
@@ -664,36 +656,81 @@ async fn resolve_subagent_sampling_config(
         &parent_mid,
         &parent_config,
     );
-    (parent_config, parent_mid)
+    Ok((parent_config, parent_mid))
 }
-/// Resolve a subagent's effective sampling config and model id, honoring the model-resolution precedence.
-/// An explicit `runtime_override_model` is the goal role model or a persona override carried on `effective_runtime.model`.
-/// It is resolved HERE, BEFORE [`resolve_subagent_sampling_config`], where the user `[subagents.models]` pin and `AgentDefinition.model` apply. So a goal/persona override WINS over a user per-agent pin. An override that does not resolve to a known model warns and falls through to the pin path. Extracted from `run_shell_child` so the precedence is unit-testable without spawning a child session.
+/// Runtime overrides win over defaults, and must resolve exactly.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_effective_model_config(
     runtime_override_model: Option<&str>,
     subagent_type: &str,
     definition_model: &xai_grok_agent::config::ModelOverride,
     ctx: &SubagentSpawnContext,
-) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
+) -> Result<(xai_grok_sampler::SamplerConfig, acp::ModelId), String> {
     if let Some(model_id) = runtime_override_model {
-        if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
-            return resolved;
-        }
-        tracing::warn!(
-            model_id,
-            "Runtime model override references unknown model, falling through"
-        );
+        return resolve_requested_subagent_model(model_id, "runtime override", ctx);
     }
     resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
 }
-/// Truncate an API key to a safe prefix for logging.
-/// Counts characters, not bytes: a configured key with a multi-byte character would panic a byte slice, and this only ever runs to build a log line.
-fn key_prefix(key: &Option<String>) -> String {
-    match key {
-        Some(k) => k.chars().take(8).collect(),
-        None => "<none>".to_string(),
+/// Validate effort against the selected model before creating workspace/session side effects.
+/// Catalog effort aliases are applied explicitly, so the wire model and recorded effort agree.
+fn apply_requested_subagent_effort(
+    raw: Option<&str>,
+    model_id: &acp::ModelId,
+    sampling: &mut xai_grok_sampler::SamplerConfig,
+    ctx: &SubagentSpawnContext,
+) -> Result<(), String> {
+    use xai_grok_sampling_types::ReasoningEffort;
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let entry = crate::agent::config::find_model_by_id(&ctx.available_models, model_id.0.as_ref());
+    let choices = entry
+        .filter(|e| e.info.supports_reasoning_effort)
+        .map(|e| {
+            if e.info.reasoning_efforts.is_empty() {
+                vec![
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Xhigh,
+                ]
+            } else {
+                e.info
+                    .reasoning_efforts
+                    .iter()
+                    .map(|option| option.value)
+                    .collect()
+            }
+        })
+        .unwrap_or_default();
+    let effort = raw
+        .parse::<ReasoningEffort>()
+        .ok()
+        .filter(|effort| choices.contains(effort));
+    let Some(effort) = effort else {
+        let choices = if choices.is_empty() {
+            "none (omit reasoning_effort)".to_string()
+        } else {
+            choices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(format!(
+            "Cannot spawn subagent: requested reasoning effort is unsupported by model '{}'. Supported reasoning choices: {choices}. Select a supported setting and retry; no child was started.",
+            model_id.0
+        ));
+    };
+    if let Some(entry) = entry {
+        sampling.model = entry.info.model_at(effort).to_string();
     }
+    sampling.reasoning_effort = Some(effort);
+    Ok(())
+}
+/// Credential diagnostics contain presence only, never any part of the credential.
+fn has_credential(key: &Option<String>) -> bool {
+    key.as_deref().is_some_and(|key| !key.is_empty())
 }
 /// Emit a unified log entry recording which model and credentials a subagent resolved to, and how they compare to the parent's.
 fn log_subagent_model_resolution(
@@ -703,8 +740,8 @@ fn log_subagent_model_resolution(
     resolved_id: &acp::ModelId,
     parent: &xai_grok_sampler::SamplerConfig,
 ) {
-    let child_key = key_prefix(&resolved.api_key);
-    let parent_key = key_prefix(&parent.api_key);
+    let child_key = has_credential(&resolved.api_key);
+    let parent_key = has_credential(&parent.api_key);
     let keys_match = resolved.api_key == parent.api_key;
     xai_grok_telemetry::unified_log::debug(
         "subagent model resolved",
@@ -713,11 +750,11 @@ fn log_subagent_model_resolution(
             "agent": agent_name,
             "priority": priority,
             "child_model": resolved_id.0.as_ref(),
-            "child_base_url": &resolved.base_url,
-            "child_key_prefix": child_key,
+            "child_provider": crate::profiles::safe_provider(&resolved.base_url),
+            "child_has_key": child_key,
             "parent_model": &parent.model,
-            "parent_base_url": &parent.base_url,
-            "parent_key_prefix": parent_key,
+            "parent_provider": crate::profiles::safe_provider(&parent.base_url),
+            "parent_has_key": parent_key,
             "keys_match": keys_match,
         })),
     );
@@ -843,8 +880,8 @@ async fn read_parent_sampling_config(
                 None,
                 Some(serde_json::json!({
                     "parent_model": &inherited.model,
-                    "parent_base_url": &inherited.base_url,
-                    "parent_key_prefix": key_prefix(&inherited.api_key),
+                    "parent_provider": crate::profiles::safe_provider(&inherited.base_url),
+                    "parent_has_key": has_credential(&inherited.api_key),
                     "session_model_id": model_id.0.as_ref(),
                     "global_model_id": global_model_id.0.as_ref(),
                     "source": "chat_state",
@@ -862,8 +899,8 @@ async fn read_parent_sampling_config(
         None,
         Some(serde_json::json!({
             "parent_model": &ctx.sampling_config.model,
-            "parent_base_url": &ctx.sampling_config.base_url,
-            "parent_key_prefix": key_prefix(&ctx.sampling_config.api_key),
+            "parent_provider": crate::profiles::safe_provider(&ctx.sampling_config.base_url),
+            "parent_has_key": has_credential(&ctx.sampling_config.api_key),
             "source": "spawn_context_baseline",
             "has_chat_state": ctx.parent_chat_state.is_some(),
         })),
@@ -911,6 +948,17 @@ fn resolve_model_override_to_config(
     ctx: &SubagentSpawnContext,
 ) -> Option<(xai_grok_sampler::SamplerConfig, acp::ModelId)> {
     let entry = crate::agent::config::find_model_by_id(&ctx.available_models, model_id).cloned()?;
+    // A custom endpoint must never receive an unrelated parent provider token.
+    // Explicit unauthenticated transports require a separate supported policy.
+    if !entry.has_own_credentials()
+        && (!crate::util::is_xai_api_url(&entry.info.base_url)
+            || entry
+                .api_base_url
+                .as_deref()
+                .is_some_and(|url| !crate::util::is_xai_api_url(url)))
+    {
+        return None;
+    }
     if !entry.info.user_selectable {
         let user_picker_only = ctx
             .agent_config
@@ -960,8 +1008,8 @@ fn resolve_model_override_to_config(
             "model_id": model_id,
             "canonical_model": canonical_model_id.0.as_ref(),
             "resolved_model_raw": &config.model,
-            "base_url": &config.base_url,
-            "key_prefix": key_prefix(&config.api_key),
+            "provider": crate::profiles::safe_provider(&config.base_url),
+            "has_key": has_credential(&config.api_key),
             "has_own_credentials": entry.has_own_credentials(),
             "has_session_key": has_session_key,
             "auth_type": format!("{:?}", resolved_auth_type),
@@ -1463,6 +1511,10 @@ fn durable_resume_source_from_meta(
         return None;
     }
     Some(ResumeSourceData {
+        execution: meta.execution,
+        provider_route_fingerprint: meta.provider_route_fingerprint,
+        frozen_definition: meta.frozen_definition,
+        frozen_runtime: meta.frozen_runtime,
         subagent_id: meta.subagent_id,
         child_session_id: meta.child_session_id,
         child_cwd: meta.child_cwd.unwrap_or_default(),
@@ -2097,8 +2149,16 @@ mod progress_publisher_tests {
 /// Metadata stored as `meta.json` in the child session directory.
 /// Links the child session back to its parent.
 /// For the GCS-persisted artifact (`subagent.json`), see [`SubagentSessionMetadata`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SubagentMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_route_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_definition: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_runtime: Option<xai_grok_subagent_resolution::EffectiveRuntimeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<xai_tool_types::SubagentExecution>,
     pub subagent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
@@ -2151,6 +2211,20 @@ pub(crate) struct SubagentMeta {
     /// Persisted for durable `resume_from` identity validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_model_id: Option<String>,
+}
+impl std::fmt::Debug for SubagentMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubagentMeta")
+            .field("subagent_id", &self.subagent_id)
+            .field("parent_session_id", &self.parent_session_id)
+            .field("child_session_id", &self.child_session_id)
+            .field("subagent_type", &self.subagent_type)
+            .field("status", &self.status)
+            .field("execution", &self.execution)
+            .field("has_frozen_definition", &self.frozen_definition.is_some())
+            .field("has_frozen_runtime", &self.frozen_runtime.is_some())
+            .finish_non_exhaustive()
+    }
 }
 /// Canonical subagent metadata for GCS persistence (`subagent.json`).
 /// Uploaded to `{session_id}/subagent.json` in GCS and optionally mirrored locally.

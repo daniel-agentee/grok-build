@@ -17,6 +17,7 @@ use super::attempt_runner::{
 use super::handle_request::{
     CHILD_ACTOR_ACK_TIMEOUT, PARENT_ACK_TIMEOUT, TaskModelAdmissionError,
     admit_explicit_tool_model, agent_memory_scope_for_mode, child_actor_query,
+    child_admission_policy, provider_route_fingerprint, resumed_route_matches,
     explicit_tool_model, mark_child_usage_not_applied_with_fallback,
     reparent_surviving_child_tasks, resolve_child_model, take_child_streaming_partial,
     take_child_turn_messages,
@@ -237,6 +238,7 @@ fn wedged_child_handle() -> (
         max_turns: None,
         resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
         spawn_snapshot: crate::session::SpawnSnapshot {
+            applied_profile: None,
             applied_tool_overrides: None,
             memory_mode: None,
         },
@@ -1680,6 +1682,10 @@ async fn bootstrap_in_place_resume_reads_existing_transcript() {
         .unwrap();
     let request = bootstrap_test_request(false);
     let source = xai_grok_subagent_resolution::ResumeSourceData {
+        execution: None,
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
         subagent_id: "same-child".to_owned(),
         child_session_id: "same-child".to_owned(),
         child_cwd: child.cwd.clone(),
@@ -2526,6 +2532,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         info: crate::agent::config::ModelInfo {
             model: model_id.to_string(),
+            base_url: "https://api.x.ai/v1".into(),
             context_window: std::num::NonZeroU64::new(256_000).unwrap(),
             ..Default::default()
         },

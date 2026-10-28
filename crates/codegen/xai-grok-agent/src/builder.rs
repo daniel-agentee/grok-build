@@ -705,6 +705,22 @@ impl AgentBuilder {
             };
         }
         let mut definition = self.resolve_definition();
+        definition.resolve_prompt_references()?;
+        let mut identity_parts = Vec::new();
+        if let Some(identity) = &definition.identity
+            && let Some(slack) = &identity.slack
+        {
+            identity_parts.push(format!("## Channel identity\n\nUse Slack bot key {} and bot user ID {} when an authorized task requires a Slack action. Its credential reference is {}. Resolve that reference inside the tool process; never print credentials. A configured identity does not authorize sending a message.", slack.bot_key.as_deref().unwrap_or("(not configured)"), slack.bot_user_id.as_deref().unwrap_or("(not configured)"), slack.credential_ref.as_deref().unwrap_or("(not configured)")));
+        }
+        if !identity_parts.is_empty() {
+            definition.prompt_body = Some(
+                [
+                    definition.prompt_body.take().unwrap_or_default(),
+                    identity_parts.join("\n\n"),
+                ]
+                .join("\n\n"),
+            );
+        }
         let working_dir_str = self.working_directory.to_str().unwrap_or(".").to_string();
         let skill_info = if let Some(preloaded) = self.preloaded_skills.take() {
             preloaded
@@ -1399,9 +1415,9 @@ fn task_model_guidance(selection: TaskModelSelection, model_slugs: &[String]) ->
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
+        "\n\nChoose the subagent model for task fit using the delegation skill. You may ONLY use model slugs from this list:\n\
          {model_list}\n\n\
-         If the user does NOT _explicitly_ request a model, OMIT the `{TASK_MODEL_PARAM}` field."
+         Use `{TASK_MODEL_PARAM}` for an explicit selection. Omit it to inherit defaults. Select only supported reasoning_effort and speed; invalid settings return a refusal so you can retry explicitly."
     )
 }
 fn resolve_shell_for_prompt() -> String {

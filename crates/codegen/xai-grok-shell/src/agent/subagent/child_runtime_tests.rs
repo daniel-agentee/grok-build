@@ -77,6 +77,8 @@ impl ChildRunner for SnapshotProbeRunner {
             let was_started = run
                 .reporter
                 .started(StartedChild {
+                    execution: None,
+
                     child_session_id: run.request.id.clone(),
                     persona: None,
                     resumed_from: None,

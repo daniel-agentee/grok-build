@@ -3632,6 +3632,9 @@ mod plan_mode_edit_gate_tests {
             gate(
                 &t,
                 &ToolInput::Task(TaskToolInput {
+                    reasoning_effort: None,
+                    speed: None,
+
                     prompt: "p".into(),
                     description: "d".into(),
                     subagent_type: "general-purpose".into(),

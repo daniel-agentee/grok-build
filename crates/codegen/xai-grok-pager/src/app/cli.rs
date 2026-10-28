@@ -48,6 +48,8 @@ pub enum Command {
     Memory(crate::memory_cmd::MemoryArgs),
     /// List available models and exit
     Models,
+    /// Inspect, validate and atomically edit specialist profiles and delegation policy
+    Profiles(xai_grok_shell::profiles::ProfilesArgs),
     /// List, search, or restore sessions
     Sessions(crate::sessions_cmd::SessionsArgs),
     /// Print persisted token and cost usage for a session

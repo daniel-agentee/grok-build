@@ -704,6 +704,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 respond_to,
             } => {
                 let StartedChild {
+                    execution,
                     child_session_id,
                     persona,
                     resumed_from,
@@ -739,6 +740,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 self.active.insert(
                     subagent_id,
                     ActiveChild {
+                        execution,
                         request: pending.request,
                         started_at: pending.started_at,
                         cancellation: pending.cancellation,
@@ -857,6 +859,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     && child.request.parent_session_id == parent_session_id
                 {
                     SubagentResumeLookup::Completed(Box::new(SubagentResumeSource {
+                        execution: child.result.execution.clone(),
                         subagent_id: child.request.id.clone(),
                         child_session_id: child.child_session_id.clone(),
                         child_cwd: child.child_cwd.clone(),
@@ -1185,6 +1188,10 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         }
         self.clear_message_sender_attempt(id, &record);
         self.complete_target_incarnation(id);
+        output.result.execution = match &record {
+            ChildRecord::Active(child) => child.execution.clone(),
+            ChildRecord::Pending(_) => None,
+        };
         let (
             started_at,
             child_session_id,

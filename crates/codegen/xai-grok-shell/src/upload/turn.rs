@@ -399,42 +399,28 @@ fn record_missing_turn_messages(
         }
     }
 }
-/// Parse `_meta.agentProfile` as a JSON object or string name.
-/// Returns `None` if absent or invalid.
+/// Parse an admitted inline profile or resolve a legacy named profile strictly.
+/// Malformed or unknown profiles are errors, never a default-agent fallback.
 pub(crate) fn parse_agent_profile_from_meta(
     meta: Option<&agent_client_protocol::Meta>,
-) -> Option<xai_grok_agent::AgentDefinition> {
-    let value = meta?.get("agentProfile")?;
-    if value.is_object() {
-        return match xai_grok_agent::AgentDefinition::from_json(value) {
-            Ok(def) => {
-                tracing::info!(
-                    agent_name = %def.name,
-                    "Using ACP agent profile from _meta.agentProfile (JSON object)"
-                );
-                Some(def)
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "Failed to parse _meta.agentProfile JSON object, falling back to default agent"
-                );
-                None
-            }
-        };
-    }
-    if let Some(name) = value.as_str() {
-        tracing::info!(
-            agent_name = %name,
-            "Resolving agent from _meta.agentProfile (string name)"
-        );
-        return xai_grok_agent::discovery::by_name(name);
-    }
-    tracing::warn!(
-        "Ignoring _meta.agentProfile: expected a JSON object or string, got {:?}",
-        value
-    );
-    None
+    cwd: &std::path::Path,
+) -> Result<Option<xai_grok_agent::AgentDefinition>, agent_client_protocol::Error> {
+    let Some(value) = meta.and_then(|m| m.get("agentProfile")) else {
+        return Ok(None);
+    };
+    let def = if value.is_object() {
+        xai_grok_agent::AgentDefinition::from_json(value).map_err(|_| {
+            agent_client_protocol::Error::invalid_params()
+                .data("Invalid agentProfile object; no agent was started")
+        })?
+    } else if let Some(name) = value.as_str() {
+        xai_grok_agent::discovery::by_name_in_cwd(name, cwd).ok_or_else(|| agent_client_protocol::Error::invalid_params().data("Unknown or invalid agentProfile; list valid profiles and retry. No agent was started"))?
+    } else {
+        return Err(agent_client_protocol::Error::invalid_params().data(
+            "agentProfile must be a profile name or definition object; no agent was started",
+        ));
+    };
+    Ok(Some(def))
 }
 /// Parse `_meta.askUserQuestion` as a boolean. `Some(false)` means the pager set `--no-ask-user`.
 /// The shell passes it to `AgentBuilder::with_ask_user_question_enabled(false)` so the tool is stripped from the model's advertised tool list. `Some(true)` explicitly enables the tool for this session.

@@ -222,6 +222,10 @@ def main() -> int:
     )
     parser.add_argument("--seat", choices=sorted(SEATS), action="append")
     parser.add_argument(
+        "--include-researcher", action="store_true",
+        help="Also install the committed native Researcher template; General is a compiled native builtin",
+    )
+    parser.add_argument(
         "--identities",
         type=Path,
         required=True,
@@ -244,6 +248,9 @@ def main() -> int:
             seat: make_definition(args.home.resolve(), seat, identities[seat], args.model)
             for seat in (args.seat or SEATS)
         }
+        if args.include_researcher:
+            template = Path(__file__).resolve().parents[2] / "profiles/templates/researcher.json"
+            definitions["researcher"] = json.loads(template.read_text(encoding="utf-8"))
         if args.apply:
             applied = apply_definitions(
                 args.grok, args.cwd.resolve(), definitions, args.update_existing, args.scope

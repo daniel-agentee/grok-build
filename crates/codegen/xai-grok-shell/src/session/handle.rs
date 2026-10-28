@@ -34,6 +34,7 @@ pub const MEMORY_MODE_META_KEY: &str = "x.ai/memoryMode";
 /// Everything the `session/new` reply reads from session state; built before the actor task starts so the reply cannot wait on it.
 #[derive(Clone)]
 pub struct SpawnSnapshot {
+    pub applied_profile: Option<crate::profiles::AppliedProfile>,
     pub applied_tool_overrides: Option<xai_grok_sampling_types::ToolOverrides>,
     /// Persistent-memory implementation pinned when the session was spawned.
     pub memory_mode: Option<crate::config::MemoryMode>,

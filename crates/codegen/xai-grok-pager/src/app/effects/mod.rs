@@ -240,7 +240,11 @@ pub(crate) fn execute(
             apply_permission_mode_override(&mut meta, permission_mode_override);
             let is_chat_path = chat_kind || session_flags.chat_mode;
             finalize_chat_session_meta(&mut meta, is_chat_path, session_flags);
-            if let Some(ref mid) = model_id {
+            // A named profile owns its model. The UI's inherited selection is
+            // a display default, not an explicit override of that profile.
+            if !session_flags.agent_override.as_ref().is_some_and(serde_json::Value::is_string)
+                && let Some(ref mid) = model_id
+            {
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("modelId".into(), serde_json::json!(mid.0));
             }
@@ -350,7 +354,11 @@ pub(crate) fn execute(
                 chat_kind || session_flags.chat_mode,
                 session_flags,
             );
-            if let Some(ref mid) = model_id {
+            // A named profile owns its model. The UI's inherited selection is
+            // a display default, not an explicit override of that profile.
+            if !session_flags.agent_override.as_ref().is_some_and(serde_json::Value::is_string)
+                && let Some(ref mid) = model_id
+            {
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("modelId".into(), serde_json::json!(mid.0));
             }

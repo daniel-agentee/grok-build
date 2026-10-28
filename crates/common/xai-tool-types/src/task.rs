@@ -71,8 +71,7 @@ pub struct TaskToolInput {
     /// Resume a previous subagent's conversation instead of starting fresh.
     ///
     /// The new subagent inherits the source's raw transcript, tool state, and
-    /// model. The system prompt and tool configuration are freshly rendered
-    /// from the current agent definition. The new task prompt is appended as
+    /// model, reasoning effort, speed and frozen agent definition. The new task prompt is appended as
     /// the next user message.
     ///
     /// The source subagent must be completed (not active or unknown) and
@@ -82,7 +81,7 @@ pub struct TaskToolInput {
             Pass the subagent_id returned by a prior task call. The new subagent \
             continues the previous one's raw transcript with the new task prompt \
             appended. The source must be completed (not running) and belong to the \
-            current session."
+            current session. It keeps its admitted profile/model/reasoning/speed; omit those overrides."
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_from: Option<String>,
@@ -106,11 +105,23 @@ pub struct TaskToolInput {
     #[schemars(
         description = "Optional model slug for this agent. If provided, it must resolve to one \
             of the available model slugs. If omitted, the subagent uses the same model as the \
-            parent agent. Do not pass if resume_from is set (prior model will be used). ONLY \
-            choose an explicit `model` when the user DIRECTLY requests it."
+            parent agent. Choose an allowed model for task complexity and latency using the \
+            delegation skill. Do not pass if resume_from is set. Invalid choices refuse admission."
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Reasoning effort for this task, constrained by the selected model catalog.
+    #[schemars(
+        description = "Optional reasoning effort: low, medium, high, xhigh, or max. Select only a reasoning level supported by the chosen model. Invalid choices refuse admission; omit on resume."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Latency preference, never an implicit provider/model fallback.
+    #[schemars(
+        description = "Optional speed: standard or fast. Fast is accepted only for a catalog model with a supported fast variant. Unsupported settings refuse admission; omit on resume."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 
     /// Optional id of the workspace the child runs in. Accepted on the wire
     /// and ignored locally; omitted from the derived schema, so hosts that
@@ -152,6 +163,10 @@ struct TaskToolInputDe {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    speed: Option<String>,
+    #[serde(default)]
     workspace: Option<String>,
     #[serde(default)]
     task_id: Option<String>,
@@ -174,6 +189,8 @@ impl Serialize for TaskToolInput {
             resume_from: self.resume_from.as_deref(),
             cwd: self.cwd.as_deref(),
             model: self.model.as_deref(),
+            reasoning_effort: self.reasoning_effort.as_deref(),
+            speed: self.speed.as_deref(),
             workspace: self.workspace.as_deref(),
             task_id: self.task_id.as_deref(),
         }
@@ -196,6 +213,10 @@ struct TaskToolInputSer<'a> {
     cwd: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speed: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace: Option<&'a str>,
     task_id: Option<&'a str>,
@@ -228,6 +249,8 @@ impl From<TaskToolInputDe> for TaskToolInput {
             resume_from: raw.resume_from,
             cwd: raw.cwd,
             model: raw.model,
+            reasoning_effort: raw.reasoning_effort,
+            speed: raw.speed,
             workspace: raw.workspace,
             task_id: raw.task_id,
         }
@@ -326,8 +349,32 @@ impl SubagentIsolationMode {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Structured completion output from a subagent (`task` tool).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentExecution {
+    pub profile: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub speed: String,
+    pub fallback: Option<String>,
+}
+impl SubagentExecution {
+    pub fn display(&self) -> String {
+        format!(
+            "{} · {} · {} · {}",
+            self.provider,
+            self.model,
+            self.reasoning_effort
+                .as_deref()
+                .unwrap_or("provider default"),
+            self.speed
+        )
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentCompletedOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<SubagentExecution>,
     pub output: String,
     pub subagent_id: String,
     pub subagent_type: String,
@@ -356,14 +403,21 @@ impl SubagentCompletedOutput {
     /// Render the full model-facing completion block: the answer text, the
     /// `<subagent_meta>` line, and the `<subagent_result>` resume footer.
     pub fn to_model_text(&self) -> String {
-        format_subagent_completed(
+        let mut text = format_subagent_completed(
             &self.output,
             &self.subagent_id,
             self.tool_calls,
             self.turns,
             self.duration_ms,
             self.persona.as_deref(),
-        )
+        );
+        if let Some(execution) = &self.execution {
+            text.push_str(&format!(
+                "\n<subagent_execution>{}</subagent_execution>",
+                serde_json::to_string(execution).expect("execution serializable")
+            ));
+        }
+        text
     }
 }
 
@@ -1607,8 +1661,25 @@ mod tests {
     }
 
     #[test]
+    fn task_tool_input_round_trips_profile_model_effort_and_speed() {
+        let value = serde_json::json!({"description":"bounded fixture","prompt":"fictional task","subagent_type":"cfo","model":"allowed-model","reasoning_effort":"high","speed":"fast"});
+        let input: TaskToolInput = serde_json::from_value(value).unwrap();
+        assert_eq!(input.subagent_type, "cfo");
+        assert_eq!(input.model.as_deref(), Some("allowed-model"));
+        assert_eq!(input.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(input.speed.as_deref(), Some("fast"));
+        let output = serde_json::to_value(input).unwrap();
+        assert_eq!(output["model"], "allowed-model");
+        assert_eq!(output["reasoning_effort"], "high");
+        assert_eq!(output["speed"], "fast");
+    }
+
+    #[test]
     fn task_tool_input_model_none_skips_serialize() {
         let input = TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             prompt: "p".into(),
             description: "d".into(),
             subagent_type: "explore".into(),

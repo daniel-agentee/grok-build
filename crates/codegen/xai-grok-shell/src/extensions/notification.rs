@@ -737,6 +737,8 @@ pub enum SessionUpdate {
     /// A subagent session has been spawned. Sent on the PARENT session's notification channel so the client knows this `child_session_id` is a subagent and can route its events.
     /// Emitted BEFORE dispatching `SessionCommand::Prompt` to the child. This prevents a race where child events arrive before the client has the session ID mapping.
     SubagentSpawned {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution: Option<xai_tool_types::SubagentExecution>,
         /// Unique subagent identifier (same as child session ID).
         subagent_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1754,6 +1756,7 @@ mod tests {
             capability_mode: None,
             persona: None,
             role: None,
+            execution: None,
             model: None,
             resumed_from: None,
             workflow_run_id: None,
@@ -1819,6 +1822,7 @@ mod tests {
             capability_mode: None,
             persona: None,
             role: None,
+            execution: None,
             model: None,
             resumed_from: None,
             workflow_run_id: None,

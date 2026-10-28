@@ -2116,6 +2116,8 @@ mod tests {
         status: SubagentSnapshotStatus,
     ) -> crate::implementations::grok_build::task::types::SubagentSnapshot {
         crate::implementations::grok_build::task::types::SubagentSnapshot {
+            execution: None,
+
             subagent_id: subagent_id.into(),
             description: "loop: watch ci".into(),
             subagent_type: "general-purpose".into(),
@@ -2421,6 +2423,8 @@ mod tests {
         assert_eq!(q1.subagent_id, first_id, "guard queries the kept anchor");
         let _ = q1.respond_to.send(Some(
             crate::implementations::grok_build::task::types::SubagentSnapshot {
+                execution: None,
+
                 subagent_id: first_id.clone(),
                 description: "loop: watch ci".into(),
                 subagent_type: "general-purpose".into(),
@@ -2446,6 +2450,8 @@ mod tests {
         };
         let _ = q2.respond_to.send(Some(
             crate::implementations::grok_build::task::types::SubagentSnapshot {
+                execution: None,
+
                 subagent_id: first_id.clone(),
                 description: "loop: watch ci".into(),
                 subagent_type: "general-purpose".into(),

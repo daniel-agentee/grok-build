@@ -3,7 +3,9 @@ use crate::error::AgentBuildError;
 use crate::prompt::context::TemplateOverride;
 use crate::prompt::user_message::UserMessageTemplate;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
@@ -736,6 +738,21 @@ pub struct AgentDefinition {
     pub disallowed_tools: Vec<String>,
     #[serde(default)]
     pub effort: Option<Effort>,
+    /// Requested execution speed. Unsupported model/speed combinations refuse admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    /// Display and channel identity. References contain no credential values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<ProfileIdentity>,
+    /// Referenced role bodies, resolved once before building an agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_files: Vec<PathBuf>,
+    /// Referenced rules, resolved once before building an agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_files: Vec<PathBuf>,
+    /// Native admission proof, persisted with a frozen definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_profile_revision: Option<String>,
     #[serde(default, deserialize_with = "deserialize_nonzero_u32")]
     pub max_turns: Option<u32>,
     #[serde(default)]
@@ -786,6 +803,26 @@ pub struct AgentDefinition {
     /// Discovery scope (project vs user).
     #[serde(skip)]
     pub scope: AgentScope,
+}
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<ProfileSlackIdentity>,
+}
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileSlackIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
 }
 /// Declares that the agent must call a specific tool before the turn ends.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -1220,7 +1257,98 @@ pub(crate) fn tool_id_eq(entry: &str, id: &str) -> bool {
 pub(crate) fn tool_id_matches(list: &[String], id: &str) -> bool {
     list.iter().any(|e| tool_id_eq(e, id))
 }
+fn strip_profile_frontmatter(text: &str) -> Result<&str, AgentBuildError> {
+    let trimmed = text.trim();
+    if let Some(after) = trimmed.strip_prefix("---\n") {
+        let Some((_, body)) = after.split_once("\n---") else {
+            return Err(AgentBuildError::ParseError(
+                "unclosed profile reference frontmatter".into(),
+            ));
+        };
+        return Ok(body.trim());
+    }
+    Ok(trimmed)
+}
 impl AgentDefinition {
+    /// Freeze referenced prompts and rules into this definition. Frontmatter in
+    /// Claude role files is configuration for Claude and is deliberately excluded.
+    /// Clearing references makes persisted/replayed definitions immutable.
+    pub fn resolve_prompt_references(&mut self) -> Result<(), AgentBuildError> {
+        self.resolve_prompt_references_with_fingerprint()
+            .map(|_| ())
+    }
+    /// Return the digest of the exact referenced bytes read while freezing. The
+    /// digest includes frontmatter and paths even when that content is excluded
+    /// from the model prompt, so admission revisions bind to the source itself.
+    pub fn resolve_prompt_references_with_fingerprint(
+        &mut self,
+    ) -> Result<String, AgentBuildError> {
+        let mut fingerprint = Sha256::new();
+        let mut parts = self.prompt_body.clone().into_iter().collect::<Vec<_>>();
+        let mut total_bytes = self.prompt_body.as_ref().map_or(0, String::len);
+        if total_bytes > 1_048_576 {
+            return Err(AgentBuildError::ParseError(
+                "combined profile instructions must be no larger than 1 MiB".into(),
+            ));
+        }
+        for (kind, paths) in [
+            ("Role instructions", &self.prompt_files),
+            ("Rules", &self.rule_files),
+        ] {
+            for path in paths {
+                if !path.is_absolute() {
+                    return Err(AgentBuildError::ParseError(
+                        "profile prompt/rule references must be absolute paths".into(),
+                    ));
+                }
+                let file = std::fs::File::open(path).map_err(AgentBuildError::IoError)?;
+                let metadata = file.metadata().map_err(AgentBuildError::IoError)?;
+                if !metadata.is_file() || metadata.len() > 1_048_576 {
+                    return Err(AgentBuildError::ParseError(
+                        "profile reference must be a regular UTF-8 file no larger than 1 MiB"
+                            .into(),
+                    ));
+                }
+                // Bound the read itself: metadata may become stale while a role
+                // file is being edited or replaced by another process.
+                let mut bytes = Vec::new();
+                file.take((1_048_576 - total_bytes + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map_err(AgentBuildError::IoError)?;
+                let text = String::from_utf8(bytes).map_err(|_| {
+                    AgentBuildError::ParseError("profile reference must be UTF-8".into())
+                })?;
+                total_bytes = total_bytes.saturating_add(text.len());
+                if total_bytes > 1_048_576 {
+                    return Err(AgentBuildError::ParseError(
+                        "combined profile instructions must be no larger than 1 MiB".into(),
+                    ));
+                }
+                for bytes in [
+                    kind.as_bytes(),
+                    path.as_os_str().as_encoded_bytes(),
+                    text.as_bytes(),
+                ] {
+                    fingerprint.update((bytes.len() as u64).to_le_bytes());
+                    fingerprint.update(bytes);
+                }
+                let body = strip_profile_frontmatter(&text)?;
+                if !body.is_empty() {
+                    parts.push(format!("## {kind}\n\n{body}"));
+                }
+            }
+        }
+        let body = (!parts.is_empty()).then(|| parts.join("\n\n"));
+        if body.as_ref().is_some_and(|body| body.len() > 1_048_576) {
+            return Err(AgentBuildError::ParseError(
+                "combined profile instructions must be no larger than 1 MiB".into(),
+            ));
+        }
+        self.prompt_body = body;
+        self.prompt_files.clear();
+        self.rule_files.clear();
+        Ok(format!("{:x}", fingerprint.finalize()))
+    }
     /// Parse an agent definition from a Markdown file with YAML frontmatter.
     /// Frontmatter between `---` delimiters; the system prompt body follows.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, AgentBuildError> {
@@ -1228,6 +1356,7 @@ impl AgentDefinition {
         let content = std::fs::read_to_string(path).map_err(AgentBuildError::IoError)?;
         let mut def = Self::parse(&content)?;
         def.source_path = Some(path.to_path_buf());
+        def.applied_profile_revision = None;
         def.plugin_name = None;
         def.scope = Self::scope_from_path(path);
         Ok(def)
@@ -1254,6 +1383,7 @@ impl AgentDefinition {
         let mut def: AgentDefinition = serde_yaml::from_str(yaml_content)
             .map_err(|e| AgentBuildError::ParseError(e.to_string()))?;
         def.prompt_body = None;
+        def.applied_profile_revision = None;
         def.system_prompt = TemplateOverride::None;
         def.source_path = Some(path.to_path_buf());
         def.plugin_name = None;
@@ -1425,6 +1555,11 @@ impl AgentDefinition {
             disallowed_tools: vec![],
             tools: vec![],
             effort: None,
+            speed: None,
+            identity: None,
+            prompt_files: vec![],
+            rule_files: vec![],
+            applied_profile_revision: None,
             max_turns: None,
             isolation: None,
             background: None,

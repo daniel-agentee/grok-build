@@ -2178,6 +2178,8 @@ mod tests {
     #[test]
     fn subagent_completed_prompt_format_includes_resume_footer() {
         let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
+            execution: None,
+
             output: "I found the auth middleware.".into(),
             subagent_id: "019e0000-0000-7000-8000-0000000000bb".into(),
             subagent_type: "explore".into(),
@@ -2218,6 +2220,8 @@ mod tests {
     #[test]
     fn subagent_completed_prompt_format_includes_persona_hint() {
         let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
+            execution: None,
+
             output: "Done implementing.".into(),
             subagent_id: "abc-123".into(),
             subagent_type: "general-purpose".into(),
@@ -2242,6 +2246,8 @@ mod tests {
     #[test]
     fn subagent_completed_prompt_format_with_worktree() {
         let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
+            execution: None,
+
             output: "Changes committed.".into(),
             subagent_id: "wt-agent".into(),
             subagent_type: "general-purpose".into(),
@@ -2266,6 +2272,8 @@ mod tests {
     #[test]
     fn subagent_completed_structured_hints_serialize() {
         let output = SubagentCompletedOutput {
+            execution: None,
+
             output: "done".into(),
             subagent_id: "sub-abc-123".into(),
             subagent_type: "general-purpose".into(),
@@ -2565,6 +2573,8 @@ mod tests {
     #[test]
     fn subagent_completed_hints_absent_when_no_persona() {
         let output = SubagentCompletedOutput {
+            execution: None,
+
             output: "done".into(),
             subagent_id: "sub-xyz".into(),
             subagent_type: "explore".into(),

@@ -43,6 +43,7 @@ pub use xai_grok_cloud_config::managed_config;
 pub mod mcp_doctor;
 pub use xai_grok_models as models;
 pub mod plugin;
+pub mod profiles;
 pub mod relay;
 pub mod remote;
 pub mod sampling;

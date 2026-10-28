@@ -219,6 +219,8 @@ struct GetSubagentResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SubagentSnapshotDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<xai_tool_types::SubagentExecution>,
     subagent_id: String,
     parent_session_id: String,
     child_session_id: String,
@@ -274,6 +276,7 @@ impl SubagentSnapshotDto {
         provenance: SubagentProvenance,
     ) -> Self {
         let mut dto = SubagentSnapshotDto {
+            execution: snap.execution,
             subagent_id: snap.subagent_id,
             parent_session_id,
             child_session_id,
@@ -570,6 +573,8 @@ mod tests {
     fn from_resolved_running_subagent_maps_all_fields() {
         let resolved = SubagentInspection {
             snapshot: SubagentSnapshot {
+                execution: None,
+
                 subagent_id: "s".into(),
                 subagent_type: "plan".into(),
                 description: "d".into(),
@@ -611,6 +616,8 @@ mod tests {
     #[test]
     fn snapshot_dto_running_serializes_with_progress_fields() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-1".into(),
             subagent_type: "explore".into(),
             description: "find files".into(),
@@ -656,6 +663,8 @@ mod tests {
     #[test]
     fn snapshot_dto_completed_serializes_with_output() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-2".into(),
             subagent_type: "general-purpose".into(),
             description: "refactor auth".into(),
@@ -687,6 +696,8 @@ mod tests {
     #[test]
     fn snapshot_dto_failed_serializes_with_error() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-3".into(),
             subagent_type: "plan".into(),
             description: "plan feature".into(),
@@ -710,6 +721,8 @@ mod tests {
     #[test]
     fn snapshot_dto_cancelled_serializes_with_reason() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-4".into(),
             subagent_type: "explore".into(),
             description: "search".into(),
@@ -733,6 +746,8 @@ mod tests {
     #[test]
     fn snapshot_dto_cancelled_without_reason_omits_field() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-5".into(),
             subagent_type: "explore".into(),
             description: "search".into(),
@@ -758,6 +773,8 @@ mod tests {
     #[test]
     fn get_subagent_response_with_running_snapshot() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-run".into(),
             subagent_type: "explore".into(),
             description: "search".into(),
@@ -802,6 +819,8 @@ mod tests {
     #[test]
     fn get_subagent_response_with_completed_snapshot() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-done".into(),
             subagent_type: "general-purpose".into(),
             description: "refactor".into(),
@@ -868,6 +887,8 @@ mod tests {
     #[test]
     fn snapshot_dto_resumed_provenance_serializes() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-resumed".into(),
             subagent_type: "general-purpose".into(),
             description: "fix review".into(),

@@ -92,6 +92,8 @@ impl ChildRunner for PanickingRunner {
             assert!(
                 reporter
                     .started(StartedChild {
+                        execution: None,
+
                         child_session_id: request.id.clone(),
                         persona: None,
                         resumed_from: None,
@@ -257,6 +259,7 @@ pub(in crate::implementations::grok_build::task::coordinator) fn insert_child_wi
     coordinator.active.insert(
         id.to_owned(),
         ActiveChild {
+            execution: None,
             request,
             started_at: std::time::Instant::now(),
             cancellation: CancellationToken::new(),
@@ -320,6 +323,8 @@ pub(in super::super) fn promote_pending(
     coordinator.handle_internal(InternalEvent::Started {
         subagent_id: id.to_owned(),
         child: StartedChild {
+            execution: None,
+
             child_session_id: id.to_owned(),
             persona: None,
             resumed_from: None,

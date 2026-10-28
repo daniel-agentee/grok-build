@@ -217,6 +217,8 @@ pub struct SubagentRuntimeOverrides {
     pub model_override_provenance: ModelOverrideProvenance,
     /// Override reasoning effort (e.g. "low", "medium", "high").
     pub reasoning_effort: Option<String>,
+    /// Requested speed, validated against the model before a child is started.
+    pub speed: Option<String>,
     /// Named persona/SOUL template to apply.
     pub persona: Option<String>,
     /// Capability mode controlling tool access.
@@ -428,6 +430,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
 /// Result returned by a completed subagent.
 #[derive(Debug, Clone)]
 pub struct SubagentResult {
+    pub execution: Option<xai_tool_types::SubagentExecution>,
     pub success: bool,
     /// The subagent's final output text. Stored as `Arc<str>` so cloning into per-consumer summaries
     /// (`SubagentCompletionSummary`, snapshot status, etc.) is a refcount bump rather than a full copy. Subagent outputs
@@ -462,6 +465,7 @@ pub struct SubagentResult {
 impl Default for SubagentResult {
     fn default() -> Self {
         Self {
+            execution: None,
             success: false,
             output: Arc::from(""),
             error: None,
@@ -565,6 +569,7 @@ pub struct SubagentLoopUnitActiveRequest {
 /// Returned by the coordinator in response to a `SubagentQueryRequest`.
 #[derive(Debug, Clone)]
 pub struct SubagentSnapshot {
+    pub execution: Option<xai_tool_types::SubagentExecution>,
     pub subagent_id: String,
     pub description: String,
     pub subagent_type: String,
@@ -850,6 +855,7 @@ pub struct SubagentHandOffForegroundRequest {
 /// In-memory source data used by a runtime adapter to resume a child.
 #[derive(Debug, Clone)]
 pub struct SubagentResumeSource {
+    pub execution: Option<xai_tool_types::SubagentExecution>,
     pub subagent_id: String,
     pub child_session_id: String,
     pub child_cwd: String,
@@ -1532,6 +1538,8 @@ mod tests {
 
         let summaries = vec![super::SubagentCompletionSummary {
             snapshot: super::SubagentSnapshot {
+                execution: None,
+
                 subagent_id: "sub-1".into(),
                 description: "test task".into(),
                 subagent_type: "general-purpose".into(),
@@ -1588,6 +1596,8 @@ mod tests {
         // Simulate coordinator response: one found, one not
         let snapshots = vec![
             Some(super::SubagentSnapshot {
+                execution: None,
+
                 subagent_id: "a".into(),
                 description: "task a".into(),
                 subagent_type: "general-purpose".into(),

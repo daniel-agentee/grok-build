@@ -111,6 +111,8 @@ fn promote_deferred(
     c.handle_internal(InternalEvent::Started {
         subagent_id: id.to_owned(),
         child: StartedChild {
+            execution: None,
+
             child_session_id: id.to_owned(),
             persona: None,
             resumed_from: None,

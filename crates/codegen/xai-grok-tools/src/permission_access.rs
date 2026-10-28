@@ -318,6 +318,9 @@ mod tests {
         ));
         assert!(matches!(
             AccessKind::from(&ToolInput::Task(TaskToolInput {
+                reasoning_effort: None,
+                speed: None,
+
                 prompt: "edit config.toml".into(),
                 description: "spawn".into(),
                 subagent_type: "general-purpose".into(),
@@ -369,6 +372,9 @@ mod tests {
             replace_all: false,
         }));
         let task = AccessKind::from(&ToolInput::Task(TaskToolInput {
+            reasoning_effort: None,
+            speed: None,
+
             prompt: "edit config.toml".into(),
             description: "spawn".into(),
             subagent_type: "general-purpose".into(),

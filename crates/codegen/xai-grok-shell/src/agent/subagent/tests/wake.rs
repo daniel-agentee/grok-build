@@ -104,6 +104,11 @@ impl xai_grok_tools::implementations::grok_build::task::coordinator::ChildRunner
 
 fn prior_wake_meta(id: &str, model_id: &str) -> SubagentMeta {
     SubagentMeta {
+        provider_route_fingerprint: None,
+        frozen_definition: None,
+        frozen_runtime: None,
+        execution: None,
+
         subagent_id: id.to_owned(),
         attempt_id: Some("at1.prior".to_owned()),
         parent_session_id: "setup-parent".to_owned(),
@@ -294,6 +299,14 @@ fn configure_completion_harness(
     ctx.sampling_config.model = "test-model".into();
     ctx.sampling_config.api_backend = crate::sampling::ApiBackend::Responses;
     ctx.model_id = acp::ModelId::new("test-model");
+    // A frozen wake resolves its original route through the catalog, just as
+    // production does. Give the mock transport its own explicit test credential
+    // rather than relying on the removed implicit parent-route fallback.
+    let mut entry = test_model_entry("test-model");
+    entry.info.base_url = server.url();
+    entry.info.api_backend = crate::sampling::ApiBackend::Responses;
+    entry.api_key = Some("mock-inference-test-key".into());
+    ctx.available_models.insert("test-model".into(), entry);
 }
 
 async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
@@ -1009,8 +1022,18 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
                 &std::fs::read(child_session_dir.join("summary.json")).expect("prior summary"),
             )
             .expect("parse prior summary");
-            let prior_meta =
-                std::fs::read(meta_dir.path().join("meta.json")).expect("prior metadata");
+            let mut prior_record: SubagentMeta = serde_json::from_slice(
+                &std::fs::read(meta_dir.path().join("meta.json")).expect("prior metadata"),
+            )
+            .expect("parse prior metadata");
+            prior_record
+                .execution
+                .as_mut()
+                .expect("admitted execution")
+                .fallback = Some("historical explicit retry".into());
+            assert!(write_subagent_meta(meta_dir.path(), &prior_record));
+            let prior_execution = prior_record.execution.clone();
+            let prior_meta = std::fs::read(meta_dir.path().join("meta.json")).unwrap();
             assert!(write_subagent_output(
                 meta_dir.path(),
                 "prior output sentinel"
@@ -1033,6 +1056,7 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
                 wake.status,
                 SubagentSnapshotStatus::Completed { .. }
             ));
+            assert_eq!(wake.execution, prior_execution);
 
             assert_eq!(
                 std::fs::read(meta_dir.path().join("meta.json")).expect("restored metadata"),

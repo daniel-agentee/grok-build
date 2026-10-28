@@ -2171,6 +2171,8 @@ mod tests {
     #[test]
     fn format_initializing_subagent_reports_status() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-init".to_string(),
             description: "Check PR status".to_string(),
             subagent_type: "general-purpose".to_string(),
@@ -2209,6 +2211,8 @@ mod tests {
     #[test]
     fn format_running_subagent_includes_progress_fields() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-abc".to_string(),
             description: "Find all API endpoints".to_string(),
             subagent_type: "explore".to_string(),
@@ -2278,6 +2282,8 @@ mod tests {
     #[test]
     fn format_running_subagent_raw_output_bytes_stable_across_wait_hints() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-stable".to_string(),
             description: "stable body".to_string(),
             subagent_type: "explore".to_string(),
@@ -2336,6 +2342,8 @@ mod tests {
     #[test]
     fn format_running_subagent_with_no_tools_shows_none_yet() {
         let snap = SubagentSnapshot {
+            execution: None,
+
             subagent_id: "sub-new".to_string(),
             description: "just started".to_string(),
             subagent_type: "general-purpose".to_string(),
@@ -2485,6 +2493,8 @@ mod tests {
             assert_eq!(req.subagent_id, "sub-done");
             req.respond_to
                 .send(Some(SubagentSnapshot {
+                    execution: None,
+
                     subagent_id: "sub-done".to_string(),
                     description: "find files".to_string(),
                     subagent_type: "explore".to_string(),
@@ -2533,6 +2543,8 @@ mod tests {
             let req = unwrap_query(query_rx.recv().await.unwrap());
             req.respond_to
                 .send(Some(SubagentSnapshot {
+                    execution: None,
+
                     subagent_id: "sub-run".to_string(),
                     description: "exploring".to_string(),
                     subagent_type: "general-purpose".to_string(),
@@ -2608,6 +2620,8 @@ mod tests {
 
     fn completed_subagent_snapshot(id: &str) -> SubagentSnapshot {
         SubagentSnapshot {
+            execution: None,
+
             subagent_id: id.to_string(),
             description: "find files".to_string(),
             subagent_type: "explore".to_string(),
@@ -2674,6 +2688,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(150)).await;
             req.respond_to
                 .send(Some(SubagentSnapshot {
+                    execution: None,
+
                     subagent_id: "sub-run".to_string(),
                     description: "exploring".to_string(),
                     subagent_type: "general-purpose".to_string(),
@@ -2748,6 +2764,8 @@ mod tests {
             (
                 "sub-cancel",
                 SubagentSnapshot {
+                    execution: None,
+
                     subagent_id: "sub-cancel".to_string(),
                     description: "cancelled".to_string(),
                     subagent_type: "explore".to_string(),
@@ -2763,6 +2781,8 @@ mod tests {
             (
                 "sub-fail",
                 SubagentSnapshot {
+                    execution: None,
+
                     subagent_id: "sub-fail".to_string(),
                     description: "failed".to_string(),
                     subagent_type: "explore".to_string(),

@@ -336,6 +336,8 @@ impl ChildRunner for SoakRunner {
             } = run;
             let promoted = reporter
                 .started(StartedChild {
+                    execution: None,
+
                     child_session_id: request.id.clone(),
                     persona: None,
                     resumed_from: request.resume_from.clone(),

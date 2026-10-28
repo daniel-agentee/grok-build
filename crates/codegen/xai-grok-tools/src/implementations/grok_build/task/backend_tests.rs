@@ -233,6 +233,8 @@ async fn channel_backend_query_found() {
         assert_eq!(req.timeout_ms, Some(5000));
         req.respond_to
             .send(Some(SubagentSnapshot {
+                execution: None,
+
                 subagent_id: "sub-1".to_string(),
                 description: "find bugs".to_string(),
                 subagent_type: "explore".to_string(),

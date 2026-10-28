@@ -203,6 +203,33 @@ pub fn discover(cwd: &Path) -> Vec<AgentDefinition> {
     discover_with_home(cwd, xai_dirs::home_dir().as_deref(), grok.as_deref())
 }
 
+/// Canonical source order for control-plane inspection, including malformed files.
+/// Consumers must not export parser errors, which may contain source contents.
+pub fn source_files(cwd: &Path) -> Vec<(PathBuf, AgentScope)> {
+    let grok = xai_grok_config::user_grok_home();
+    let home = xai_dirs::home_dir();
+    let mut dirs = project_agent_dirs(Some(cwd))
+        .0
+        .into_iter()
+        .map(|p| (p, AgentScope::Project))
+        .collect::<Vec<_>>();
+    dirs.extend(user_agent_dirs(home.as_deref(), grok.as_deref()));
+    let mut files = Vec::new();
+    for (dir, scope) in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut paths = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "md"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        files.extend(paths.into_iter().map(|p| (p, scope)));
+    }
+    files
+}
+
 fn discover_with_home(
     cwd: &Path,
     home: Option<&Path>,

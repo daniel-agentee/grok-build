@@ -619,6 +619,7 @@ mod address_tests {
             capability_mode: None,
             persona: None,
             role: None,
+            execution: None,
             model: None,
             resumed_from: None,
             workflow_run_id: None,

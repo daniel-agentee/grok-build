@@ -346,6 +346,10 @@ impl SubagentInfo {
 #[derive(Debug, Deserialize)]
 struct SubagentMetaSlice {
     #[serde(default)]
+    attempt_id: Option<String>,
+    #[serde(default)]
+    execution: Option<xai_tool_types::SubagentExecution>,
+    #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
     child_cwd: Option<String>,
@@ -421,6 +425,11 @@ fn enrich_from_meta_with_home(
     info.prompt = meta.prompt.map(Arc::from);
     info.child_cwd = meta.child_cwd.map(Arc::from);
     info.worktree_path = meta.worktree_path.map(Arc::from);
+    if let Some(execution) = meta.execution
+        && meta.attempt_id.as_deref() == info.attempt.lifecycle.current_attempt_id()
+    {
+        info.attempt.model = Some(Arc::from(execution.display()));
+    }
 }
 
 /// Best-effort streamed replay of a child's inherited conversation.

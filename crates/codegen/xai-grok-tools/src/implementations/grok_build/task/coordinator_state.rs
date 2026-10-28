@@ -76,6 +76,7 @@ pub trait ChildControl: 'static {
 
 /// Data reported when runtime initialization has produced a live child.
 pub struct StartedChild<C> {
+    pub execution: Option<xai_tool_types::SubagentExecution>,
     pub child_session_id: String,
     pub persona: Option<String>,
     pub resumed_from: Option<String>,
@@ -505,6 +506,7 @@ pub(super) struct PendingChild {
 }
 
 pub(super) struct ActiveChild<C> {
+    pub(super) execution: Option<xai_tool_types::SubagentExecution>,
     pub(super) request: SubagentRequest,
     pub(super) started_at: std::time::Instant,
     pub(super) cancellation: CancellationToken,
@@ -609,6 +611,7 @@ where
 
 #[derive(Clone)]
 pub(super) struct RunningSeed {
+    pub(super) execution: Option<xai_tool_types::SubagentExecution>,
     pub(super) subagent_id: String,
     pub(super) description: String,
     pub(super) subagent_type: String,
@@ -884,6 +887,7 @@ pub(super) fn active_summary<C>(child: &ActiveChild<C>) -> ActiveSubagentSummary
 
 pub(super) fn running_seed<C>(child: &ActiveChild<C>) -> RunningSeed {
     RunningSeed {
+        execution: child.execution.clone(),
         subagent_id: child.request.id.clone(),
         description: child.request.description.clone(),
         subagent_type: child.request.subagent_type.clone(),
@@ -903,6 +907,7 @@ pub(super) fn running_inspection(
 ) -> SubagentInspection {
     SubagentInspection {
         snapshot: SubagentSnapshot {
+            execution: seed.execution,
             subagent_id: seed.subagent_id,
             description: seed.description,
             subagent_type: seed.subagent_type,
@@ -928,6 +933,7 @@ pub(super) fn running_inspection(
 
 pub(super) fn pending_snapshot(child: &PendingChild) -> SubagentSnapshot {
     SubagentSnapshot {
+        execution: None,
         subagent_id: child.request.id.clone(),
         description: child.request.description.clone(),
         subagent_type: child.request.subagent_type.clone(),
@@ -955,6 +961,7 @@ pub(super) fn queued_snapshot(
     queued_at: std::time::Instant,
 ) -> SubagentSnapshot {
     SubagentSnapshot {
+        execution: None,
         subagent_id: request.id.clone(),
         description: request.description.clone(),
         subagent_type: request.subagent_type.clone(),
@@ -1010,6 +1017,7 @@ pub fn terminal_snapshot(
         }
     };
     SubagentSnapshot {
+        execution: result.execution.clone(),
         subagent_id: request.id.clone(),
         description: request.description.clone(),
         subagent_type: request.subagent_type.clone(),
@@ -1085,6 +1093,7 @@ pub fn completion_summary(
     };
     SubagentCompletionSummary {
         snapshot: SubagentSnapshot {
+            execution: snapshot.execution.clone(),
             subagent_id: snapshot.subagent_id.clone(),
             description: snapshot.description.clone(),
             subagent_type: snapshot.subagent_type.clone(),
