@@ -1519,6 +1519,80 @@ fn inject_capabilities_adds_default_model_to_session_new() {
 }
 
 #[test]
+fn named_profile_context_does_not_inherit_client_model() {
+    let caps = ClientCapabilities {
+        default_model: Some("grok-3-fast".to_string()),
+        yolo_mode: true,
+        ..Default::default()
+    };
+    for profile in ["cfo", "general-purpose", "grok-build-plan"] {
+        let mut json = serde_json::json!({
+            "jsonrpc": "2.0", "method": AGENT_METHOD_NAMES.session_new, "id": 1,
+            "params": {"cwd": "/tmp", "_meta": {
+                "agentProfile": profile, "profileRevision": "frozen-revision"
+            }}
+        });
+        assert!(inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42)));
+        assert_eq!(j(&json, "/params/_meta/agentProfile"), profile);
+        assert_eq!(j(&json, "/params/_meta/profileRevision"), "frozen-revision");
+        assert!(j(&json, "/params/_meta").get("modelId").is_none());
+        assert!(j(&json, "/params/_meta").get("reasoningEffort").is_none());
+        assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
+        assert_eq!(j(&json, "/params/_meta/clientIdentifier"), "grok-tui");
+        assert_eq!(j(&json, "/params/_meta/x.ai~1leaderClientId"), 42);
+    }
+}
+
+#[test]
+fn named_profile_context_preserves_explicit_overrides_for_admission_refusal() {
+    let caps = ClientCapabilities {
+        default_model: Some("inherited-model".to_string()),
+        ..Default::default()
+    };
+    let mut json = serde_json::json!({
+        "jsonrpc": "2.0", "method": AGENT_METHOD_NAMES.session_new, "id": 1,
+        "params": {"cwd": "/tmp", "_meta": {
+            "agentProfile": "cfo", "modelId": "explicit-model", "reasoningEffort": "high"
+        }}
+    });
+    inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42));
+    assert_eq!(j(&json, "/params/_meta/modelId"), "explicit-model");
+    assert_eq!(j(&json, "/params/_meta/reasoningEffort"), "high");
+}
+
+#[test]
+fn named_profile_context_keeps_inline_definition_default_model_behavior() {
+    let caps = ClientCapabilities {
+        default_model: Some("inherited-model".to_string()),
+        ..Default::default()
+    };
+    let mut json = serde_json::json!({
+        "jsonrpc": "2.0", "method": AGENT_METHOD_NAMES.session_new, "id": 1,
+        "params": {"cwd": "/tmp", "_meta": {"agentProfile": {"name": "inline"}}}
+    });
+    inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42));
+    assert_eq!(j(&json, "/params/_meta/modelId"), "inherited-model");
+}
+
+#[test]
+fn named_profile_context_load_and_resume_do_not_inject_routes() {
+    let caps = ClientCapabilities {
+        default_model: Some("inherited-model".to_string()),
+        ..Default::default()
+    };
+    for method in [AGENT_METHOD_NAMES.session_load, AGENT_METHOD_NAMES.session_resume] {
+        let mut json = serde_json::json!({
+            "jsonrpc": "2.0", "method": method, "id": 1,
+            "params": {"sessionId": "resident", "_meta": {"agentProfile": "cfo"}}
+        });
+        assert!(inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42)));
+        assert!(j(&json, "/params/_meta").get("modelId").is_none());
+        assert!(j(&json, "/params/_meta").get("reasoningEffort").is_none());
+        assert_eq!(j(&json, "/params/_meta/agentProfile"), "cfo");
+    }
+}
+
+#[test]
 fn inject_capabilities_adds_both_yolo_and_model() {
     let payload = format!(
         r#"{{"jsonrpc":"2.0","method":"{}","id":1,"params":{{"cwd":"/tmp"}}}}"#,

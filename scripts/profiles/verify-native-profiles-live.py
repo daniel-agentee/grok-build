@@ -121,12 +121,12 @@ def toml_value(value):
 def non_secret_config(installed_config):
     """Copy model metadata and env references; never inline provider credentials."""
     if not installed_config.is_file():
-        return '[models]\ndefault = "grok-4.7-build"\n'
+        return '[models]\ndefault = "grok-4.7"\n'
     parsed = tomllib.loads(installed_config.read_text())
     defaults = {key: value for key, value in parsed.get("models", {}).items()
                 if key in ("default", "default_reasoning_effort") and isinstance(value, str)}
     # Make the official cached-auth proof independent of optional provider keys.
-    defaults["default"] = "grok-4.7-build"
+    defaults["default"] = "grok-4.7"
     lines = ["[models]"] + [f"{key} = {toml_value(value)}" for key, value in defaults.items()]
     allowed = {"model", "name", "base_url", "api_backend", "env_key", "context_window",
                "reasoning_efforts", "stream_tool_calls", "system_prompt_label", "compaction_at_tokens"}
@@ -210,7 +210,10 @@ async def verify(args):
         import fcntl
         import termios
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 55, 180, 0, 0))
-        terminal = subprocess.Popen([str(binary), "--leader", "--agent", "general-purpose", "--no-auto-update", "--leader-socket", str(socket), "--permission-mode", "default", "--cwd", str(workspace), "--session-id", sid], env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        terminal_args = [str(binary), "--leader", "--no-auto-update", "--leader-socket", str(socket), "--permission-mode", "default", "--cwd", str(workspace), "--session-id", sid]
+        if args.terminal_profile:
+            terminal_args.extend(("--agent", args.terminal_profile))
+        terminal = subprocess.Popen(terminal_args, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
         os.set_blocking(master, False)
         terminal_output = bytearray()
@@ -252,6 +255,11 @@ async def verify(args):
         (root / "fixture.json").write_text(json.dumps(fixture, indent=2))
         print(json.dumps({"fixture": str(root / "fixture.json"), "status": "resident_interactive_terminal_ready"}), flush=True)
         await wait_turn_idle(native, bridge, sid, "PROFILE-TERMINAL-READY-20261028", 0, timeout=120)
+        if args.startup_only:
+            (root / "acceptance.json").write_text(json.dumps({"startup": {"passed": True, "terminalProfile": args.terminal_profile or None, "assistant": assistant_text(native.events, sid)}}, indent=2))
+            drainer.cancel()
+            await asyncio.gather(drainer, return_exceptions=True)
+            return
         prompt = "Use the pick-right-subagent-and-assign-task skill to delegate this routine local acknowledgement task. Read the current catalog through the skill's documented local command and choose the available model, reasoning effort and speed that fit the task. Only the cached official Grok provider is authenticated in this fixture; optional local provider credentials are unavailable. Delegate exactly once to General. The child must reply exactly PROFILE-GENERAL-CHILD-ACK-20261028 and must use no tools or network. After its result, reply PROFILE-GENERAL-PARENT-ACK-20261028 and report its actual execution settings. The parent may only load the skill, read the catalog, spawn and wait for the child. Do not send Slack messages or access credentials."
         start = len(native.events)
         os.write(master, b"\x1b[200~" + prompt.encode() + b"\x1b[201~\r")
@@ -345,4 +353,6 @@ if __name__ == "__main__":
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--keep-open", action="store_true")
+    parser.add_argument("--terminal-profile", default="general-purpose", help="Named profile for the real Terminal; empty uses ordinary startup")
+    parser.add_argument("--startup-only", action="store_true", help="Prove a real resident Terminal turn without the delegation task")
     asyncio.run(verify(parser.parse_args()))

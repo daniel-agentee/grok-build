@@ -693,7 +693,7 @@ fn backfill_child_routes(
 }
 /// Inject the requesting client's context into a `session/new`, `session/load`, or `session/resume` request, **in place**.
 /// The agent's own state names whichever client initialized last, which in leader mode is the wrong client.
-/// For a session/new request: If the client has yolo_mode enabled, injects `yoloMode: true` into the request's `_meta` object. If the client has default_model set and the request doesn't already have a modelId, injects `modelId` into the request's `_meta` object. Injects `clientIdentifier` so the agent can track which client owns each session (scopes `yolo_mode_changed` broadcasts in leader mode).
+/// For a session/new request: If the client has yolo_mode enabled, injects `yoloMode: true` into the request's `_meta` object. If the client has default_model set and the request has neither a named agentProfile nor modelId, injects `modelId` into the request's `_meta` object. Injects `clientIdentifier` so the agent can track which client owns each session (scopes `yolo_mode_changed` broadcasts in leader mode).
 fn inject_session_request_context(
     json: &mut serde_json::Value,
     capabilities: &ClientCapabilities,
@@ -742,7 +742,11 @@ fn inject_session_request_context(
                 meta_obj.insert("autoMode".to_string(), serde_json::json!(true));
                 debug!("Injected autoMode=true into session request");
             }
+            // Named profiles own their route. A client default is inherited UI
+            // state, not an explicit session override; leave explicit overrides
+            // intact so native profile admission can reject them.
             if is_session_new
+                && !meta_obj.get("agentProfile").is_some_and(serde_json::Value::is_string)
                 && let Some(ref model_id) = capabilities.default_model
                 && !model_id.is_empty()
                 && !meta_obj.contains_key("modelId")
