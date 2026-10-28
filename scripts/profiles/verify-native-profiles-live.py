@@ -19,6 +19,7 @@ import secrets
 import signal
 import struct
 import subprocess
+import sys
 import time
 import tomllib
 from urllib.parse import urlsplit
@@ -161,7 +162,6 @@ async def verify(args):
     home.mkdir(mode=0o700)
     workspace.mkdir()
     (workspace / "README.md").write_text("Fictional, disposable profile routing acceptance.\n")
-    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
     installed_home = Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok")))
     # Copy only model metadata and env names, never symlink writable real config.
     installed_config = installed_home / "config.toml"
@@ -170,8 +170,10 @@ async def verify(args):
     command_dir = root / "bin"
     command_dir.mkdir()
     (command_dir / "grok").symlink_to(binary)
-    env = dict(os.environ, GROK_HOME=str(home), GROK_AUTH_PATH=os.environ.get("GROK_AUTH_PATH", str(installed_home / "auth.json")), TERM="xterm-256color", PATH=str(command_dir) + os.pathsep + os.environ.get("PATH", ""))
-    subprocess.run(["python3", str(source / "scripts/profiles/install-routing-skill.py"), "--grok-home", str(home)], env=env, check=True, stdout=subprocess.DEVNULL)
+    execution_path = os.pathsep.join((str(command_dir), str(Path.home() / ".cargo/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin", "/opt/homebrew/bin", os.environ.get("PATH", "")))
+    env = dict(os.environ, GROK_HOME=str(home), GROK_AUTH_PATH=os.environ.get("GROK_AUTH_PATH", str(installed_home / "auth.json")), TERM="xterm-256color", PATH=execution_path)
+    subprocess.run(["git", "init", "-q", str(workspace)], env=env, check=True)
+    subprocess.run([sys.executable, str(source / "scripts/profiles/install-routing-skill.py"), "--grok-home", str(home)], env=env, check=True, stdout=subprocess.DEVNULL)
     profile_dir = workspace / ".grok/agents"
     profile_dir.mkdir(parents=True)
     definition = {"name": "routing-fixture", "description": "Fictional CFO arithmetic specialist for bounded acceptance", "model": "inherit", "effort": "low", "speed": "standard", "identity": {"displayName": "CFO Fixture", "avatar": "💼"}}
@@ -184,7 +186,6 @@ async def verify(args):
         raise RuntimeError("Use a short private fixture root such as /tmp/grok-profiles-YYYYMMDD")
     spec = importlib.util.spec_from_file_location("profile_fixture_bridge", source / "tools/live-session-bridge/bridge.py")
     bridge = importlib.util.module_from_spec(spec)
-    import sys
     sys.modules[spec.name] = bridge
     spec.loader.exec_module(bridge)
     log = (root / "leader.log").open("w")

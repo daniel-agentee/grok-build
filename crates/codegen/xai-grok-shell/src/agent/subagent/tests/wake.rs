@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn shell_child_dispatch_future_size() {
+    fn size_of_future<A, B, C, D, E, F>(_: fn(A, B, C, D, E) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    fn size_of_unary_future<A, F>(_: fn(A) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let dispatch_bytes = size_of_future(run_shell_child);
+    assert!(
+        dispatch_bytes <= 64 * 1024,
+        "child dispatch future grew to {dispatch_bytes} bytes",
+    );
+    let coordinator_bytes = size_of_unary_future(
+        xai_grok_tools::implementations::grok_build::task::coordinator::SubagentCoordinator::<
+            RunShellChildTestRunner,
+        >::run,
+    );
+    eprintln!(
+        "native_future_sizes dispatch={} context={} completion={} coordinator={}",
+        dispatch_bytes,
+        std::mem::size_of::<SubagentSpawnContext>(),
+        std::mem::size_of::<ShellCompletionData>(),
+        coordinator_bytes,
+    );
+}
+
 #[derive(Clone)]
 struct RunShellChildTestRunner {
     contexts: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<SubagentSpawnContext>>>,
@@ -780,8 +807,10 @@ async fn unacked_wake_start_and_abort_fail_closed_without_parking_runner() {
                 )
                 .await;
             assert_eq!(wake, ActiveAgentMessageOutcome::NotActiveOrFinalizing);
+            // Restoration follows bounded actor teardown; use the coordinator
+            // completion budget rather than racing the same five-second bound.
             let restored = backend
-                .query(&id, true, Some(5_000))
+                .query(&id, true, None)
                 .await
                 .expect("restored prior snapshot");
             assert!(matches!(
@@ -912,7 +941,7 @@ async fn rejected_deferred_start_restores_prior_without_publication() {
                 ActiveAgentMessageOutcome::NotActiveOrFinalizing
             );
             let restored = backend
-                .query(&id, true, Some(5_000))
+                .query(&id, true, None)
                 .await
                 .expect("restored prior completion");
             assert!(
@@ -1048,8 +1077,9 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
                     .await,
                 ActiveAgentMessageOutcome::Accepted { .. }
             ));
+            // Completion also flushes the transcript and shuts down the actor.
             let wake = backend
-                .query(&id, true, Some(5_000))
+                .query(&id, true, None)
                 .await
                 .expect("wake completion");
             assert!(matches!(

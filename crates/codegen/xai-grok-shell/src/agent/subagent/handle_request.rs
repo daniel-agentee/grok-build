@@ -399,6 +399,25 @@ pub(super) fn admit_explicit_tool_model(
 )]
 pub(crate) async fn run_shell_child(
     run: grok_build::task::coordinator::ChildRunRequest<ShellChildRuntime>,
+    ctx: SubagentSpawnContext,
+    completion_data: ShellCompletionData,
+    gateway: GatewaySender,
+    spawn_root: Option<tracing::Span>,
+) -> ChildRunOutput<ShellCompletionData> {
+    // This future crosses coordinator and worker task boundaries. Keep the larger
+    // setup state on the heap so wake/resume does not exhaust a default stack.
+    Box::pin(run_shell_child_inner(
+        run,
+        ctx,
+        completion_data,
+        gateway,
+        spawn_root,
+    ))
+    .await
+}
+
+async fn run_shell_child_inner(
+    run: grok_build::task::coordinator::ChildRunRequest<ShellChildRuntime>,
     mut ctx: SubagentSpawnContext,
     mut completion_data: ShellCompletionData,
     gateway: GatewaySender,
