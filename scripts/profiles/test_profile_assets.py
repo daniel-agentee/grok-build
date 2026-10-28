@@ -131,6 +131,16 @@ def test_validate_complete_batch_before_first_write_and_use_cas(tmp_path: Path) 
     ]
     assert calls[3].args[3]["expectedRevision"] == "r1"
     assert calls[4].args[3]["expectedRevision"] is None
+    assert all(call.kwargs.get("scope") == "user" for call in calls)
+    assert calls[3].args[3]["writeScope"] == "user"
+
+
+def test_project_import_requires_explicit_scope_and_uses_project_revisions(tmp_path: Path) -> None:
+    with patch.object(IMPORT, "grok_json", side_effect=[{"profiles": []}, {}, {}]) as native:
+        IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}}, False, scope="project")
+    assert all(call.kwargs.get("scope") == "project" for call in native.call_args_list)
+    assert native.call_args_list[-1].args[3]["expectedRevision"] is None
+    assert native.call_args_list[-1].args[3]["writeScope"] == "project"
 
 
 def test_refused_validation_writes_nothing(tmp_path: Path) -> None:

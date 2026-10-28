@@ -117,11 +117,15 @@ def make_definition(
 
 
 def grok_json(
-    binary: str, cwd: Path, args: list[str], payload: dict[str, Any] | None = None
+    binary: str,
+    cwd: Path,
+    args: list[str],
+    payload: dict[str, Any] | None = None,
+    scope: str = "user",
 ) -> dict[str, Any]:
     """Invoke native control with configuration on stdin, never shell or secret argv."""
     result = subprocess.run(
-        [binary, "profiles", "--cwd", str(cwd), *args, "--json"],
+        [binary, "profiles", "--cwd", str(cwd), "--scope", scope, *args, "--json"],
         input=json.dumps(payload) if payload is not None else None,
         text=True,
         capture_output=True,
@@ -134,6 +138,8 @@ def grok_json(
         raise ValueError("Native Grok profile control returned invalid JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("Native Grok profile control returned a non-object")
+    if result.returncode == 0 and value.get("version") != 1:
+        raise ValueError("Native Grok profile control requires the compatible version-1 API")
     validation = value.get("validation")
     if (
         result.returncode
@@ -148,9 +154,13 @@ def grok_json(
 
 
 def apply_definitions(
-    binary: str, cwd: Path, definitions: dict[str, dict[str, Any]], update: bool
+    binary: str,
+    cwd: Path,
+    definitions: dict[str, dict[str, Any]],
+    update: bool,
+    scope: str = "user",
 ) -> list[str]:
-    catalog = grok_json(binary, cwd, ["list"])
+    catalog = grok_json(binary, cwd, ["list"], scope=scope)
     existing = {entry["id"]: entry for entry in catalog.get("profiles", [])}
     collisions = sorted(set(definitions) & set(existing))
     if collisions and not update:
@@ -159,7 +169,13 @@ def apply_definitions(
         )
     # Validate the complete batch before the first write. CAS still guards every profile.
     for profile_id, definition in definitions.items():
-        grok_json(binary, cwd, ["validate"], {"id": profile_id, "definition": definition})
+        grok_json(
+            binary,
+            cwd,
+            ["validate"],
+            {"id": profile_id, "definition": definition, "writeScope": scope},
+            scope=scope,
+        )
     applied = []
     for profile_id, definition in definitions.items():
         revision = existing.get(profile_id, {}).get("revision")
@@ -172,7 +188,9 @@ def apply_definitions(
                     "id": profile_id,
                     "expectedRevision": revision,
                     "definition": definition,
+                    "writeScope": scope,
                 },
+                scope=scope,
             )
         except ValueError as exc:
             raise ValueError(
@@ -187,6 +205,12 @@ def main() -> int:
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--cwd", type=Path, default=Path.cwd())
     parser.add_argument("--grok", default="grok")
+    parser.add_argument(
+        "--scope",
+        choices=["user", "project"],
+        default="user",
+        help="User profiles apply across workspaces; project scope explicitly creates local overrides",
+    )
     parser.add_argument("--seat", choices=sorted(SEATS), action="append")
     parser.add_argument(
         "--identities",
@@ -213,11 +237,15 @@ def main() -> int:
         }
         if args.apply:
             applied = apply_definitions(
-                args.grok, args.cwd.resolve(), definitions, args.update_existing
+                args.grok, args.cwd.resolve(), definitions, args.update_existing, args.scope
             )
-            print(json.dumps({"applied": applied}))
+            print(json.dumps({"applied": applied, "writeScope": args.scope}))
         else:
-            print(json.dumps({"version": 1, "definitions": definitions}, indent=2))
+            print(
+                json.dumps(
+                    {"version": 1, "writeScope": args.scope, "definitions": definitions}, indent=2
+                )
+            )
     except json.JSONDecodeError:
         print("Import refused: malformed identity JSON", file=sys.stderr)
         return 1

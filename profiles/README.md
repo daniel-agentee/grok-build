@@ -11,7 +11,7 @@ It refuses invalid settings instead of silently choosing a substitute.
 
 ```sh
 grok profiles --cwd "$PWD" list --json
-grok profiles --cwd "$PWD" get cfo --json
+grok profiles --cwd "$PWD" --scope user get cfo --json
 grok profiles --cwd "$PWD" policy get --json
 python3 scripts/profiles/import-claude-profiles.py --identities /private/path/identities.json --seat cfo
 python3 scripts/profiles/import-claude-profiles.py --identities /private/path/identities.json --apply
@@ -23,6 +23,12 @@ The importer requires PyYAML. Preview is the default. Apply validates every
 definition before writing, uses native compare-and-swap per profile and refuses
 to replace an existing profile unless `--update-existing` is explicit. A later
 conflict stops the batch and reports which earlier profiles were applied.
+The importer defaults to explicit `--scope user`: roles are installed under
+the configured Grok home and are visible from every workspace. `--scope project`
+is an intentional workspace override. Native `list/get --scope user|project`
+returns the selected source even when another scope shadows it; apply uses
+`writeScope` and compares the destination's revision. Runtime effective discovery
+gives project definitions precedence over user definitions of the same name.
 
 CFO, CoS, CRO, COO, CTO and SDR wrappers reference their current Claude role
 files and shared C-level/company rules, preserving one authoritative prompt.
@@ -44,6 +50,12 @@ Slack identity uses `botKey`, `botUserId` and an `env:NAME` credential reference
 The importer never reads token files. Identity metadata does not authorize a
 Slack send or provide credential isolation. The runtime must resolve references
 in its approved credential path and preserve permission checks.
+For the imported C-level roles, their existing source instructions use the shared
+`~/.agentee-hub/bin/seat-bot.py <botKey>` workflow. That helper loads the selected
+bot's token internally from `~/.grok/<botKey>-slack.env`; its key is `cro`, even
+though Slack displays the CRO bot's handle as `cso`. A generic profile's custom
+credential reference still requires an authorized workflow capable of resolving
+that reference. Setting metadata alone does not create a new Slack integration.
 
 Policy modes are `automatic` (named profiles and General), `profiles-only`, and
 `general-only`. Defaults fill absent settings. Edits apply to future child
