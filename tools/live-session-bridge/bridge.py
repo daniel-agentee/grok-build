@@ -17,6 +17,7 @@ import logging
 import os
 from pathlib import Path
 import secrets
+import signal
 import stat
 import struct
 from typing import Any
@@ -46,6 +47,7 @@ CATALOG_TIMEOUT = 20
 PROFILE_METHOD = "_x.ai/profiles/list"
 PROFILE_TIMEOUT = 12
 MAX_PROFILE_OUTPUT = 2 * 1024 * 1024
+MAX_PROFILE_ROWS = 256
 INTERNAL_PREFIX = "grok-mobile-preflight:"
 
 
@@ -57,6 +59,43 @@ def default_workspace_reader() -> Path:
         return packaged
     preserved = here.parents[1] / "target/verified-all-sessions-20261021/grok-dashboard-workspace"
     return preserved if preserved.exists() else here.parents[1] / "target/debug/grok-dashboard-workspace"
+
+
+def profile_display_row(profile: Any) -> dict[str, Any] | None:
+    """Isolate broken sources without turning display data into admission proof.
+
+    Native v1 emits typed definitions even for unreadable files. Keep the phone
+    usable if a future or incompatible source violates one row's display shape;
+    the untouched native catalog is still revalidated before creation.
+    """
+    def label(value, maximum=512):
+        return value if (isinstance(value, str) and 0 < len(value) <= maximum
+                         and value == value.strip()
+                         and not any(ord(c) < 32 or ord(c) == 127 for c in value)) else None
+
+    if not isinstance(profile, dict) or (identity_id := label(profile.get("id"))) is None:
+        return None
+    raw_definition = profile.get("definition")
+    definition = raw_definition if isinstance(raw_definition, dict) else {}
+    raw_identity = definition.get("identity")
+    identity = raw_identity if isinstance(raw_identity, dict) else {}
+    validation = profile.get("validation")
+    revision = label(profile.get("revision"))
+    name = label(identity.get("displayName")) or label(definition.get("name"))
+    valid = (isinstance(validation, dict) and validation.get("valid") is True
+             and isinstance(raw_definition, dict) and (raw_identity is None or isinstance(raw_identity, dict))
+             and revision is not None and name is not None)
+    skills = definition.get("skills")
+    rules = definition.get("ruleFiles")
+    return {
+        "id": identity_id, "revision": revision, "name": name or "Unavailable assistant",
+        "description": label(definition.get("description"), 2048), "avatar": label(identity.get("avatar"), 2048),
+        "model": label(definition.get("model")), "reasoningEffort": label(definition.get("effort")),
+        "speed": label(definition.get("speed")),
+        "skills": [text for item in skills[:64] if (text := label(item, 256)) is not None] if isinstance(skills, list) else [],
+        "ruleCount": min(256, len(rules)) if isinstance(rules, list) else 0,
+        "valid": bool(valid),
+    }
 
 
 READ_METHODS = {
@@ -323,13 +362,15 @@ class LeaderDirectory:
         self.workspace_reader = workspace_reader
         self.profile_cli = profile_cli
         self.profile_reads = asyncio.Semaphore(2)
+        # Browsing cannot consume the admission slot immediately before create.
+        self.profile_admissions = asyncio.Semaphore(1)
         self.workspace_reader_sha256 = WORKSPACE_READER_SHA256
         self.workspace_members: set[tuple[str, str]] = set()
         self.catalogs: dict[tuple, tuple[float, dict]] = {}
         self.catalog_flights: dict[tuple, asyncio.Future] = {}
         self.refresh_paths()
 
-    async def profile_catalog(self, cwd: str) -> dict[str, Any]:
+    async def profile_catalog(self, cwd: str, *, admission: bool = False) -> dict[str, Any]:
         """Read the pinned native catalog without an agent or credential output.
 
         No cache: profile revisions must be current at creation admission. The
@@ -346,13 +387,16 @@ class LeaderDirectory:
         except OSError:
             raise ValueError("profiles_unavailable") from None
         process = None
+        complete = False
         try:
-            async with asyncio.timeout(PROFILE_TIMEOUT), self.profile_reads:
+            slots = self.profile_admissions if admission else self.profile_reads
+            async with asyncio.timeout(PROFILE_TIMEOUT), slots:
                 process = await asyncio.create_subprocess_exec(
                     str(path), "profiles", "--cwd", cwd, "list", "--json",
                     env={**os.environ, "GROK_HOME": str(self.primary.parent)},
                     stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
                 )
                 output = bytearray()
                 while chunk := await process.stdout.read(65536):
@@ -365,17 +409,19 @@ class LeaderDirectory:
                 if (not isinstance(catalog, dict) or catalog.get("version") != 1
                     or not isinstance(catalog.get("revision"), str)
                     or not isinstance(catalog.get("profiles"), list)
-                    or len(catalog["profiles"]) > 256):
+                    or len(catalog["profiles"]) > MAX_PROFILE_ROWS):
                     raise ValueError("profiles_invalid")
+                complete = True
                 return catalog
         except asyncio.TimeoutError:
             raise ValueError("profiles_timeout") from None
         except (OSError, TypeError, RecursionError, json.JSONDecodeError):
             raise ValueError("profiles_invalid") from None
         finally:
-            if process is not None and process.returncode is None:
-                with suppress(ProcessLookupError):
-                    process.kill()
+            if process is not None:
+                if not complete or process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
 
     async def check_profile(self, request: dict[str, Any]) -> dict[str, Any] | None:
@@ -383,15 +429,16 @@ class LeaderDirectory:
         if "agentProfile" not in meta:
             return None
         try:
-            catalog = await self.profile_catalog(request["params"]["cwd"])
+            catalog = await self.profile_catalog(request["params"]["cwd"], admission=True)
             matches = [row for row in catalog["profiles"] if isinstance(row, dict)
                        and row.get("id") == meta["agentProfile"]]
             if len(matches) != 1 or matches[0].get("revision") != meta["profileRevision"]:
                 return source_error(request, "profile_stale", "This profile changed or was removed. Refresh and choose again.")
             profile = matches[0]
             definition, validation = profile.get("definition", {}), profile.get("validation", {})
+            display = profile_display_row(profile)
             if (not isinstance(definition, dict) or not isinstance(validation, dict)
-                or validation.get("valid") is not True):
+                or validation.get("valid") is not True or display is None or display["valid"] is not True):
                 return source_error(request, "profile_invalid", "This profile cannot run. Review its settings on the Mac.")
             if ("modelId" in meta and definition.get("model") != meta["modelId"]
                 or "reasoningEffort" in meta and definition.get("effort") != meta["reasoningEffort"]):
@@ -1093,19 +1140,9 @@ class Bridge:
                 # or authorized workflow, never in this display response.
                 profiles = []
                 for profile in catalog["profiles"]:
-                    if not isinstance(profile, dict):
-                        raise ValueError("profiles_invalid")
-                    definition = profile.get("definition", {})
-                    identity = definition.get("identity") or {}
-                    profiles.append({
-                        "id": profile.get("id"), "revision": profile.get("revision"),
-                        "name": identity.get("displayName") or definition.get("name"),
-                        "description": definition.get("description"), "avatar": identity.get("avatar"),
-                        "model": definition.get("model"), "reasoningEffort": definition.get("effort"),
-                        "speed": definition.get("speed"), "skills": definition.get("skills") or [],
-                        "ruleCount": len(definition.get("ruleFiles") or []),
-                        "valid": profile.get("validation", {}).get("valid") is True,
-                    })
+                    display = profile_display_row(profile)
+                    if display is not None:
+                        profiles.append(display)
                 if not ws.closed:
                     await ws.send_json({"jsonrpc": "2.0", "id": value["id"], "result": {
                         "version": 1, "revision": catalog["revision"], "profiles": profiles,

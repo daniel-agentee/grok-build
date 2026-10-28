@@ -18,8 +18,18 @@ revision, name, description, avatar, model, reasoningEffort, speed, skills,
 ruleCount and valid. System prompts, rule bodies and credential references stay
 on the Mac. Missing/old/untrusted executables and invalid workspaces return a
 clear `profiles_unavailable` error. No CLI stderr is returned or logged.
+The configured primary socket must live directly inside that leader's Grok home;
+all sockets discovered by this bridge share that home. Listing and creation both
+use the canonical absolute workspace. The helper inherits the bridge environment
+so existing provider credential references keep working; it returns no credentials.
+Deployments use an immutable, hash-receipted CLI release path. File ownership/mode
+checks protect the configured executable; they do not replace release verification.
+The catalog envelope is capped at 256 rows and 2 MiB. Malformed individual display
+rows are disabled or omitted without hiding valid assistants. Browsing has two
+helper slots and creation admission has its own slot; every helper is time bounded,
+and a disconnected browsing client cancels and reaps its helper process group.
 
-For a named profile, `session/new._meta` contains only
+New clients send named profiles as `session/new._meta` containing only
 `{agentProfile: "researcher", profileRevision: "native-profile-revision"}`.
 Inline definitions and permission overrides are refused. The bridge refreshes
 the canonical native catalog before creator dispatch, verifies validity and
@@ -30,6 +40,11 @@ and echo the applied immutable identity in `_meta["x.ai/agentProfile"]` as
 create and strict load before enabling Send. Custom sessions keep the existing
 advertised model/reasoning path. Profile edits affect future children/sessions;
 attachment never replaces a running actor or its frozen profile.
+For compatibility, explicit `modelId`/`reasoningEffort` selectors are also accepted
+when they exactly equal the saved profile values. They cannot override a profile.
+Native v1 has no separate disabled flag: availability is `validation.valid`; model
+policy, missing references and other invalid native settings make it false. Native
+admission remains authoritative and is checked again before any session is created.
 
 Run the focused adapter suite with:
 

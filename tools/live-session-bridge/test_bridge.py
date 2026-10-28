@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -918,6 +919,86 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("session/new", self.native_methods)
         await ws.close()
 
+    async def test_malformed_catalog_row_shapes_are_isolated_and_never_admitted(self):
+        self.install_profile_cli()
+        broken = [None, "bad", [],
+                  {"id": "bad-definition", "revision": "r", "definition": [], "validation": {"valid": True}},
+                  {"id": "bad-identity", "revision": "r", "definition": {"name": "Bad", "identity": "bad"}, "validation": {"valid": True}},
+                  {"id": "bad-validation", "revision": "r", "definition": {"name": "Bad"}, "validation": None},
+                  {"id": "control\nsource", "validation": {"valid": False}},
+                  {"id": "missing-name", "revision": None, "validation": {"valid": False}}]
+        self.profile_fixture["profiles"].extend(broken)
+        self.profile_payload.write_text(json.dumps(self.profile_fixture))
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": "shapes", "method": bridge.PROFILE_METHOD, "params": {"cwd": self.temp.name}})
+        rows = (await ws.receive_json())["result"]["profiles"]
+        self.assertEqual(rows[0]["id"], "researcher")
+        self.assertTrue(rows[0]["valid"])
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(row["valid"] is False for row in rows[1:]))
+        self.assertEqual(rows[-1]["name"], "Unavailable assistant")
+        for row in rows[1:]:
+            rejection = await self.bridge.directory.check_profile({"jsonrpc": "2.0", "id": "invalid", "params": {
+                "cwd": self.temp.name, "_meta": {"agentProfile": row["id"], "profileRevision": row["revision"] or "r"}}})
+            self.assertIn("error", rejection)
+        await ws.close()
+
+    async def test_profile_display_bounds_and_catalog_envelope_limit(self):
+        self.install_profile_cli()
+        definition = self.profile_fixture["profiles"][0]["definition"]
+        definition.update(description="x" * 2049, model="x" * 513, skills=["x" * 257, "research"] * 100,
+                          ruleFiles=["rule.md"] * 300)
+        row = bridge.profile_display_row(self.profile_fixture["profiles"][0])
+        self.assertIsNone(row["description"])
+        self.assertIsNone(row["model"])
+        self.assertEqual(row["skills"], ["research"] * 32)
+        self.assertEqual(row["ruleCount"], 256)
+        self.profile_fixture["profiles"] = [{"id": f"row-{index}", "validation": {"valid": False}}
+                                            for index in range(bridge.MAX_PROFILE_ROWS + 1)]
+        self.profile_payload.write_text(json.dumps(self.profile_fixture))
+        with self.assertRaisesRegex(ValueError, "^profiles_invalid$"):
+            await self.bridge.directory.profile_catalog(self.temp.name)
+
+    async def test_profile_catalog_and_creation_use_canonical_workspace_and_primary_home(self):
+        cli = self.install_profile_cli()
+        record = Path(self.temp.name) / "catalog-origin.json"
+        cli.write_text("#!/usr/bin/env python3\nimport os,sys,json\nfrom pathlib import Path\n"
+            + "Path(" + repr(str(record)) + ").write_text(json.dumps({'home':os.environ.get('GROK_HOME'), 'cwd':sys.argv[sys.argv.index('--cwd')+1]}))\n"
+            + "print(Path(" + repr(str(self.profile_payload)) + ").read_text())\n")
+        workspace = Path(self.temp.name) / "workspace"
+        workspace.mkdir()
+        alias = Path(self.temp.name) / "workspace-alias"
+        alias.symlink_to(workspace, target_is_directory=True)
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": "origin", "method": bridge.PROFILE_METHOD, "params": {"cwd": str(alias)}})
+        self.assertIn("result", await ws.receive_json())
+        expected = {"home": str(self.socket.absolute().parent), "cwd": str(workspace.resolve())}
+        self.assertEqual(json.loads(record.read_text()), expected)
+        await ws.send_json({"jsonrpc": "2.0", "id": "canonical", "method": "session/new", "params": {
+            "cwd": str(alias), "_meta": {"agentProfile": "researcher", "profileRevision": "profile-revision"}}})
+        forwarded = await self.next_forward("session/new")
+        self.assertEqual(forwarded["params"]["cwd"], str(workspace.resolve()))
+        self.assertEqual(json.loads(record.read_text()), expected)
+        await self.emit_native({"jsonrpc": "2.0", "id": "canonical", "result": {"sessionId": "canonical-child"}})
+        await ws.receive_json()
+        await ws.close()
+
+    async def test_profile_admission_has_a_separate_slot_from_catalog_browsing(self):
+        self.install_profile_cli()
+        directory = self.bridge.directory
+        await directory.profile_reads.acquire()
+        await directory.profile_reads.acquire()
+        browsing = asyncio.create_task(directory.profile_catalog(self.temp.name))
+        try:
+            request = {"jsonrpc": "2.0", "id": "admission", "params": {"cwd": self.temp.name, "_meta": {
+                "agentProfile": "researcher", "profileRevision": "profile-revision"}}}
+            self.assertIsNone(await asyncio.wait_for(directory.check_profile(request), timeout=5))
+            self.assertFalse(browsing.done())
+        finally:
+            directory.profile_reads.release()
+            directory.profile_reads.release()
+        self.assertEqual((await browsing)["revision"], "catalog-revision")
+
     async def test_named_creation_forwards_identity_revision_only_and_never_fabricates_native_proof(self):
         self.install_profile_cli()
         ws = await self.connect()
@@ -974,11 +1055,47 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_profile_reads_reap_timed_out_and_oversize_processes(self):
         cli = self.install_profile_cli()
-        for script in ["import time; time.sleep(30)", "print('x' * 4096)"]:
+        original_spawn = asyncio.create_subprocess_exec
+        processes = []
+        async def observe_spawn(*args, **kwargs):
+            process = await original_spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+        for script, timeout, expected in [("import time; time.sleep(30)", 0.5, "profiles_timeout"),
+                                          ("print('x' * 4096)", 5, "profiles_invalid")]:
             cli.write_text("#!/usr/bin/env python3\n" + script + "\n")
-            with patch.object(bridge, "PROFILE_TIMEOUT", 0.15), patch.object(bridge, "MAX_PROFILE_OUTPUT", 1024):
-                with self.assertRaises(ValueError):
+            with patch.object(bridge, "PROFILE_TIMEOUT", timeout), patch.object(bridge, "MAX_PROFILE_OUTPUT", 1024), \
+                 patch.object(asyncio, "create_subprocess_exec", side_effect=observe_spawn):
+                with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
                     await self.bridge.directory.profile_catalog(self.temp.name)
+            process = processes[-1]
+            self.assertIsNotNone(process.returncode, "The failed helper must be reaped before returning")
+            with self.assertRaises(ProcessLookupError):
+                os.kill(process.pid, 0)
+
+    async def test_phone_disconnect_cancels_and_reaps_profile_catalog_reader(self):
+        cli = self.install_profile_cli()
+        started = Path(self.temp.name) / "reader-started"
+        cli.write_text("#!/usr/bin/env python3\nimport time\nfrom pathlib import Path\n"
+            + "Path(" + repr(str(started)) + ").touch()\ntime.sleep(30)\n")
+        original_spawn = asyncio.create_subprocess_exec
+        processes = []
+        async def observe_spawn(*args, **kwargs):
+            process = await original_spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+        with patch.object(asyncio, "create_subprocess_exec", side_effect=observe_spawn):
+            ws = await self.connect()
+            await ws.send_json({"jsonrpc": "2.0", "id": "cancel-reader", "method": bridge.PROFILE_METHOD,
+                                "params": {"cwd": self.temp.name}})
+            async with asyncio.timeout(5):
+                while not started.exists():
+                    await asyncio.sleep(0.01)
+            await ws.close()
+            self.assertEqual(len(processes), 1)
+            await asyncio.wait_for(processes[0].wait(), timeout=5)
+            self.assertIsNotNone(processes[0].returncode)
+            self.assertNotIn("session/cancel", self.native_methods)
 
     async def test_new_session_model_settings_capability_requires_native_actor_guarantees(self):
         for supported in (True, False):
