@@ -809,10 +809,13 @@ async fn unacked_wake_start_and_abort_fail_closed_without_parking_runner() {
             assert_eq!(wake, ActiveAgentMessageOutcome::NotActiveOrFinalizing);
             // Restoration follows bounded actor teardown; use the coordinator
             // completion budget rather than racing the same five-second bound.
-            let restored = backend
-                .query(&id, true, None)
-                .await
-                .expect("restored prior snapshot");
+            let restored = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                backend.query(&id, true, None),
+            )
+            .await
+            .expect("wake completion must remain bounded")
+            .expect("restored prior snapshot");
             assert!(matches!(
                 restored.status,
                 SubagentSnapshotStatus::Completed { ref output, .. }
@@ -940,10 +943,13 @@ async fn rejected_deferred_start_restores_prior_without_publication() {
                     .await,
                 ActiveAgentMessageOutcome::NotActiveOrFinalizing
             );
-            let restored = backend
-                .query(&id, true, None)
-                .await
-                .expect("restored prior completion");
+            let restored = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                backend.query(&id, true, None),
+            )
+            .await
+            .expect("wake completion must remain bounded")
+            .expect("restored prior completion");
             assert!(
                 matches!(restored.status, SubagentSnapshotStatus::Completed { .. }),
                 "expected restored completion, got {:?}",
@@ -1078,10 +1084,13 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
                 ActiveAgentMessageOutcome::Accepted { .. }
             ));
             // Completion also flushes the transcript and shuts down the actor.
-            let wake = backend
-                .query(&id, true, None)
-                .await
-                .expect("wake completion");
+            let wake = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                backend.query(&id, true, None),
+            )
+            .await
+            .expect("wake completion must remain bounded")
+            .expect("wake completion");
             assert!(matches!(
                 wake.status,
                 SubagentSnapshotStatus::Completed { .. }
@@ -1118,4 +1127,98 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
             usage_ack.abort();
         })
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn profile_fast_child_wake_keeps_frozen_execution_with_inherited_harness_overrides() {
+    use xai_grok_tools::implementations::grok_build::task::backend::{
+        ChannelBackend, SubagentBackend,
+    };
+    use xai_grok_tools::implementations::grok_build::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        tokio::task::LocalSet::new().run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let meta_dir = temp.path().join("meta");
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            server.set_response("fast child completed");
+            let id = uuid::Uuid::now_v7().to_string();
+            let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+            let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+            let mut contexts = Vec::new();
+            for _ in 0..2 {
+                let mut ctx = ctx_with_toggle(HashMap::new());
+                configure_completion_harness(
+                    &mut ctx,
+                    &server,
+                    RunShellChildHarnessConfig::new(
+                        meta_dir.clone(),
+                        InitialAttemptBehavior::Normal,
+                    ),
+                );
+                ctx.parent_cwd = temp.path().to_path_buf();
+                ctx.parent_cmd_tx = Some(parent_cmd_tx.clone());
+                let mut fast = test_model_entry("grok-4.7-build-fast");
+                fast.info.base_url = server.url();
+                fast.info.api_backend = crate::sampling::ApiBackend::Responses;
+                fast.info.supports_reasoning_effort = true;
+                fast.api_key = Some("mock-inference-test-key".into());
+                ctx.available_models.insert("fast-alias".into(), fast);
+                contexts.push(ctx);
+            }
+            let (gateway, _gateway_rx) = test_gateway_with_receiver();
+            let (command_tx, command_rx) =
+                SubagentCoordinator::<RunShellChildTestRunner>::channel();
+            let coordinator = tokio::task::spawn_local(
+                SubagentCoordinator::from_channel(
+                    command_rx,
+                    RunShellChildTestRunner::new(contexts, false, gateway),
+                    CoordinatorConfig::default(),
+                )
+                .run(),
+            );
+            let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+            let mut request = auto_wake_test_request(&id);
+            request.runtime_overrides.model = Some("fast-alias".into());
+            request.runtime_overrides.reasoning_effort = Some("low".into());
+            let first = backend.spawn(request, None).await.unwrap();
+            assert!(first.success, "{:?}", first.error);
+            let execution = first.execution.clone().expect("actual admitted execution");
+            assert_eq!(execution.model, "grok-4.7-build-fast");
+            assert_eq!(execution.speed, "fast");
+            assert_eq!(execution.reasoning_effort.as_deref(), Some("low"));
+            assert!(matches!(
+                backend
+                    .send_active_message(
+                        ActiveAgentMessageRequest::try_new(&id, "continue").unwrap()
+                    )
+                    .await,
+                ActiveAgentMessageOutcome::Accepted { .. }
+            ));
+            let wake = backend.query(&id, true, None).await.unwrap();
+            assert!(
+                matches!(wake.status, SubagentSnapshotStatus::Completed { .. }),
+                "{:?}",
+                wake.status
+            );
+            assert_eq!(wake.execution, Some(execution));
+            assert!(
+                server.request_count() >= 2,
+                "both actual child turns reached the mock transport"
+            );
+            let saved: SubagentMeta =
+                serde_json::from_slice(&std::fs::read(meta_dir.join("meta.json")).unwrap())
+                    .unwrap();
+            assert_eq!(saved.execution, wake.execution);
+            drop(backend);
+            coordinator.await.unwrap();
+            usage_ack.abort();
+        }),
+    )
+    .await
+    .expect("fast wake remains bounded");
 }

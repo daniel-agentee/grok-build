@@ -705,7 +705,7 @@ impl AgentBuilder {
             };
         }
         let mut definition = self.resolve_definition();
-        definition.resolve_prompt_references()?;
+        definition.resolve_prompt_references(&self.working_directory)?;
         let mut identity_parts = Vec::new();
         if let Some(identity) = &definition.identity
             && let Some(slack) = &identity.slack
@@ -713,13 +713,14 @@ impl AgentBuilder {
             identity_parts.push(format!("## Channel identity\n\nUse Slack bot key {} and bot user ID {} when an authorized task requires a Slack action. Its credential reference is {}. Resolve that reference inside the tool process; never print credentials. A configured identity does not authorize sending a message.", slack.bot_key.as_deref().unwrap_or("(not configured)"), slack.bot_user_id.as_deref().unwrap_or("(not configured)"), slack.credential_ref.as_deref().unwrap_or("(not configured)")));
         }
         if !identity_parts.is_empty() {
-            definition.prompt_body = Some(
-                [
-                    definition.prompt_body.take().unwrap_or_default(),
-                    identity_parts.join("\n\n"),
-                ]
-                .join("\n\n"),
-            );
+            let mut parts = definition
+                .prompt_body
+                .take()
+                .into_iter()
+                .filter(|part| !part.trim().is_empty())
+                .collect::<Vec<_>>();
+            parts.extend(identity_parts);
+            definition.prompt_body = Some(parts.join("\n\n"));
         }
         let working_dir_str = self.working_directory.to_str().unwrap_or(".").to_string();
         let skill_info = if let Some(preloaded) = self.preloaded_skills.take() {

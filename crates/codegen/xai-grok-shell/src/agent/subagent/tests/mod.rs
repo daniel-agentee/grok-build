@@ -18,6 +18,7 @@ use super::handle_request::{
     CHILD_ACTOR_ACK_TIMEOUT, PARENT_ACK_TIMEOUT, TaskModelAdmissionError,
     admit_explicit_tool_model, agent_memory_scope_for_mode, child_actor_query,
     child_admission_policy, provider_route_fingerprint, resumed_route_matches,
+    resume_snapshot_is_complete, resume_has_caller_overrides,
     explicit_tool_model, mark_child_usage_not_applied_with_fallback,
     reparent_surviving_child_tasks, resolve_child_model, take_child_streaming_partial,
     take_child_turn_messages,

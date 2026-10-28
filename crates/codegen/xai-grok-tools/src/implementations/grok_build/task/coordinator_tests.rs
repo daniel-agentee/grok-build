@@ -203,6 +203,13 @@ impl ChildRunner for TestRunner {
                     "pending record must accept the source type"
                 );
             }
+            if request.subagent_type == "execution-before-start" {
+                return ChildRunOutput {
+                    result: finished_result(&request),
+                    completion_data: TestCompletionData,
+                    snapshot_ref: None,
+                };
+            }
             if fail_wake_before_start && wake_agent_id.is_some() {
                 let _ = start.recv().await;
                 if hold_failed_wake_teardown {
@@ -361,8 +368,24 @@ impl ChildRunner for TestRunner {
     }
 }
 
+fn runner_execution() -> xai_tool_types::SubagentExecution {
+    xai_tool_types::SubagentExecution {
+        profile: "general-purpose".into(),
+        provider: "fixture.test".into(),
+        model: "runner-model".into(),
+        reasoning_effort: Some("low".into()),
+        speed: "fast".into(),
+        fallback: Some("runner-confirmed retry".into()),
+    }
+}
+
 fn finished_result(request: &SubagentRequest) -> SubagentResult {
     SubagentResult {
+        execution: matches!(
+            request.subagent_type.as_str(),
+            "execution-before-start" | "execution-after-start"
+        )
+        .then(runner_execution),
         success: true,
         output: request.prompt.clone().into(),
         subagent_id: request.id.clone(),
@@ -642,6 +665,56 @@ pub(in crate::implementations::grok_build::task::coordinator) fn parent_backend(
     harness: &Harness,
 ) -> ChannelBackend {
     session_backend(harness, "parent")
+}
+
+#[tokio::test]
+async fn profile_completion_keeps_runner_execution_for_pending_and_legacy_active() {
+    for early in [true, false] {
+        let mut harness = harness(false, std::time::Duration::from_secs(5));
+        let backend = parent_backend(&harness);
+        let mut child = request(
+            if early {
+                "early-execution"
+            } else {
+                "legacy-execution"
+            },
+            false,
+        );
+        child.subagent_type = if early {
+            "execution-before-start"
+        } else {
+            "execution-after-start"
+        }
+        .into();
+        let id = child.id.clone();
+        let (registered, run) = spawn_noting_registration(backend.clone(), child);
+        tokio::time::timeout(std::time::Duration::from_secs(5), registered)
+            .await
+            .unwrap()
+            .unwrap();
+        if !early {
+            tokio::time::timeout(std::time::Duration::from_secs(5), harness.started.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            harness.finish.send(()).unwrap();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.execution, Some(runner_execution()));
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            backend.query(&id, true, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.execution, Some(runner_execution()));
+        harness.actor.abort();
+    }
 }
 
 #[tokio::test]

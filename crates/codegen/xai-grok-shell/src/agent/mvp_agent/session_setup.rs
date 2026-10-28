@@ -15,7 +15,8 @@ pub(super) const RESUME_REFUSES_CHAT: &str =
     "session/resume is not supported for chat sessions; use session/load";
 pub(super) const RESUME_REFUSES_EXTRA_DIRS: &str =
     "session/resume does not support additionalDirectories";
-pub(super) const ATTACH_REFUSES_PROFILE_OVERRIDES: &str = "Saved sessions own their profile and model settings; omit agentProfile, profileRevision, modelId and reasoningEffort when loading or resuming";
+pub(super) const ATTACH_REFUSES_PROFILE_OVERRIDES: &str = "Saved profiles own their profile and model settings; omit agentProfile, profileRevision, modelId and reasoningEffort when loading or resuming";
+pub(super) const ATTACH_REFUSES_CHILD_OVERRIDES: &str = "The parent owns this child session’s model and reasoning settings; continue it through the parent or start a new child attempt";
 const TOOL_OVERRIDES_ECHO_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 const BACKGROUND_TASKS_SNAPSHOT_ACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 pub(super) const RESIDENT_ONLY_REFUSAL: &str =
@@ -395,6 +396,7 @@ impl MvpAgent {
         mut arguments: acp::NewSessionRequest,
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let session_started_at = std::time::Instant::now();
+        let mut stock_inherited_harness = false;
         // Freeze the named profile before persistence/workspace/actor side effects.
         // A bridge preflight alone cannot protect against concurrent profile edits.
         if let Some(value) = arguments
@@ -423,6 +425,11 @@ impl MvpAgent {
                 let (definition, _) =
                     crate::profiles::admit_profile(arguments.cwd.as_path(), id, expected, &cfg)
                         .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
+                stock_inherited_harness = definition.applied_profile_revision.is_none()
+                    && matches!(
+                        definition.model,
+                        xai_grok_agent::config::ModelOverride::Inherit
+                    );
                 arguments
                     .meta
                     .get_or_insert_with(Default::default)
@@ -442,9 +449,11 @@ impl MvpAgent {
                     xai_grok_agent::AgentDefinition::from_json(&value).map_err(|_| {
                         acp::Error::invalid_params().data("Invalid agentProfile object")
                     })?;
-                definition.resolve_prompt_references().map_err(|_| {
-                    acp::Error::invalid_params().data("Profile references could not be read")
-                })?;
+                definition
+                    .resolve_prompt_references(arguments.cwd.as_path())
+                    .map_err(|_| {
+                        acp::Error::invalid_params().data("Profile references could not be read")
+                    })?;
                 arguments
                     .meta
                     .get_or_insert_with(Default::default)
@@ -472,12 +481,16 @@ impl MvpAgent {
             };
             let models = self.models_manager.models();
             let effort = definition.effort.map(<&'static str>::from);
-            let errors = crate::profiles::validate_settings(
-                Some(selected),
-                effort,
-                definition.speed.as_deref(),
-                &models,
-            );
+            let errors = if stock_inherited_harness {
+                Vec::new()
+            } else {
+                crate::profiles::validate_settings(
+                    Some(selected),
+                    effort,
+                    definition.speed.as_deref(),
+                    &models,
+                )
+            };
             if !errors.is_empty() {
                 return Err(acp::Error::invalid_params()
                     .data(format!("{} No agent was started.", errors.join(" "))));
@@ -1043,16 +1056,85 @@ impl MvpAgent {
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let attach_started_at = std::time::Instant::now();
         if arguments.meta.as_ref().is_some_and(|meta| {
-            [
-                "agentProfile",
-                "profileRevision",
-                "modelId",
-                "reasoningEffort",
-            ]
-            .iter()
-            .any(|key| meta.contains_key(*key))
+            ["agentProfile", "profileRevision"]
+                .iter()
+                .any(|key| meta.contains_key(*key))
         }) {
             return Err(acp::Error::invalid_params().data(ATTACH_REFUSES_PROFILE_OVERRIDES));
+        }
+        let requested_model = arguments.meta.as_ref().and_then(|meta| meta.get("modelId"));
+        let settings_override = requested_model.is_some()
+            || arguments
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta.contains_key("reasoningEffort"));
+        if settings_override {
+            let resident = self.resident_handle(&arguments.session_id);
+            if resident
+                .as_ref()
+                .is_some_and(|handle| handle.spawn_snapshot.applied_profile.is_some())
+            {
+                return Err(acp::Error::invalid_params().data(ATTACH_REFUSES_PROFILE_OVERRIDES));
+            }
+            // Read-only ownership preflight, before workspace restoration,
+            // replay or actor creation. A child's route is parent-owned even
+            // for legacy children with no persisted execution snapshot.
+            let cwd =
+                AbsPathBuf::new(arguments.cwd.clone()).map_err(|_| acp::Error::invalid_params())?;
+            let info = resident
+                .map(|handle| handle.info.clone())
+                .unwrap_or_else(|| session_info_for(&arguments.session_id, &cwd));
+            let storage = crate::session::storage::JsonlStorageAdapter::with_root(
+                xai_grok_config::grok_home(),
+            );
+            let summary = crate::session::storage::StorageAdapter::load_summary(&storage, &info)
+                .await
+                .map_err(|_| {
+                    acp::Error::invalid_params().data(
+                        "Saved session settings could not be inspected; retry without overrides",
+                    )
+                })?;
+            if matches!(
+                summary.session_kind.as_deref(),
+                Some("subagent" | "subagent_fork")
+            ) {
+                return Err(acp::Error::invalid_params().data(ATTACH_REFUSES_CHILD_OVERRIDES));
+            }
+            if summary
+                .agent_profile()
+                .is_some_and(|definition| definition.applied_profile_revision.is_some())
+                || arguments.meta.as_ref().is_some_and(|meta| {
+                    meta.get("x.ai/resident_only")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                })
+            {
+                return Err(acp::Error::invalid_params().data(ATTACH_REFUSES_PROFILE_OVERRIDES));
+            }
+        }
+        let requested_model = requested_model
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        acp::Error::invalid_params().data("modelId must be a non-empty string")
+                    })
+            })
+            .transpose()?;
+        if let Some(model) = requested_model.as_deref() {
+            let errors = crate::profiles::validate_settings(
+                Some(model),
+                None,
+                None,
+                &self.models_manager.models(),
+            );
+            if !errors.is_empty() {
+                return Err(acp::Error::invalid_params().data(
+                    "Requested saved-session model is unavailable; choose an available model",
+                ));
+            }
         }
         // Capture the actor before any await. A roster check in another RPC is
         // insufficient: close may remove the actor between discovery and load.
@@ -1183,7 +1265,7 @@ impl MvpAgent {
         .map_err(|e| crate::session::persistence::io_error_to_acp(&e))?;
         drop(persistence_timer);
         let crate::session::persistence::PersistedInfo {
-            summary,
+            mut summary,
             chat_history,
             plan_state: _,
             plan_mode_state: persisted_plan_mode,
@@ -1194,6 +1276,11 @@ impl MvpAgent {
             goal_mode_state: _persisted_goal_mode,
             workflow_runs: persisted_workflow_runs,
         } = persistence_info;
+        if let Some(model) = requested_model {
+            // An ordinary session retains the historical explicit model control.
+            // Frozen profiles were refused by the read-only preflight above.
+            summary.current_model_id = acp::ModelId::new(model);
+        }
         let persisted_base_url = self
             .resolve_sampling_config_for_model(&summary.current_model_id, origin_client.clone())
             .base_url;
@@ -1376,6 +1463,8 @@ impl MvpAgent {
                             acp::Error::invalid_params()
                                 .data("Saved session profile is unavailable; no agent was restored")
                         })?;
+                    // Named-only records predate frozen profile admission. They
+                    // deliberately keep the legacy live-source restore semantics.
                     (Some(definition), None)
                 }
                 None => {
@@ -1424,7 +1513,8 @@ impl MvpAgent {
                         persisted_agent_profile: restore_profile,
                         model_agent_type: restore_model_agent_type.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
-                        initial_reasoning_effort: None,
+                        initial_reasoning_effort: initial_reasoning_effort
+                            .or(summary.reasoning_effort),
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,

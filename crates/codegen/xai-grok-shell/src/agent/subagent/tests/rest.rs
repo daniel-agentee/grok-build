@@ -2979,6 +2979,44 @@ fn profile_frozen_route_refuses_execution_drift_and_incomplete_snapshots() {
     assert!(resumed_route_matches(None, None, &actual, "route-proof"));
 }
 #[test]
+fn profile_resume_snapshot_requires_all_four_fields_or_legacy_none() {
+    let complete = ResumeSourceData {
+        execution: Some(xai_tool_types::SubagentExecution { profile:"cfo".into(), provider:"example.test".into(),
+            model:"model".into(), reasoning_effort:Some("low".into()), speed:"standard".into(), fallback:None }),
+        provider_route_fingerprint:Some("route-proof".into()),
+        frozen_definition:Some(serde_json::json!({"name":"cfo","description":"Test"})),
+        frozen_runtime:Some(Default::default()), subagent_id:"child".into(), subagent_type:"cfo".into(),
+        persona:None, model_id:Some("model".into()), child_cwd:"/tmp".into(),
+        worktree_path:None, snapshot_ref:None, child_session_id:"child-session".into(),
+    };
+    for mask in 0..16 {
+        let source = ResumeSourceData {
+            execution:(mask & 1 != 0).then(|| complete.execution.clone().unwrap()),
+            provider_route_fingerprint:(mask & 2 != 0).then(|| complete.provider_route_fingerprint.clone().unwrap()),
+            frozen_definition:(mask & 4 != 0).then(|| complete.frozen_definition.clone().unwrap()),
+            frozen_runtime:(mask & 8 != 0).then(|| complete.frozen_runtime.clone().unwrap()),
+            ..complete.clone()
+        };
+        assert_eq!(resume_snapshot_is_complete(&source), mask == 0 || mask == 15, "mask={mask}");
+    }
+}
+#[test]
+fn profile_resume_rejects_tool_settings_but_ignores_inherited_harness_defaults() {
+    let inherited = SubagentRuntimeOverrides { model:Some("later-harness-model".into()),
+        reasoning_effort:Some("high".into()), speed:Some("fast".into()), ..Default::default() };
+    assert!(!resume_has_caller_overrides(&inherited));
+    let explicit = SubagentRuntimeOverrides { model_override_provenance:ModelOverrideProvenance::Tool {
+        selection:TaskModelSelection::Selectable }, ..inherited };
+    assert!(resume_has_caller_overrides(&explicit));
+    for overrides in [
+        SubagentRuntimeOverrides { model:None, reasoning_effort:None, ..explicit.clone() },
+        SubagentRuntimeOverrides { model:None, speed:None, ..explicit.clone() },
+        SubagentRuntimeOverrides { reasoning_effort:None, speed:None, ..explicit.clone() },
+    ] { assert!(resume_has_caller_overrides(&overrides)); }
+    assert!(!resume_has_caller_overrides(&SubagentRuntimeOverrides { model:None,
+        reasoning_effort:None, speed:None, ..explicit }));
+}
+#[test]
 fn credential_diagnostics_report_presence_only() {
     assert!(has_credential(&Some("test-credential".into())));
     assert!(!has_credential(&Some(String::new())));

@@ -48,8 +48,7 @@ pub(super) fn provider_route_fingerprint(
 ) -> Option<String> {
     let mut endpoint = url::Url::parse(&sampling.base_url).ok()?;
     endpoint.set_fragment(None);
-    let identity =
-        serde_json::to_vec(&(endpoint.as_str(), format!("{:?}", sampling.api_backend))).ok()?;
+    let identity = serde_json::to_vec(&(endpoint.as_str(), &sampling.api_backend)).ok()?;
     Some(blake3::hash(&identity).to_hex().to_string())
 }
 /// Pre-profile legacy children have no route proof. They retain their existing
@@ -72,6 +71,25 @@ pub(super) fn resumed_route_matches(
         }
         _ => false,
     }
+}
+/// Legacy children have none of these fields. Any snapshot-era evidence requires
+/// the entire snapshot before looking at current source or performing side effects.
+pub(super) fn resume_snapshot_is_complete(source: &ResumeSourceData) -> bool {
+    let present = [
+        source.execution.is_some(),
+        source.provider_route_fingerprint.is_some(),
+        source.frozen_definition.is_some(),
+        source.frozen_runtime.is_some(),
+    ];
+    present.iter().all(|value| *value) || present.iter().all(|value| !*value)
+}
+pub(super) fn resume_has_caller_overrides(overrides: &SubagentRuntimeOverrides) -> bool {
+    matches!(
+        overrides.model_override_provenance,
+        ModelOverrideProvenance::Tool { .. }
+    ) && (overrides.model.is_some()
+        || overrides.reasoning_effort.is_some()
+        || overrides.speed.is_some())
 }
 /// Bounds each parent-side await in the child completion path. The parent's biased select polls its event channels ahead of `cmd_rx`, so a busy turn can starve `cmd_rx` and park a completed child (leaking its session thread, fs watchers, and fds) forever.
 pub(super) const PARENT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -552,6 +570,19 @@ async fn run_shell_child_inner(
             .set_resolved_subagent_type(source.subagent_type.clone())
             .await;
     }
+    if resume_source
+        .as_ref()
+        .is_some_and(|source| !resume_snapshot_is_complete(source))
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "The child's frozen snapshot is incomplete. Restore its original complete snapshot or start a fresh child; no child was started.",
+            ),
+            completion_data,
+            None,
+        );
+    }
     let frozen_definition = resume_source
         .as_ref()
         .and_then(|source| source.frozen_definition.as_ref());
@@ -612,11 +643,7 @@ async fn run_shell_child_inner(
             None,
         );
     }
-    if resume_source.is_some()
-        && (request.runtime_overrides.model.is_some()
-            || request.runtime_overrides.reasoning_effort.is_some()
-            || request.runtime_overrides.speed.is_some())
-    {
+    if resume_source.is_some() && resume_has_caller_overrides(&request.runtime_overrides) {
         return child_run_output(
             failure_result(
                 &request,
@@ -626,7 +653,7 @@ async fn run_shell_child_inner(
             None,
         );
     }
-    if let Err(_) = definition.resolve_prompt_references() {
+    if let Err(_) = definition.resolve_prompt_references(&ctx.parent_cwd) {
         return child_run_output(
             failure_result(
                 &request,

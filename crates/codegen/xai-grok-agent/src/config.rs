@@ -1258,23 +1258,29 @@ pub(crate) fn tool_id_matches(list: &[String], id: &str) -> bool {
     list.iter().any(|e| tool_id_eq(e, id))
 }
 fn strip_profile_frontmatter(text: &str) -> Result<&str, AgentBuildError> {
-    let trimmed = text.trim();
-    if let Some(after) = trimmed.strip_prefix("---\n") {
-        let Some((_, body)) = after.split_once("\n---") else {
-            return Err(AgentBuildError::ParseError(
-                "unclosed profile reference frontmatter".into(),
-            ));
-        };
-        return Ok(body.trim());
+    let trimmed = text.trim_start_matches('\u{feff}').trim();
+    let mut offset = 0;
+    let mut lines = trimmed.split_inclusive('\n');
+    if !lines.next().is_some_and(|line| line.trim_end() == "---") {
+        return Ok(trimmed);
     }
-    Ok(trimmed)
+    offset += trimmed.find('\n').map_or(trimmed.len(), |index| index + 1);
+    for line in lines {
+        offset += line.len();
+        if line.trim_end() == "---" {
+            return Ok(trimmed[offset..].trim());
+        }
+    }
+    Err(AgentBuildError::ParseError(
+        "unclosed profile reference frontmatter".into(),
+    ))
 }
 impl AgentDefinition {
     /// Freeze referenced prompts and rules into this definition. Frontmatter in
     /// Claude role files is configuration for Claude and is deliberately excluded.
     /// Clearing references makes persisted/replayed definitions immutable.
-    pub fn resolve_prompt_references(&mut self) -> Result<(), AgentBuildError> {
-        self.resolve_prompt_references_with_fingerprint()
+    pub fn resolve_prompt_references(&mut self, workspace: &Path) -> Result<(), AgentBuildError> {
+        self.resolve_prompt_references_with_fingerprint(workspace)
             .map(|_| ())
     }
     /// Return the digest of the exact referenced bytes read while freezing. The
@@ -1282,6 +1288,7 @@ impl AgentDefinition {
     /// from the model prompt, so admission revisions bind to the source itself.
     pub fn resolve_prompt_references_with_fingerprint(
         &mut self,
+        workspace: &Path,
     ) -> Result<String, AgentBuildError> {
         let mut fingerprint = Sha256::new();
         let mut parts = self.prompt_body.clone().into_iter().collect::<Vec<_>>();
@@ -1301,7 +1308,28 @@ impl AgentDefinition {
                         "profile prompt/rule references must be absolute paths".into(),
                     ));
                 }
-                let file = std::fs::File::open(path).map_err(AgentBuildError::IoError)?;
+                // Only locally installed user definitions may intentionally import
+                // external role/rule files. Project and inline definitions are
+                // confined to the canonical workspace, including symlink targets.
+                let reference_error = |error: std::io::Error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        AgentBuildError::ParseError("profile reference does not exist".into())
+                    } else {
+                        AgentBuildError::IoError(error)
+                    }
+                };
+                let canonical = std::fs::canonicalize(path).map_err(reference_error)?;
+                if self.scope != AgentScope::User || self.source_path.is_none() {
+                    let chain = crate::repo::RepoDirChain::resolve(workspace);
+                    let root = chain.git_root.as_deref().unwrap_or(workspace);
+                    let root = std::fs::canonicalize(root).map_err(AgentBuildError::IoError)?;
+                    if !canonical.starts_with(&root) {
+                        return Err(AgentBuildError::ParseError(
+                            "project and inline profile references must stay within the workspace; install an intentional external import in user scope".into(),
+                        ));
+                    }
+                }
+                let file = std::fs::File::open(&canonical).map_err(reference_error)?;
                 let metadata = file.metadata().map_err(AgentBuildError::IoError)?;
                 if !metadata.is_file() || metadata.len() > 1_048_576 {
                     return Err(AgentBuildError::ParseError(

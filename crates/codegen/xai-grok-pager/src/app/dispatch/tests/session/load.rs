@@ -3855,3 +3855,47 @@ fn failed_load_lists_several_held_rows_as_not_sent() {
         "{listed:?}"
     );
 }
+
+#[test]
+fn profile_attach_terminal_resume_applies_cli_model_switch_after_load() {
+    let mut app = test_app();
+    let model_id = acp::ModelId::new("cli-resume-model");
+    app.cli_model_override = Some(model_id.clone());
+    dispatch(
+        Action::LoadSession("cli-resume".into(), None, false),
+        &mut app,
+    );
+    let id = AgentId(0);
+    assert_eq!(
+        expect_agent(&app, id)
+            .session
+            .deferred_model_switch
+            .as_ref()
+            .map(|switch| &switch.model_id),
+        Some(&model_id),
+    );
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionLoaded {
+            agent_id: id,
+            session_id: acp::SessionId::new("cli-resume"),
+            models: None,
+            modes: None,
+            code_restored: false,
+            restore_summary: None,
+            restore_degree: None,
+            running_prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        expect_agent(&app, id)
+            .session
+            .deferred_model_switch
+            .is_none()
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::SwitchModel { agent_id, session_id, choice, .. }
+            if *agent_id == id && session_id.0.as_ref() == "cli-resume" && choice.model_id == model_id
+    )));
+}

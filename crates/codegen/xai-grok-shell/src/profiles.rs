@@ -207,12 +207,79 @@ fn safe_definition(def: &AgentDefinition) -> Value {
     }
     Value::Object(safe)
 }
-pub(crate) fn definition_revision(def: &AgentDefinition) -> Result<String> {
+pub(crate) fn definition_revision(def: &AgentDefinition, cwd: &Path) -> Result<String> {
     let mut frozen = def.clone();
-    let references = frozen.resolve_prompt_references_with_fingerprint()?;
+    let references = frozen.resolve_prompt_references_with_fingerprint(cwd)?;
     Ok(hash(
         &json!({"source": def.to_json_value(), "resolved": frozen.to_json_value(), "references": references}),
     ))
+}
+/// Hash references even when their UTF-8/frontmatter is invalid. No referenced
+/// bytes enter the response; missing and refused targets have explicit states.
+fn repair_reference_fingerprint(def: &AgentDefinition, cwd: &Path) -> Result<String> {
+    let chain = xai_grok_agent::repo::RepoDirChain::resolve(cwd);
+    let root = std::fs::canonicalize(chain.git_root.as_deref().unwrap_or(cwd))?;
+    let external_import =
+        def.scope == xai_grok_agent::config::AgentScope::User && def.source_path.is_some();
+    let mut references = Vec::new();
+    for path in def.prompt_files.iter().chain(&def.rule_files) {
+        if !path.is_absolute() {
+            references.push(json!({"path":path,"state":"relative"}));
+            continue;
+        }
+        let canonical = match std::fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                references.push(json!({"path":path,"state":"missing"}));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !external_import && !canonical.starts_with(&root) {
+            references.push(json!({"path":path,"canonical":canonical,"state":"outside-workspace"}));
+            continue;
+        }
+        let file = std::fs::File::open(&canonical)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            references.push(json!({"path":path,"canonical":canonical,"state":"not-file"}));
+            continue;
+        }
+        // Streaming keeps repair tokens exact for corrupt and oversized files
+        // without allocating the file. Bound a concurrent growing file to the
+        // size observed at open plus one; its next revision will differ.
+        let mut reader = file.take(metadata.len().saturating_add(1));
+        let mut digest = blake3::Hasher::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        references.push(json!({"path":path,"canonical":canonical,"size":metadata.len(),"digest":digest.finalize().to_hex().as_str()}));
+    }
+    Ok(hash(&json!(references)))
+}
+/// Invalid referenced content still has a distinct edit token. It must never
+/// look like an absent destination, including while one invalid file replaces another.
+fn definition_control_revision(def: &AgentDefinition, cwd: &Path) -> Result<String> {
+    match definition_revision(def, cwd) {
+        Ok(revision) => Ok(revision),
+        Err(error)
+            if error
+                .downcast_ref::<xai_grok_agent::AgentBuildError>()
+                .is_some_and(|cause| {
+                    matches!(cause, xai_grok_agent::AgentBuildError::ParseError(_))
+                }) =>
+        {
+            Ok(hash(
+                &json!({"repairDefinition": def.to_json_value(), "references": repair_reference_fingerprint(def, cwd)?}),
+            ))
+        }
+        Err(error) => Err(error),
+    }
 }
 fn definitions(cwd: &Path) -> Vec<AgentDefinition> {
     let mut defs = xai_grok_agent::discovery::discover(cwd);
@@ -271,7 +338,7 @@ fn in_scope(scope: &str, source: xai_grok_agent::config::AgentScope) -> bool {
             _ => false,
         }
 }
-fn listed_profiles(cwd: &Path, scope: &str, cfg: &Config) -> Vec<Value> {
+fn listed_profiles(cwd: &Path, scope: &str, cfg: &Config) -> Result<Vec<Value>> {
     let mut profiles = std::collections::BTreeMap::new();
     for (path, source_scope) in xai_grok_agent::discovery::source_files(cwd) {
         if !in_scope(scope, source_scope) {
@@ -286,7 +353,7 @@ fn listed_profiles(cwd: &Path, scope: &str, cfg: &Config) -> Vec<Value> {
                     continue;
                 }
                 def.scope = source_scope;
-                profile_value(&def, cfg)
+                profile_value(&def, cfg, cwd)?
             }
             Err(_) => {
                 let id = path
@@ -302,12 +369,12 @@ fn listed_profiles(cwd: &Path, scope: &str, cfg: &Config) -> Vec<Value> {
     }
     if scope == "effective" {
         for def in definitions(cwd) {
-            profiles
-                .entry(def.name.clone())
-                .or_insert_with(|| profile_value(&def, cfg));
+            if !profiles.contains_key(&def.name) {
+                profiles.insert(def.name.clone(), profile_value(&def, cfg, cwd)?);
+            }
         }
     }
-    profiles.into_values().collect()
+    Ok(profiles.into_values().collect())
 }
 fn effort_choices(entry: &ModelEntry) -> Vec<String> {
     if !entry.info.supports_reasoning_effort {
@@ -400,7 +467,7 @@ pub(crate) fn speed_choices(
         vec!["standard"]
     }
 }
-fn validate_definition(def: &AgentDefinition, cfg: &Config) -> Vec<String> {
+fn validate_definition(def: &AgentDefinition, cfg: &Config, cwd: &Path) -> Vec<String> {
     let mut errors = Vec::new();
     if !valid_id(&def.name) {
         errors.push("Profile name must be a simple ID of 1–96 ASCII letters, digits, dots, hyphens or underscores.".into());
@@ -437,7 +504,7 @@ fn validate_definition(def: &AgentDefinition, cfg: &Config) -> Vec<String> {
         def.speed.as_deref(),
         &catalog(cfg),
     ));
-    if let Err(_) = definition_revision(def) {
+    if let Err(_) = definition_revision(def, cwd) {
         errors.push(
             "A prompt or rule reference is unreadable, non-absolute, malformed, or too large."
                 .into(),
@@ -448,28 +515,57 @@ fn validate_definition(def: &AgentDefinition, cfg: &Config) -> Vec<String> {
 fn validation(errors: Vec<String>) -> Value {
     json!({"valid": errors.is_empty(), "errors": errors})
 }
-fn profile_value(def: &AgentDefinition, cfg: &Config) -> Value {
+fn profile_value(def: &AgentDefinition, cfg: &Config, cwd: &Path) -> Result<Value> {
     let source_scope = match def.scope {
         xai_grok_agent::config::AgentScope::Project => "project",
         xai_grok_agent::config::AgentScope::User => "user",
         xai_grok_agent::config::AgentScope::Bundled => "bundled",
         xai_grok_agent::config::AgentScope::BuiltIn => "builtin",
     };
-    json!({"version":1,"id":def.name,"revision":definition_revision(def).ok(),"sourceScope":source_scope,"sourcePath":def.source_path,"definition":safe_definition(def),"validation":validation(validate_definition(def,cfg))})
+    Ok(
+        json!({"version":1,"id":def.name,"revision":definition_control_revision(def,cwd)?,"sourceScope":source_scope,"sourcePath":def.source_path,"definition":safe_definition(def),"validation":validation(validate_definition(def,cfg,cwd))}),
+    )
 }
 fn policy_path() -> Result<PathBuf> {
     xai_grok_config::user_grok_home()
         .map(|p| p.join("delegation-policy.json"))
         .context("Grok home unavailable")
 }
-pub(crate) fn read_policy() -> Result<DelegationPolicy> {
-    let path = policy_path()?;
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .context("Delegation policy is malformed; repair it before spawning a child."),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DelegationPolicy::default()),
-        Err(e) => Err(e.into()),
+/// A malformed policy is unusable at admission but remains repairable through
+/// the control plane with a revision bound to its exact corrupt bytes.
+fn policy_state(path: &Path) -> Result<(Option<DelegationPolicy>, String)> {
+    match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<DelegationPolicy>(&bytes) {
+            Ok(policy) => {
+                let revision = hash(&serde_json::to_value(&policy)?);
+                Ok((Some(policy), revision))
+            }
+            Err(_) => Ok((
+                None,
+                hash(&json!({"repairPolicy": blake3::hash(&bytes).to_hex().as_str()})),
+            )),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let policy = DelegationPolicy::default();
+            let revision = hash(&serde_json::to_value(&policy)?);
+            Ok((Some(policy), revision))
+        }
+        Err(error) => Err(error.into()),
     }
+}
+pub(crate) fn read_policy() -> Result<DelegationPolicy> {
+    policy_state(&policy_path()?)?
+        .0
+        .context("Delegation policy is malformed; repair it before spawning a child.")
+}
+fn policy_control_value(cfg: &Config) -> Result<Value> {
+    let (policy, revision) = policy_state(&policy_path()?)?;
+    Ok(match policy {
+        Some(policy) => policy_value(&policy, cfg),
+        None => {
+            json!({"version":1,"revision":revision,"policy":DelegationPolicy::default(),"validation":{"valid":false,"errors":["Delegation policy is malformed. Review and apply an explicit replacement to repair it; delegation remains blocked."]}})
+        }
+    })
 }
 fn validate_policy(policy: &DelegationPolicy, cfg: &Config) -> Vec<String> {
     let mut errors = validate_settings(
@@ -508,7 +604,7 @@ fn lock() -> Result<std::fs::File> {
         .read(true)
         .write(true)
         .open(path)?;
-    file.lock_exclusive()?;
+    file.try_lock_exclusive()?;
     Ok(file)
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -674,13 +770,22 @@ fn edit_profile(cwd: &Path, input: &ProfileEdit, cfg: &Config, apply: bool) -> R
     {
         bail!("Built-in subagent overrides require project scope")
     }
-    let revision = existing.as_ref().map(definition_revision).transpose()?;
+    let revision = existing
+        .as_ref()
+        .map(|def| definition_control_revision(def, cwd))
+        .transpose()?;
     if apply {
         check_revision(input.expected_revision.as_deref(), revision.as_deref())?;
     }
     let inherited = get(cwd, &input.id).ok();
     let mut def = edited_definition(input, existing.as_ref().or(inherited.as_ref()))?;
-    let errors = validate_definition(&def, cfg);
+    def.source_path = Some(target.clone());
+    def.scope = if input.write_scope == "user" {
+        xai_grok_agent::config::AgentScope::User
+    } else {
+        xai_grok_agent::config::AgentScope::Project
+    };
+    let errors = validate_definition(&def, cfg, cwd);
     if apply && !errors.is_empty() {
         bail!("Profile validation failed: {}", errors.join(" "))
     }
@@ -700,7 +805,7 @@ fn edit_profile(cwd: &Path, input: &ProfileEdit, cfg: &Config, apply: bool) -> R
             xai_grok_agent::config::AgentScope::Project
         };
     }
-    Ok(profile_value(&def, cfg))
+    profile_value(&def, cfg, cwd)
 }
 pub async fn run(args: ProfilesArgs) -> Result<()> {
     match run_inner(args).await {
@@ -722,7 +827,7 @@ async fn run_inner(args: ProfilesArgs) -> Result<()> {
     let cfg = config()?;
     let output = match args.command {
         ProfilesCommand::List { .. } => {
-            let profiles = listed_profiles(&cwd, &args.scope, &cfg);
+            let profiles = listed_profiles(&cwd, &args.scope, &cfg)?;
             let available_models = catalog(&cfg);
             let models = available_models.iter()
                 .filter(|(_, entry)| entry.info.user_selectable && !entry.info.hidden)
@@ -732,10 +837,10 @@ async fn run_inner(args: ProfilesArgs) -> Result<()> {
                     json!({"id":id,"model":entry.info.model,"provider":provider(entry),"reasoningEfforts":effort_choices(entry),"speeds":speed_choices(id,&available_models),"available":available,"reason":if available {None::<&str>}else{Some("Provider credential unavailable")}})
                 }).collect::<Vec<_>>();
             let revision = hash(&json!(profiles));
-            json!({"version":1,"revision":revision,"profiles":profiles,"models":models,"policy":policy_value(&read_policy()?,&cfg)})
+            json!({"version":1,"revision":revision,"profiles":profiles,"models":models,"policy":policy_control_value(&cfg)?})
         }
         ProfilesCommand::Get { id, .. } => {
-            profile_value(&get_scoped(&cwd, &id, &args.scope)?, &cfg)
+            profile_value(&get_scoped(&cwd, &id, &args.scope)?, &cfg, &cwd)?
         }
         ProfilesCommand::Validate { .. } | ProfilesCommand::Apply { .. } => {
             let apply = matches!(args.command, ProfilesCommand::Apply { .. });
@@ -747,14 +852,13 @@ async fn run_inner(args: ProfilesArgs) -> Result<()> {
             edit_profile(&cwd, &input, &cfg, apply)?
         }
         ProfilesCommand::Policy { command } => match command {
-            PolicyCommand::Get { .. } => policy_value(&read_policy()?, &cfg),
+            PolicyCommand::Get { .. } => policy_control_value(&cfg)?,
             PolicyCommand::Validate { .. } | PolicyCommand::Apply { .. } => {
                 let apply = matches!(command, PolicyCommand::Apply { .. });
                 let edit: PolicyEdit = serde_json::from_value(read_input()?)?;
                 let _lock = if apply { Some(lock()?) } else { None };
                 if apply {
-                    let current = read_policy()?;
-                    let actual = hash(&serde_json::to_value(&current)?);
+                    let (_, actual) = policy_state(&policy_path()?)?;
                     check_revision(edit.expected_revision.as_deref(), Some(&actual))?;
                 }
                 let errors = validate_policy(&edit.policy, &cfg);
@@ -782,13 +886,13 @@ pub(crate) fn admit_profile(
     let _lock = lock()?;
     let mut def = get(cwd, id)?;
     let source = def.to_json_value();
-    let references = def.resolve_prompt_references_with_fingerprint()?;
+    let references = def.resolve_prompt_references_with_fingerprint(cwd)?;
     let revision =
         hash(&json!({"source": source, "resolved": def.to_json_value(), "references": references}));
     if let Some(expected) = expected {
         check_revision(Some(expected), Some(&revision))?;
     }
-    let errors = validate_definition(&def, cfg);
+    let errors = validate_definition(&def, cfg, cwd);
     if !errors.is_empty() {
         bail!(
             "Profile cannot start: {} No agent was started.",
@@ -978,7 +1082,7 @@ mod tests {
         let exported = safe_definition(&def).to_string();
         assert!(!exported.contains("private"));
         assert!(!exported.contains("xoxb"));
-        let errors = validate_definition(&def, &Config::default());
+        let errors = validate_definition(&def, &Config::default(), Path::new("."));
         assert!(errors.iter().any(|e| e.contains("credentialRef")));
         assert!(errors.iter().any(|e| e.contains("Avatar")));
         assert!(!errors.join(" ").contains("private"));
@@ -1016,7 +1120,7 @@ mod tests {
                 "[invalid avatar removed]"
             );
             assert!(
-                validate_definition(&def, &Config::default())
+                validate_definition(&def, &Config::default(), Path::new("."))
                     .iter()
                     .any(|e| e.contains("Avatar"))
             );
@@ -1042,9 +1146,9 @@ mod tests {
         std::fs::write(&path, "---\nmodel: claude-only\n---\n\nOriginal role body").unwrap();
         let def =
             profile(json!({"name":"cfo","description":"Financial role","promptFiles":[path]}));
-        let revision = definition_revision(&def).unwrap();
+        let revision = definition_revision(&def, dir.path()).unwrap();
         let mut frozen = def.clone();
-        frozen.resolve_prompt_references().unwrap();
+        frozen.resolve_prompt_references(dir.path()).unwrap();
         assert!(frozen.prompt_files.is_empty());
         assert!(
             frozen
@@ -1055,18 +1159,150 @@ mod tests {
         );
         assert!(!frozen.prompt_body.as_ref().unwrap().contains("claude-only"));
         let body = frozen.prompt_body.clone();
-        frozen.resolve_prompt_references().unwrap();
+        frozen.resolve_prompt_references(dir.path()).unwrap();
         assert_eq!(body, frozen.prompt_body);
         std::fs::write(
             &path,
             "---\nmodel: changed-frontmatter-only\n---\n\nOriginal role body",
         )
         .unwrap();
-        assert_ne!(revision, definition_revision(&def).unwrap());
+        assert_ne!(revision, definition_revision(&def, dir.path()).unwrap());
         assert_eq!(body, frozen.prompt_body);
         std::fs::write(&path, "Changed role body").unwrap();
-        assert_ne!(revision, definition_revision(&def).unwrap());
+        assert_ne!(revision, definition_revision(&def, dir.path()).unwrap());
         assert_eq!(body, frozen.prompt_body);
+    }
+
+    #[test]
+    fn profile_reference_frontmatter_uses_exact_delimiter_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("role.md");
+        for source in [
+            "\u{feff}---\r\ndescription: \"embedded --- value\"\r\nmodel: private-claude-model\r\n---\r\nRole body",
+            "---\n---\nRole body",
+        ] {
+            std::fs::write(&path, source).unwrap();
+            let mut def = profile(
+                json!({"name":"frontmatter-fixture","description":"Test","promptFiles":[path]}),
+            );
+            def.resolve_prompt_references(dir.path()).unwrap();
+            assert_eq!(
+                def.prompt_body.as_deref(),
+                Some("## Role instructions\n\nRole body")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_reference_trust_confines_project_and_inline_but_permits_user_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let external = dir.path().join("external-role.md");
+        std::fs::write(&external, "Intentional external role").unwrap();
+        let symlink = workspace.join("linked-role.md");
+        std::os::unix::fs::symlink(&external, &symlink).unwrap();
+        for reference in [&external, &symlink] {
+            let def = profile(
+                json!({"name":"trust-fixture","description":"Test","promptFiles":[reference]}),
+            );
+            assert!(def.clone().resolve_prompt_references(&workspace).is_err());
+            let mut project = def.clone();
+            project.scope = xai_grok_agent::config::AgentScope::Project;
+            project.source_path = Some(workspace.join(".grok/agents/trust-fixture.md"));
+            assert!(project.resolve_prompt_references(&workspace).is_err());
+            let mut user = def;
+            user.scope = xai_grok_agent::config::AgentScope::User;
+            user.source_path = Some(dir.path().join("user/agents/trust-fixture.md"));
+            user.resolve_prompt_references(&workspace).unwrap();
+            assert!(
+                user.prompt_body
+                    .unwrap()
+                    .contains("Intentional external role")
+            );
+        }
+        let mut relative = profile(
+            json!({"name":"relative-fixture","description":"Test","promptFiles":["role.md"]}),
+        );
+        assert!(relative.resolve_prompt_references(&workspace).is_err());
+        assert_eq!(relative.prompt_files, vec![PathBuf::from("role.md")]);
+    }
+
+    #[test]
+    fn profile_broken_reference_repairs_require_the_exact_observed_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".grok/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let reference = dir.path().join("broken-role.md");
+        let definition = json!({"name":"repair-reference-fixture","description":"Repair test","promptFiles":[reference]});
+        let target = agents.join("repair-reference-fixture.md");
+        std::fs::write(&target, format!("---\n{definition}\n---\nBody\n")).unwrap();
+        let edit = ProfileEdit {
+            id: "repair-reference-fixture".into(),
+            expected_revision: None,
+            write_scope: "project".into(),
+            definition: json!({"promptFiles":[],"promptBody":"Repaired"}),
+        };
+        let existing = existing_edit_target(&target, &edit).unwrap().unwrap();
+        let missing = definition_control_revision(&existing, dir.path()).unwrap();
+        assert_ne!(missing, hash(&definition));
+        let missing_again = definition_control_revision(&existing, dir.path()).unwrap();
+        assert_eq!(missing, missing_again);
+        std::fs::write(&reference, [0xff, 0x01]).unwrap();
+        let corrupt = definition_control_revision(&existing, dir.path()).unwrap();
+        assert_ne!(missing, corrupt);
+        std::fs::write(&reference, [0xff, 0x02]).unwrap();
+        let changed = definition_control_revision(&existing, dir.path()).unwrap();
+        assert_ne!(corrupt, changed);
+        let original = std::fs::read(&target).unwrap();
+        let stale = ProfileEdit {
+            expected_revision: Some(corrupt),
+            ..edit
+        };
+        let error = edit_profile(dir.path(), &stale, &Config::default(), true).unwrap_err();
+        assert!(error.downcast_ref::<RevisionConflict>().is_some());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        let fresh = ProfileEdit {
+            expected_revision: Some(changed),
+            ..stale
+        };
+        let repaired = edit_profile(dir.path(), &fresh, &Config::default(), true).unwrap();
+        assert_eq!(repaired["validation"]["valid"], true);
+        assert!(repaired["revision"].as_str().is_some());
+        assert!(
+            AgentDefinition::from_file(&target)
+                .unwrap()
+                .prompt_files
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn profile_malformed_policy_repairs_have_distinct_strict_cas_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delegation-policy.json");
+        let (_, absent) = policy_state(&path).unwrap();
+        std::fs::write(&path, b"{broken-one").unwrap();
+        let (invalid, first) = policy_state(&path).unwrap();
+        assert!(invalid.is_none());
+        assert_ne!(absent, first);
+        assert!(check_revision(None, Some(&first)).is_err());
+        std::fs::write(&path, b"{broken-two").unwrap();
+        let (invalid, second) = policy_state(&path).unwrap();
+        assert!(invalid.is_none());
+        assert_ne!(first, second);
+        assert!(check_revision(Some(&first), Some(&second)).is_err());
+        check_revision(Some(&second), Some(&second)).unwrap();
+        atomic_write(
+            &path,
+            &serde_json::to_vec(&DelegationPolicy::default()).unwrap(),
+        )
+        .unwrap();
+        let (valid, repaired) = policy_state(&path).unwrap();
+        assert!(valid.is_some());
+        assert_eq!(repaired, absent);
+        assert!(check_revision(Some(&second), Some(&repaired)).is_err());
     }
 
     #[test]
@@ -1079,20 +1315,20 @@ mod tests {
         let mut def = profile(
             json!({"name":"cfo","description":"Financial role","promptBody":"Original","ruleFiles":[a,b]}),
         );
-        assert!(def.resolve_prompt_references().is_err());
+        assert!(def.resolve_prompt_references(dir.path()).is_err());
         assert_eq!(def.prompt_body.as_deref(), Some("Original"));
         assert_eq!(def.rule_files.len(), 2);
         let mut body_only = profile(
             json!({"name":"cfo","description":"Financial role","promptBody":"x".repeat(1_048_577)}),
         );
-        assert!(body_only.resolve_prompt_references().is_err());
+        assert!(body_only.resolve_prompt_references(dir.path()).is_err());
         assert_eq!(body_only.prompt_body.as_ref().unwrap().len(), 1_048_577);
         let tiny = dir.path().join("tiny.md");
         std::fs::write(&tiny, "a").unwrap();
         let mut formatted = profile(
             json!({"name":"cfo","description":"Financial role","promptBody":"x".repeat(1_048_570),"ruleFiles":[tiny]}),
         );
-        assert!(formatted.resolve_prompt_references().is_err());
+        assert!(formatted.resolve_prompt_references(dir.path()).is_err());
         assert_eq!(formatted.rule_files.len(), 1);
     }
 

@@ -949,8 +949,6 @@ fn profile_restore_overrides_refuse_before_workspace_or_history_side_effects() {
             json!({"agentProfile": "general-purpose"}),
             json!({"agentProfile": {"name": "replacement", "description": "replacement"}}),
             json!({"profileRevision": "changed-revision"}),
-            json!({"modelId": "replacement-model"}),
-            json!({"reasoningEffort": "high"}),
         ] {
             let agent = super::build_minimal_agent_for_tests();
             let sid = acp::SessionId::new("saved-profile-refusal");
@@ -989,7 +987,10 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
         let agent = super::build_minimal_agent_for_tests();
         let cwd = tempfile::tempdir().unwrap();
         let ordinary = super::new_root_session(&agent, cwd.path()).await;
-        agent.close_active_session(&ordinary).await;
+        assert_eq!(
+            agent.close_active_session(&ordinary).await,
+            CloseOutcome::Closed
+        );
         let profile_dir = cwd.path().join(".grok/agents");
         std::fs::create_dir_all(&profile_dir).unwrap();
         let role_file = cwd.path().join("role.md");
@@ -1016,7 +1017,7 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
         let applied = serde_json::to_value(&before.spawn_snapshot.applied_profile).unwrap();
         assert_eq!(applied["id"], "restore-specialist");
         let info = before.info.clone();
-        agent.close_active_session(&sid).await;
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
         let storage =
             crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
         let frozen = storage
@@ -1049,7 +1050,7 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
             applied
         );
         assert_ne!(loaded.resident_actor_id, before.resident_actor_id);
-        agent.close_active_session(&sid).await;
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
         std::fs::remove_file(role_file).unwrap();
         std::fs::remove_file(rule_file).unwrap();
         std::fs::remove_file(profile_file).unwrap();
@@ -1071,7 +1072,7 @@ fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
             .unwrap(),
             applied
         );
-        agent.close_active_session(&sid).await;
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
         assert_eq!(
             storage
                 .load_summary(&info)
@@ -1092,7 +1093,7 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
         let cwd = tempfile::tempdir().unwrap();
         let sid = super::new_root_session(&agent, cwd.path()).await;
         let info = agent.resident_handle(&sid).unwrap().info.clone();
-        agent.close_active_session(&sid).await;
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
         let storage =
             crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
         let before = storage.load_summary(&info).await.unwrap();
@@ -1106,10 +1107,227 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
             ))
             .await
             .expect("ordinary saved session keeps its prior profile");
-        agent.close_active_session(&sid).await;
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
         assert_eq!(
             storage.load_summary(&info).await.unwrap().agent_name(),
             Some(name.as_str())
+        );
+    });
+}
+
+#[test]
+fn profile_restore_named_and_child_settings_refuse_before_attach_side_effects() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        let info = agent.resident_handle(&sid).unwrap().info.clone();
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+        let summary_path = crate::session::persistence::session_dir(&info).join("summary.json");
+        let original = std::fs::read(&summary_path).unwrap();
+        for kind in ["subagent", "subagent_fork", "named-profile"] {
+            let mut summary: crate::session::persistence::Summary =
+                serde_json::from_slice(&original).unwrap();
+            let expected = if kind == "named-profile" {
+                let mut def = xai_grok_agent::AgentDefinition::from_json(
+                    &json!({"name":"frozen-test","description":"Test"}),
+                )
+                .unwrap();
+                def.applied_profile_revision = Some("admitted-revision".into());
+                summary.set_agent(crate::session::persistence::PersistedAgent::Inline(
+                    Box::new(def),
+                ));
+                super::super::session_setup::ATTACH_REFUSES_PROFILE_OVERRIDES
+            } else {
+                summary.session_kind = Some(kind.into());
+                summary.parent_session_id = Some("parent-owned-route".into());
+                super::super::session_setup::ATTACH_REFUSES_CHILD_OVERRIDES
+            };
+            std::fs::write(&summary_path, serde_json::to_vec(&summary).unwrap()).unwrap();
+            for meta in [
+                json!({"modelId":"test-model"}),
+                json!({"reasoningEffort":"high"}),
+            ] {
+                let baseline = super::workspace_session_count(&agent);
+                let error = agent
+                    .load_session_inner(
+                        acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf())
+                            .meta(meta_of(meta.clone())),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.data, Some(json!(expected)));
+                let error = agent
+                    .resume_session_inner(
+                        acp::ResumeSessionRequest::new(sid.clone(), cwd.path().to_path_buf())
+                            .meta(meta_of(meta.clone())),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.data, Some(json!(expected)));
+                assert!(!agent.is_resident(&sid));
+                assert_eq!(super::workspace_session_count(&agent), baseline);
+                let (mut handle, _tx, _rx) = super::make_live_session_handle(&sid, None);
+                handle.info = info.clone();
+                let actor = handle.resident_actor_id;
+                agent.insert_resident(&sid, handle);
+                let error = agent
+                    .load_session_inner(
+                        acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf())
+                            .meta(meta_of(meta)),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.data, Some(json!(expected)));
+                assert_eq!(
+                    agent.resident_handle(&sid).unwrap().resident_actor_id,
+                    actor
+                );
+                agent.session_registry.release(&sid);
+            }
+        }
+        std::fs::write(summary_path, original).unwrap();
+    });
+}
+
+#[test]
+fn profile_restore_ordinary_root_honors_explicit_model_and_effort_on_load_and_resume() {
+    super::run_local_for_bridge_test(|| async {
+        use crate::agent::config::{EndpointsConfig, ModelEntry};
+        use xai_grok_sampling_types::ReasoningEffort;
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        let info = agent.resident_handle(&sid).unwrap().info.clone();
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+        let mut entry = ModelEntry::fallback("resume-explicit-model", &EndpointsConfig::default());
+        entry.info.supports_reasoning_effort = true;
+        agent
+            .models_manager
+            .insert_test_entry("resume-explicit-model", entry);
+        for resume in [false, true] {
+            let meta = meta_of(json!({"modelId":"resume-explicit-model","reasoningEffort":"high"}));
+            if resume {
+                agent
+                    .resume_session_inner(
+                        acp::ResumeSessionRequest::new(sid.clone(), cwd.path().to_path_buf())
+                            .meta(meta),
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                agent
+                    .load_session_inner(
+                        acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf())
+                            .meta(meta),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let loaded = agent.resident_handle(&sid).unwrap();
+            assert_eq!(loaded.model_id.0.as_ref(), "resume-explicit-model");
+            assert_eq!(loaded.reasoning_effort, Some(ReasoningEffort::High));
+            assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+            let storage = crate::session::storage::JsonlStorageAdapter::with_root(
+                xai_grok_config::grok_home(),
+            );
+            let saved = storage.load_summary(&info).await.unwrap();
+            assert_eq!(saved.current_model_id.0.as_ref(), "resume-explicit-model");
+            assert_eq!(saved.reasoning_effort, Some(ReasoningEffort::High));
+        }
+    });
+}
+
+#[test]
+fn profile_effort_precedence_keeps_inline_explicit_named_default_and_saved_effort() {
+    super::run_local_for_bridge_test(|| async {
+        use crate::agent::config::{EndpointsConfig, ModelEntry};
+        use xai_grok_sampling_types::ReasoningEffort;
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let initial = super::new_root_session(&agent, cwd.path()).await;
+        assert_eq!(
+            agent.close_active_session(&initial).await,
+            CloseOutcome::Closed
+        );
+        let mut entry = ModelEntry::fallback("profile-effort-model", &EndpointsConfig::default());
+        entry.info.supports_reasoning_effort = true;
+        // Named admission resolves the configured catalog before the runtime manager.
+        // Seed both views so this tests effort precedence rather than model rejection.
+        agent.cfg.borrow_mut().config_models.insert(
+            "profile-effort-model".into(),
+            crate::agent::config::ConfigModelOverride {
+                model: Some("profile-effort-model".into()),
+                supports_reasoning_effort: Some(true),
+                ..Default::default()
+            },
+        );
+        agent
+            .models_manager
+            .insert_test_entry("profile-effort-model", entry);
+        agent
+            .models_manager
+            .set_current_reasoning_effort(Some(ReasoningEffort::High));
+        let definition = json!({"name":"profile-effort-fixture","description":"Test effort","model":"profile-effort-model","effort":"low"});
+        let inline =
+            agent
+                .new_session_inner(acp::NewSessionRequest::new(cwd.path().to_path_buf()).meta(
+                    meta_of(json!({"agentProfile":definition,"reasoningEffort":"high"})),
+                ))
+                .await
+                .unwrap()
+                .session_id;
+        assert_eq!(
+            agent.resident_handle(&inline).unwrap().reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(
+            agent.close_active_session(&inline).await,
+            CloseOutcome::Closed
+        );
+        let profile_dir = cwd.path().join(".grok/agents");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(
+            profile_dir.join("profile-effort-fixture.md"),
+            format!("---\n{definition}\n---\nFixture body"),
+        )
+        .unwrap();
+        let named = agent
+            .new_session_inner(
+                acp::NewSessionRequest::new(cwd.path().to_path_buf())
+                    .meta(meta_of(json!({"agentProfile":"profile-effort-fixture"}))),
+            )
+            .await
+            .unwrap()
+            .session_id;
+        let info = agent.resident_handle(&named).unwrap().info.clone();
+        assert_eq!(
+            agent.resident_handle(&named).unwrap().reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            agent.close_active_session(&named).await,
+            CloseOutcome::Closed
+        );
+        let path = crate::session::persistence::session_dir(&info).join("summary.json");
+        let mut saved: crate::session::persistence::Summary =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        saved.reasoning_effort = Some(ReasoningEffort::Medium);
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                named.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            agent.resident_handle(&named).unwrap().reasoning_effort,
+            Some(ReasoningEffort::Medium)
+        );
+        assert_eq!(
+            agent.close_active_session(&named).await,
+            CloseOutcome::Closed
         );
     });
 }

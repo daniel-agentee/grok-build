@@ -4456,6 +4456,7 @@ impl MvpAgent {
         let paths_config = self.cfg.borrow().paths.clone();
         // Saved definitions are already resolved snapshots. Do not parse launch
         // metadata first: doing so can reread edited or missing role/rule files.
+        let restoring_profile = persisted_agent_profile.is_some();
         let acp_agent_profile = match persisted_agent_profile {
             Some(definition) => Some(definition),
             None => parse_agent_profile_from_meta(session_meta, cwd.as_path())?,
@@ -4492,9 +4493,9 @@ impl MvpAgent {
         {
             xai_grok_agent::config::ModelOverride::Override(id) => {
                 let mid = acp::ModelId::new(Arc::from(id.as_str()));
-                let entry = self.resolve_model_id(&mid).map_err(|_| acp::Error::invalid_params().data("Profile model is unavailable; select an allowed model before retrying"))?;
+                let entry = self.resolve_model_id(&mid).map_err(|_| acp::Error::invalid_params().data("Profile model is unavailable. Restore its original catalog route to reopen the saved session, or start a fresh session with an available model."))?;
                 if !entry.info.user_selectable || entry.info.hidden {
-                    return Err(acp::Error::invalid_params().data("Profile model is not allowed; select an allowed model before retrying"));
+                    return Err(acp::Error::invalid_params().data("Profile model is no longer allowed. Restore its original allowed catalog route, or start a fresh session with an available model."));
                 }
                 Some((mid, entry))
             }
@@ -4547,7 +4548,13 @@ impl MvpAgent {
         self.models_manager
             .apply_supported_effort(
                 &mut sampling_config,
-                agent_definition.effort.and_then(|effort| <&'static str>::from(effort).parse().ok()).or(initial_reasoning_effort),
+                if restoring_profile {
+                    initial_reasoning_effort.or_else(|| agent_definition.effort.and_then(|effort| <&'static str>::from(effort).parse().ok()))
+                } else {
+                    parse_reasoning_effort_meta(session_meta)
+                        .or_else(|| agent_definition.effort.and_then(|effort| <&'static str>::from(effort).parse().ok()))
+                        .or(initial_reasoning_effort)
+                },
                 &session_info.id,
                 EffortTarget::NewSession,
             );

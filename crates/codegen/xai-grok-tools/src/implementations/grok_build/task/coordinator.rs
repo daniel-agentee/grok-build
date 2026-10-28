@@ -1191,7 +1191,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         output.result.execution = match &record {
             ChildRecord::Active(child) => child.execution.clone(),
             ChildRecord::Pending(_) => None,
-        };
+        }
+        .or(output.result.execution.take());
         let (
             started_at,
             child_session_id,
