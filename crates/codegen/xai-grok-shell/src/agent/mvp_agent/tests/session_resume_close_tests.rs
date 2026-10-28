@@ -1113,3 +1113,20 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
         );
     });
 }
+
+#[test]
+fn profile_restore_async_frames_are_bounded() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let [cold_attach, load, resume, new] = agent.profile_restore_future_sizes_for_tests();
+        println!(
+            "profile_restore_future_bytes cold_attach_impl={cold_attach} load={load} resume={resume} new={new}"
+        );
+        assert!(load < 65_536, "load embeds the cold bootstrap future");
+        assert!(resume < 65_536, "resume embeds the cold bootstrap future");
+        assert!(
+            cold_attach > load,
+            "measurement must retain the real cold bootstrap"
+        );
+    });
+}

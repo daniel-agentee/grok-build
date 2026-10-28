@@ -1031,6 +1031,15 @@ impl MvpAgent {
         arguments: acp::LoadSessionRequest,
         op: AttachOperation,
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
+        // Cold load and resume share this large bootstrap future. Keep it off
+        // their caller frames, including legacy saved-session restoration.
+        Box::pin(self.attach_session_impl(arguments, op)).await
+    }
+    async fn attach_session_impl(
+        &self,
+        arguments: acp::LoadSessionRequest,
+        op: AttachOperation,
+    ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let attach_started_at = std::time::Instant::now();
         if arguments.meta.as_ref().is_some_and(|meta| {
             [
@@ -2225,6 +2234,33 @@ impl MvpAgent {
         insert_applied_tool_overrides(&mut response_meta_map, applied_tool_overrides.as_ref());
         let response_meta = serde_json::Value::Object(response_meta_map);
         (model_state, response_meta)
+    }
+    #[cfg(test)]
+    pub(super) fn profile_restore_future_sizes_for_tests(&self) -> [usize; 4] {
+        fn future_size<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+            std::mem::size_of::<F>()
+        }
+        let request = || {
+            acp::LoadSessionRequest::new(
+                acp::SessionId::new("frame-size-only"),
+                std::path::PathBuf::from("/tmp/frame-size-only"),
+            )
+        };
+        [
+            future_size(|| self.attach_session_impl(request(), AttachOperation::Load)),
+            future_size(|| self.load_session_inner(request())),
+            future_size(|| {
+                self.resume_session_inner(acp::ResumeSessionRequest::new(
+                    acp::SessionId::new("frame-size-only"),
+                    std::path::PathBuf::from("/tmp/frame-size-only"),
+                ))
+            }),
+            future_size(|| {
+                self.new_session_inner(acp::NewSessionRequest::new(std::path::PathBuf::from(
+                    "/tmp/frame-size-only",
+                )))
+            }),
+        ]
     }
     pub(super) async fn resume_session_inner(
         &self,
