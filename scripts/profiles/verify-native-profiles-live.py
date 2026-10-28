@@ -252,7 +252,7 @@ async def verify(args):
         (root / "fixture.json").write_text(json.dumps(fixture, indent=2))
         print(json.dumps({"fixture": str(root / "fixture.json"), "status": "resident_interactive_terminal_ready"}), flush=True)
         await wait_turn_idle(native, bridge, sid, "PROFILE-TERMINAL-READY-20261028", 0, timeout=120)
-        prompt = "Use the pick-right-subagent-and-assign-task skill. Read the current catalog through the skill's documented local command, then choose the available model that best fits this routine bounded task, reasoning low and standard speed. Only the cached official Grok provider is authenticated in this fixture; optional local provider credentials are unavailable. Spawn exactly one General subagent with explicit model, reasoning_effort and speed. Use no other tools except loading that skill, reading the catalog, spawning and waiting for the child. The child must reply exactly PROFILE-GENERAL-CHILD-ACK-20261028 and must use no tools or network. After its result, reply PROFILE-GENERAL-PARENT-ACK-20261028 and report its actual execution settings. Do not send Slack messages or access credentials."
+        prompt = "Use the pick-right-subagent-and-assign-task skill to delegate this routine local acknowledgement task. Read the current catalog through the skill's documented local command and choose the available model, reasoning effort and speed that fit the task. Only the cached official Grok provider is authenticated in this fixture; optional local provider credentials are unavailable. Delegate exactly once to General. The child must reply exactly PROFILE-GENERAL-CHILD-ACK-20261028 and must use no tools or network. After its result, reply PROFILE-GENERAL-PARENT-ACK-20261028 and report its actual execution settings. The parent may only load the skill, read the catalog, spawn and wait for the child. Do not send Slack messages or access credentials."
         start = len(native.events)
         os.write(master, b"\x1b[200~" + prompt.encode() + b"\x1b[201~\r")
         await wait_turn_idle(native, bridge, sid, "PROFILE-GENERAL-PARENT-ACK-20261028", start)
@@ -265,13 +265,25 @@ async def verify(args):
         if len(completed) != 1 or completed[0].get("status") != "completed" or "PROFILE-GENERAL-CHILD-ACK-20261028" not in completed[0].get("output", ""):
             raise RuntimeError("The genuine child did not complete the acceptance task exactly once")
         execution = {**child["execution"], "childSessionId": child.get("child_session_id"), "subagentId": child.get("subagent_id"), "attemptId": child.get("attempt_id")}
-        if execution.get("profile") != "general-purpose" or execution.get("reasoning_effort") != "low" or execution.get("speed") != "standard":
-            raise RuntimeError("The real child did not use the requested admitted profile/effort/speed")
         choices = parent_spawn_inputs(native.events[start:], sid)
         if (len(choices) != 1 or not choices[0].get("model")
-                or choices[0].get("reasoning_effort") != "low"
-                or choices[0].get("speed") != "standard"):
-            raise RuntimeError("The real parent did not explicitly select model, reasoning_effort and speed through its tool")
+                or choices[0].get("reasoning_effort") not in ("low", "medium", "high")
+                or choices[0].get("speed") not in ("standard", "fast")):
+            raise RuntimeError("The real parent did not explicitly choose admitted model, reasoning_effort and speed through its tool")
+        choice = choices[0]
+        selected = next((model for model in profiles.get("models", [])
+                         if model.get("id") == choice["model"] and model.get("available") is True), None)
+        if selected is None:
+            raise RuntimeError("The parent selected a model outside the available local catalog")
+        expected_model = selected["model"]
+        if choice["speed"] == "fast" and not expected_model.endswith("-fast"):
+            expected_model += "-fast"
+        if (execution.get("profile") != "general-purpose"
+                or execution.get("provider") != selected.get("provider")
+                or execution.get("model") != expected_model
+                or execution.get("reasoning_effort") != choice["reasoning_effort"]
+                or execution.get("speed") != choice["speed"]):
+            raise RuntimeError("The real child execution did not match the parent's admitted catalog choices")
         fixture["execution"] = execution
         (root / "fixture.json").write_text(json.dumps(fixture, indent=2))
         (root / "acceptance.json").write_text(json.dumps({"general": {"passed": True, "spawnCount": 1, "completionCount": 1, "parentChoice": choices[0], "execution": execution}}, indent=2))
