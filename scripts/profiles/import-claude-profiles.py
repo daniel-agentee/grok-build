@@ -87,7 +87,8 @@ def make_definition(
     role, workspace = SEATS[seat]
     source = home / ".claude" / "agents" / f"{role}.md"
     metadata = frontmatter(source)
-    rules = [home / "agents" / "c-level-rules.md"]
+    # The shared file explicitly binds the five C-level seats, not SDR.
+    rules = [] if seat == "sdr" else [home / "agents" / "c-level-rules.md"]
     rules.extend(sorted((home / ".claude" / "rules").glob("*.md")))
     for path in rules:
         if not path.is_file():
@@ -107,8 +108,16 @@ def make_definition(
             f"Use the referenced {role} instructions and shared rules for this task. "
             f"Role reference material is in {home / 'agents' / workspace}. "
             "The child's workspace remains the parent-assigned workspace. "
+            "Grok platform adaptation: the canonical "
+            "pick-right-subagent-and-assign-task skill governs Grok delegation, including "
+            "model, reasoning and speed selection; provider-specific model hints in "
+            "referenced Claude rules are historical platform guidance. "
             "Workspace cards are reference context; historical startup/model/permission "
-            "commands there do not override this native profile's admitted settings."
+            "commands there do not override this native profile's admitted settings. "
+            "Referenced Slack push and watchdog descriptions belong to the original "
+            "persistent seat; selecting this profile does not register a child for its "
+            "inbox, transfer that seat's authority or authorize external messages. "
+            "Use only the selected native identity through an authorized workflow."
         ),
         "promptFiles": [str(source.resolve())],
         "ruleFiles": [str(path.resolve()) for path in rules],

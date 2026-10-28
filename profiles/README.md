@@ -31,7 +31,8 @@ returns the selected source even when another scope shadows it; apply uses
 gives project definitions precedence over user definitions of the same name.
 
 CFO, CoS, CRO, COO, CTO and SDR wrappers reference their current Claude role
-files and shared C-level/company rules, preserving one authoritative prompt.
+files and company rules, preserving one authoritative prompt. The five C-level
+profiles also reference their shared C-level rules; SDR keeps its original scope.
 They retain the role's current model and effort, use standard speed and native
 default permissions. Launch flags and permission bypasses are not imported.
 An optional `--model` is an explicit catalog override; an unsupported source
@@ -45,6 +46,11 @@ Role workspace directories remain available as reference context. Historical
 workspace-card startup/model/permission prose is not copied into the profile.
 The child's actual workspace is inherited from its parent and assigned task;
 selecting a CFO profile does not change the parent's or child's working directory.
+The wrapper states the Grok platform adaptation explicitly: the canonical five
+routing rules supersede provider-specific model hints in Claude references.
+Historical seat launch, permission and Slack-watchdog prose does not change the
+native admitted settings or register a newly spawned child as that persistent
+seat. Existing seats, inbox routing and bot watchers are preserved.
 
 Slack identity uses `botKey`, `botUserId` and an `env:NAME` credential reference.
 The importer never reads token files. Identity metadata does not authorize a

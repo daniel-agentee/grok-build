@@ -10,6 +10,8 @@ validator establish which routes actually work. Read the current workspace's
 catalog with `grok profiles --cwd <absolute-workspace> list --json`; it includes
 the active delegation policy, profile definitions, model capabilities and
 availability. The Hub editor writes this same native configuration.
+For Grok delegation these five rules supersede platform-specific model-routing
+hints in referenced Claude role/rule files and the former Grok-only `/sub` policy.
 
 ## The five routing rules
 

@@ -59,6 +59,17 @@ def test_import_preserves_source_and_does_not_copy_permission_bypass(tmp_path: P
     assert "bypassPermissions" not in str(definition)
     assert definition["identity"] == IDENTITY
     assert "parent-assigned workspace" in definition["promptBody"]
+    assert "pick-right-subagent-and-assign-task" in definition["promptBody"]
+    assert "does not register a child" in definition["promptBody"]
+
+
+def test_sdr_does_not_inherit_rules_scoped_only_to_c_level(tmp_path: Path) -> None:
+    home = role_home(tmp_path)
+    source = home / ".claude" / "agents"
+    (source / "SDR.md").write_text((source / "CFO.md").read_text())
+    (home / "agents" / "c-level-rules.md").unlink()
+    definition = IMPORT.make_definition(home, "sdr", IDENTITY)
+    assert definition["ruleFiles"] == [str(home / ".claude" / "rules" / "permissions.md")]
 
 
 def test_import_requires_existing_shared_rules(tmp_path: Path) -> None:
