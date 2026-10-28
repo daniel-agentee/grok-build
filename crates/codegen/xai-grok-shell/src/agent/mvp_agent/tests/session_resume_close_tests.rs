@@ -1122,8 +1122,9 @@ fn profile_restore_async_frames_are_bounded() {
         println!(
             "profile_restore_future_bytes cold_attach_impl={cold_attach} load={load} resume={resume} new={new}"
         );
-        assert!(load < 65_536, "load embeds the cold bootstrap future");
-        assert!(resume < 65_536, "resume embeds the cold bootstrap future");
+        assert!(load < 4_096, "load embeds the cold bootstrap future");
+        assert!(resume < 4_096, "resume embeds the cold bootstrap future");
+        assert!(new < 4_096, "new embeds the actor bootstrap future");
         assert!(
             cold_attach > load,
             "measurement must retain the real cold bootstrap"

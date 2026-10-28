@@ -4136,6 +4136,16 @@ impl MvpAgent {
         spec: SessionSpawnOptions<'_>,
         spawn_trace: Option<xai_grok_telemetry::startup::SpawnTraceContext>,
     ) -> Result<bool, acp::Error> {
+        // New sessions and cold restores both poll this large actor bootstrap.
+        // Heap-own it here so neither caller embeds its state in nested poll frames.
+        Box::pin(self.spawn_and_register_session_impl(init, spec, spawn_trace)).await
+    }
+    async fn spawn_and_register_session_impl(
+        &self,
+        init: &acp::InitializeRequest,
+        spec: SessionSpawnOptions<'_>,
+        spawn_trace: Option<xai_grok_telemetry::startup::SpawnTraceContext>,
+    ) -> Result<bool, acp::Error> {
         let SessionSpawnOptions {
             session_info,
             cwd,

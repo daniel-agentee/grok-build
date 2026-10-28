@@ -385,7 +385,8 @@ impl MvpAgent {
                     method: "session/new",
                     session_id: client_session_id,
                 }),
-                self.new_session_inner_impl(arguments),
+                // Keep the bootstrap state off the caller and task-local poll frames.
+                Box::pin(self.new_session_inner_impl(arguments)),
             )
             .await
     }

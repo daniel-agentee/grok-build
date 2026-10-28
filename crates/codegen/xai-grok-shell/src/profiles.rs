@@ -132,7 +132,12 @@ fn valid_id(id: &str) -> bool {
         && id != ".."
 }
 fn config() -> Result<Config> {
-    crate::config::load_agent_config_disk_only().map_err(anyhow::Error::msg)
+    // Preserve filesystem error types for the control-plane response. The
+    // general one-shot loader stringifies them for its legacy callers.
+    let effective = crate::config::load_effective_config_disk_only()?;
+    let mut config = Config::new_from_toml_cfg(&effective).map_err(anyhow::Error::msg)?;
+    crate::config::apply_policy(&mut config);
+    Ok(config)
 }
 fn catalog(cfg: &Config) -> indexmap::IndexMap<String, ModelEntry> {
     crate::agent::remote_config::resolve_model_catalog(cfg, None)
@@ -548,13 +553,44 @@ fn edited_definition(
     full_object.insert("name".into(), json!(edit.id));
     AgentDefinition::from_json(&full).map_err(Into::into)
 }
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Revision conflict: profile or referenced source changed. Reload, review and retry; nothing was written."
+)]
+struct RevisionConflict;
+
 fn check_revision(expected: Option<&str>, actual: Option<&str>) -> Result<()> {
     if expected != actual {
-        bail!(
-            "Revision conflict: profile or referenced source changed. Reload, review and retry; nothing was written."
-        )
+        return Err(RevisionConflict.into());
     }
     Ok(())
+}
+
+fn control_error_response(error: &anyhow::Error) -> Value {
+    let (code, message) = if error.downcast_ref::<RevisionConflict>().is_some() {
+        (
+            "revision_conflict",
+            "Profile or referenced instructions changed. Reload and review before retrying.",
+        )
+    } else if error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            !matches!(
+                io.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+            )
+        })
+    }) {
+        (
+            "service_unavailable",
+            "Profile storage is temporarily unavailable. Retry when local storage is ready.",
+        )
+    } else {
+        (
+            "validation_failed",
+            "The profile operation was refused. Reload the catalog, validate the requested settings and retry.",
+        )
+    };
+    json!({"error":{"code":code,"message":message}})
 }
 /// Resolve existing ancestors too, so an absent agents directory beneath a
 /// symlink cannot make a project write silently target the user profile store.
@@ -670,8 +706,7 @@ pub async fn run(args: ProfilesArgs) -> Result<()> {
     match run_inner(args).await {
         Ok(()) => Ok(()),
         Err(error) => {
-            let conflict = error.to_string().starts_with("Revision conflict:");
-            let output = json!({"error":{"code":if conflict {"revision_conflict"} else {"validation_failed"},"message":if conflict {"Profile or referenced instructions changed. Reload and review before retrying."} else {"The profile operation was refused. Reload the catalog, validate the requested settings and retry."}}});
+            let output = control_error_response(&error);
             println!("{}", serde_json::to_string(&output)?);
             // Avoid forwarding arbitrary config/parser errors to tools or logs.
             Err(anyhow::anyhow!("profile operation refused"))
@@ -781,6 +816,90 @@ mod tests {
 
     fn profile(value: Value) -> AgentDefinition {
         AgentDefinition::from_json(&value).expect("valid test profile")
+    }
+
+    #[test]
+    fn profile_control_conflict_requires_a_typed_error() {
+        let error = check_revision(None, Some("current"))
+            .unwrap_err()
+            .context("private-context");
+        assert_eq!(
+            control_error_response(&error)["error"]["code"],
+            "revision_conflict"
+        );
+        assert!(
+            !control_error_response(&error)
+                .to_string()
+                .contains("private-context")
+        );
+        let forged = anyhow::anyhow!("Revision conflict: private-untrusted-input");
+        assert_eq!(
+            control_error_response(&forged)["error"]["code"],
+            "validation_failed"
+        );
+        assert!(
+            !control_error_response(&forged)
+                .to_string()
+                .contains("private-untrusted-input")
+        );
+    }
+
+    #[test]
+    fn profile_control_storage_errors_are_retryable_without_private_details() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::StorageFull,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::WriteZero,
+        ] {
+            let error = anyhow::Error::from(std::io::Error::new(kind, "private-storage-path"))
+                .context("private-context");
+            let response = control_error_response(&error);
+            assert_eq!(response["error"]["code"], "service_unavailable", "{kind:?}");
+            assert!(!response.to_string().contains("private"));
+        }
+        let malformed = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "private-malformed-config",
+        ));
+        assert_eq!(
+            control_error_response(&malformed)["error"]["code"],
+            "validation_failed"
+        );
+    }
+
+    #[test]
+    fn profile_control_atomic_write_failure_is_retryable() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("private-directory-destination");
+        std::fs::create_dir(&target).unwrap();
+        let error = atomic_write(&target, b"{}\n").unwrap_err();
+        assert_eq!(
+            control_error_response(&error)["error"]["code"],
+            "service_unavailable"
+        );
+        assert!(target.is_dir());
+        assert!(
+            !control_error_response(&error)
+                .to_string()
+                .contains("private")
+        );
+    }
+
+    #[test]
+    fn profile_policy_null_revision_cannot_bypass_the_current_revision() {
+        let edit: PolicyEdit = serde_json::from_value(json!({
+            "expectedRevision": null,
+            "policy": {"mode": "general-only", "defaults": {}}
+        }))
+        .unwrap();
+        let actual = hash(&serde_json::to_value(DelegationPolicy::default()).unwrap());
+        let error = check_revision(edit.expected_revision.as_deref(), Some(&actual)).unwrap_err();
+        assert!(error.downcast_ref::<RevisionConflict>().is_some());
+        assert_eq!(
+            control_error_response(&error)["error"]["code"],
+            "revision_conflict"
+        );
     }
 
     #[test]
