@@ -31,6 +31,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.ready_type = "leader_ready"
         self.resident_only_supported = True
         self.actor_identity_supported = True
+        self.profiles_supported = False
         self.answer_roster = True
         self.answer_load = True
         self.owner_auth_error = False
@@ -112,6 +113,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                                         "_meta": {
                                             "x.ai/residentOnlyAttach": self.resident_only_supported,
                                             "x.ai/residentActorIdentity": self.actor_identity_supported,
+                                            "x.ai/agentProfiles": self.profiles_supported,
                                         }
                                     },
                                 }
@@ -856,6 +858,104 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", await ws.receive_json())
         self.assertTrue(self.seen.empty())
         await ws.close()
+
+    def install_profile_cli(self):
+        self.profiles_supported = True
+        self.profile_fixture = {
+            "version": 1, "revision": "catalog-revision", "profiles": [{
+                "id": "researcher", "revision": "profile-revision",
+                "definition": {"name": "researcher", "description": "Grounded research", "model": "catalog-base",
+                               "effort": "high", "speed": "standard", "skills": ["research"],
+                               "promptBody": "PRIVATE-PROMPT-MARKER", "ruleFiles": ["rules/research.md"],
+                               "identity": {"displayName": "Researcher", "avatar": "🔎", "slack": {
+                                   "credentialRef": "env:PRIVATE-REFERENCE-MARKER"}}},
+                "validation": {"valid": True, "errors": []},
+            }],
+        }
+        self.profile_payload = Path(self.temp.name) / "profile-catalog.json"
+        self.profile_payload.write_text(json.dumps(self.profile_fixture))
+        cli = Path(self.temp.name) / "profile-cli"
+        cli.write_text("#!/usr/bin/env python3\nfrom pathlib import Path\nprint(Path(" + repr(str(self.profile_payload)) + ").read_text())\n")
+        cli.chmod(0o755)
+        self.bridge.directory.profile_cli = cli
+        return cli
+
+    async def test_profile_catalog_requires_auth_and_never_exposes_prompt_or_credential_references(self):
+        self.install_profile_cli()
+        with self.assertRaises(WSServerHandshakeError) as failure:
+            await self.client.ws_connect(self.url, headers={"Authorization": "Bearer wrong"})
+        self.assertEqual(failure.exception.status, 401)
+        self.assertTrue(self.seen.empty())
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": "profiles", "method": bridge.PROFILE_METHOD, "params": {"cwd": self.temp.name}})
+        result = (await ws.receive_json())["result"]
+        self.assertEqual(result["profiles"][0]["name"], "Researcher")
+        self.assertEqual(result["profiles"][0]["ruleCount"], 1)
+        self.assertNotIn("PRIVATE-", json.dumps(result))
+        self.assertNotIn(bridge.PROFILE_METHOD, self.native_methods, "Display adapter never forwards unknown methods to an old agent")
+        await ws.close()
+
+    async def test_named_creation_forwards_identity_revision_only_and_never_fabricates_native_proof(self):
+        self.install_profile_cli()
+        ws = await self.connect()
+        selection = {"agentProfile": "researcher", "profileRevision": "profile-revision"}
+        await ws.send_json({"jsonrpc": "2.0", "id": "named", "method": "session/new",
+                            "params": {"cwd": self.temp.name, "_meta": selection}})
+        forwarded = await self.next_forward("session/new")
+        self.assertEqual(forwarded["params"]["_meta"], selection)
+        self.assertNotIn("_x.ai/models/list", self.native_methods)
+        await self.emit_native({"jsonrpc": "2.0", "id": "named", "result": {"sessionId": "named-child"}})
+        response = await ws.receive_json()
+        self.assertNotIn("_meta", response["result"], "Only native applied-profile metadata may prove identity")
+        await ws.close()
+
+    async def test_stale_invalid_removed_and_inline_profiles_never_create(self):
+        self.install_profile_cli()
+        ws = await self.connect()
+        for selection in [
+            {"agentProfile": "researcher", "profileRevision": "old-revision"},
+            {"agentProfile": "removed", "profileRevision": "profile-revision"},
+            {"agentProfile": {"name": "inline", "permissionMode": "bypassPermissions"}, "profileRevision": "profile-revision"},
+            {"agentProfile": "researcher"},
+            {"profileRevision": "profile-revision"},
+            {"agentProfile": "researcher", "profileRevision": "profile-revision", "modelId": "catalog-fast"},
+        ]:
+            await ws.send_json({"jsonrpc": "2.0", "id": "bad-profile", "method": "session/new",
+                                "params": {"cwd": self.temp.name, "_meta": selection}})
+            self.assertIn("error", await ws.receive_json())
+        self.profile_fixture["profiles"][0]["validation"]["valid"] = False
+        self.profile_payload.write_text(json.dumps(self.profile_fixture))
+        await ws.send_json({"jsonrpc": "2.0", "id": "bad-profile", "method": "session/new", "params": {
+            "cwd": self.temp.name, "_meta": {"agentProfile": "researcher", "profileRevision": "profile-revision"}}})
+        self.assertEqual((await ws.receive_json())["error"]["data"]["code"], "profile_invalid")
+        self.assertNotIn("session/new", self.native_methods)
+        await ws.close()
+
+    async def test_profile_catalog_missing_older_untrusted_cli_and_bad_workspace_fail_cleanly(self):
+        cli = self.install_profile_cli()
+        ws = await self.connect()
+        for path, mode in [(Path(self.temp.name) / "missing", 0o755), (cli, 0o775)]:
+            self.bridge.directory.profile_cli = path
+            if path.exists(): path.chmod(mode)
+            await ws.send_json({"jsonrpc": "2.0", "id": "profiles", "method": bridge.PROFILE_METHOD, "params": {"cwd": self.temp.name}})
+            self.assertEqual((await ws.receive_json())["error"]["data"]["code"], "profiles_unavailable")
+        cli.chmod(0o755)
+        self.bridge.directory.profile_cli = cli
+        cli.write_text("#!/bin/sh\necho PRIVATE-CLI-ERROR >&2\nexit 2\n")
+        for cwd in [self.temp.name, ".", self.temp.name + "/../", "bad\npath"]:
+            await ws.send_json({"jsonrpc": "2.0", "id": "profiles", "method": bridge.PROFILE_METHOD, "params": {"cwd": cwd}})
+            response = await ws.receive_json()
+            self.assertIn("error", response)
+            self.assertNotIn("PRIVATE-CLI", json.dumps(response))
+        await ws.close()
+
+    async def test_profile_reads_reap_timed_out_and_oversize_processes(self):
+        cli = self.install_profile_cli()
+        for script in ["import time; time.sleep(30)", "print('x' * 4096)"]:
+            cli.write_text("#!/usr/bin/env python3\n" + script + "\n")
+            with patch.object(bridge, "PROFILE_TIMEOUT", 0.15), patch.object(bridge, "MAX_PROFILE_OUTPUT", 1024):
+                with self.assertRaises(ValueError):
+                    await self.bridge.directory.profile_catalog(self.temp.name)
 
     async def test_new_session_model_settings_capability_requires_native_actor_guarantees(self):
         for supported in (True, False):

@@ -1,5 +1,45 @@
 # Live Grok session bridge
 
+## Named assistant profiles
+
+Start a **profile-capable patched leader** and pass the exact tested executable
+to the bridge with `--profile-cli /absolute/path/to/grok`. The bridge never finds
+a profile executable through PATH. The executable must be a regular file owned
+by the current user, executable, and unwritable by group/others. Existing leaders
+remain attachable, but a leader without strict profile admission cannot create a
+named-profile session. Initialize advertises `x.ai/agentProfiles` only when both
+the leader capability and configured adapter are present.
+
+Authenticated `_x.ai/profiles/list` accepts `{cwd: "/absolute/workspace"}` and
+executes `grok profiles --cwd /absolute/workspace list --json` using the primary
+leader's Grok home. This is a bounded, read-only catalog call; it never creates an
+agent. The phone receives version/revision and display fields only: profile id,
+revision, name, description, avatar, model, reasoningEffort, speed, skills,
+ruleCount and valid. System prompts, rule bodies and credential references stay
+on the Mac. Missing/old/untrusted executables and invalid workspaces return a
+clear `profiles_unavailable` error. No CLI stderr is returned or logged.
+
+For a named profile, `session/new._meta` contains only
+`{agentProfile: "researcher", profileRevision: "native-profile-revision"}`.
+Inline definitions and permission overrides are refused. The bridge refreshes
+the canonical native catalog before creator dispatch, verifies validity and
+revision, and leaves the profile's saved model/effort defaults intact. Native
+admission must independently check the revision to close the catalog/create race
+and echo the applied immutable identity in `_meta["x.ai/agentProfile"]` as
+`{id,revision}`. The bridge **never invents that proof**. The phone verifies it on
+create and strict load before enabling Send. Custom sessions keep the existing
+advertised model/reasoning path. Profile edits affect future children/sessions;
+attachment never replaces a running actor or its frozen profile.
+
+Run the focused adapter suite with:
+
+```sh
+python3 -m unittest discover -s tools/live-session-bridge -p test_bridge.py -q
+```
+
+These transport tests include a protocol fixture and are supporting coverage,
+not live model-provider interoperability evidence.
+
 A small authenticated WebSocket transport for existing native Grok leaders.
 It creates no `MvpAgent`, model connection, or conversation history store.
 An explicit mobile **New session** request creates a fresh session on that existing

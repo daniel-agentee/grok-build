@@ -43,6 +43,9 @@ MAX_PREVIEW_PAGE = 500
 CATALOG_TTL = 15
 MAX_CATALOGS = 32
 CATALOG_TIMEOUT = 20
+PROFILE_METHOD = "_x.ai/profiles/list"
+PROFILE_TIMEOUT = 12
+MAX_PROFILE_OUTPUT = 2 * 1024 * 1024
 INTERNAL_PREFIX = "grok-mobile-preflight:"
 
 
@@ -70,10 +73,11 @@ READ_METHODS = {
     "x.ai/workspaces/list",
     "_x.ai/workspaces/list",
     "_x.ai/commands/list",
+    PROFILE_METHOD,
     PREVIEW_METHOD,
 }
 SESSION_METHODS = {"session/prompt", "session/cancel", "session/set_model"}
-NEW_SESSION_META_KEYS = {"modelId", "reasoningEffort"}
+NEW_SESSION_META_KEYS = {"modelId", "reasoningEffort", "agentProfile", "profileRevision"}
 CANONICAL_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 INITIALIZE_META_KEYS = {"clientIdentifier", "clientUserMessageEcho"}
 EMPTY_PARAM_METHODS = READ_METHODS - {
@@ -82,6 +86,7 @@ EMPTY_PARAM_METHODS = READ_METHODS - {
     "x.ai/session/info",
     "_x.ai/session/info",
     "_x.ai/commands/list",
+    PROFILE_METHOD,
     PREVIEW_METHOD,
 }
 LOAD_META_KEYS = {
@@ -180,6 +185,7 @@ async def connect_leader(socket: Path, version: str, *, require_capability: bool
                                  and metadata.get("x.ai/residentActorIdentity") is True)
                     if capability_result is not None:
                         capability_result["attachSupported"] = supported
+                        capability_result["profilesSupported"] = isinstance(metadata, dict) and metadata.get("x.ai/agentProfiles") is True
                     if require_capability and not supported:
                         raise ValueError("Pinned leader lacks resident-only attachment capability")
                     return
@@ -256,9 +262,17 @@ def new_session_settings_error(meta: Any, catalog: dict[str, Any] | None = None)
     settings because native policy may change after catalog discovery.
     """
     if not isinstance(meta, dict) or meta.keys() - NEW_SESSION_META_KEYS:
-        return "New session settings accept only modelId and reasoningEffort"
+        return "New session settings accept only advertised model, reasoning and profile selections"
     if not meta:
         return None
+    if "agentProfile" in meta or "profileRevision" in meta:
+        for key in ("agentProfile", "profileRevision"):
+            value = meta.get(key)
+            if (not isinstance(value, str) or not value or len(value) > 512
+                or value.strip() != value or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                return "Choose a named profile with its current revision; inline definitions are unavailable"
+        if "modelId" not in meta and "reasoningEffort" not in meta:
+            return None
     model_id = meta.get("modelId")
     if (not isinstance(model_id, str) or not model_id or len(model_id) > 512
         or model_id.strip() != model_id or any(ord(c) < 32 or ord(c) == 127 for c in model_id)):
@@ -295,7 +309,8 @@ class LeaderDirectory:
     capabilities. Previously observed owners are retained to fail closed on loss.
     """
 
-    def __init__(self, primary: Path, secret: str, version: str, *, workspace_reader: Path | None = None):
+    def __init__(self, primary: Path, secret: str, version: str, *, workspace_reader: Path | None = None,
+                 profile_cli: Path | None = None):
         self.primary = primary.absolute()
         self.secret, self.version = secret, version
         self.sources: dict[str, Path] = {}
@@ -306,11 +321,84 @@ class LeaderDirectory:
         self.cached_snapshot = None
         self.cached_at = 0.0
         self.workspace_reader = workspace_reader
+        self.profile_cli = profile_cli
+        self.profile_reads = asyncio.Semaphore(2)
         self.workspace_reader_sha256 = WORKSPACE_READER_SHA256
         self.workspace_members: set[tuple[str, str]] = set()
         self.catalogs: dict[tuple, tuple[float, dict]] = {}
         self.catalog_flights: dict[tuple, asyncio.Future] = {}
         self.refresh_paths()
+
+    async def profile_catalog(self, cwd: str) -> dict[str, Any]:
+        """Read the pinned native catalog without an agent or credential output.
+
+        No cache: profile revisions must be current at creation admission. The
+        native owner checks that revision again when applying the definition.
+        """
+        path = self.profile_cli
+        if path is None:
+            raise ValueError("profiles_unavailable")
+        try:
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022 or not info.st_mode & 0o111):
+                raise ValueError("profiles_untrusted")
+        except OSError:
+            raise ValueError("profiles_unavailable") from None
+        process = None
+        try:
+            async with asyncio.timeout(PROFILE_TIMEOUT), self.profile_reads:
+                process = await asyncio.create_subprocess_exec(
+                    str(path), "profiles", "--cwd", cwd, "list", "--json",
+                    env={**os.environ, "GROK_HOME": str(self.primary.parent)},
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                output = bytearray()
+                while chunk := await process.stdout.read(65536):
+                    output.extend(chunk)
+                    if len(output) > MAX_PROFILE_OUTPUT:
+                        raise ValueError("profiles_invalid")
+                if await process.wait() != 0:
+                    raise ValueError("profiles_unavailable")
+                catalog = json.loads(output, parse_constant=reject_nonfinite)
+                if (not isinstance(catalog, dict) or catalog.get("version") != 1
+                    or not isinstance(catalog.get("revision"), str)
+                    or not isinstance(catalog.get("profiles"), list)
+                    or len(catalog["profiles"]) > 256):
+                    raise ValueError("profiles_invalid")
+                return catalog
+        except asyncio.TimeoutError:
+            raise ValueError("profiles_timeout") from None
+        except (OSError, TypeError, RecursionError, json.JSONDecodeError):
+            raise ValueError("profiles_invalid") from None
+        finally:
+            if process is not None and process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+
+    async def check_profile(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        meta = request["params"].get("_meta", {})
+        if "agentProfile" not in meta:
+            return None
+        try:
+            catalog = await self.profile_catalog(request["params"]["cwd"])
+            matches = [row for row in catalog["profiles"] if isinstance(row, dict)
+                       and row.get("id") == meta["agentProfile"]]
+            if len(matches) != 1 or matches[0].get("revision") != meta["profileRevision"]:
+                return source_error(request, "profile_stale", "This profile changed or was removed. Refresh and choose again.")
+            profile = matches[0]
+            definition, validation = profile.get("definition", {}), profile.get("validation", {})
+            if (not isinstance(definition, dict) or not isinstance(validation, dict)
+                or validation.get("valid") is not True):
+                return source_error(request, "profile_invalid", "This profile cannot run. Review its settings on the Mac.")
+            if ("modelId" in meta and definition.get("model") != meta["modelId"]
+                or "reasoningEffort" in meta and definition.get("effort") != meta["reasoningEffort"]):
+                return source_error(request, "profile_settings_changed", "Use this profile’s saved model and reasoning settings, or choose Custom.")
+            return None
+        except ValueError:
+            return source_error(request, "profiles_unavailable", "Profile choices are unavailable. Check the pinned Mac CLI and refresh.")
 
     def catalog_key(self, source: Path, workspace: Path) -> tuple:
         """Cheap metadata invalidation, never a substitute for native trust checks.
@@ -586,9 +674,14 @@ class SessionOwner:
         writer = None
         creation_dispatched = False
         try:
+            capabilities = {}
             reader, writer = await connect_leader(
-                self.bridge.socket, self.bridge.version, require_capability=True
+                self.bridge.socket, self.bridge.version, require_capability=True, capability_result=capabilities
             )
+            if ("agentProfile" in self.request.get("params", {}).get("_meta", {})
+                and not capabilities.get("profilesSupported")):
+                self.result.set_result(source_error(self.request, "profiles_unavailable", "This leader needs the profile-capable Grok update. Start a new compatible leader."))
+                return
             auth_id = INTERNAL_PREFIX + "owner-auth"
             await write_frame(writer, {"type": "acp", "payload": json.dumps({
                 "jsonrpc": "2.0", "id": auth_id, "method": "authenticate",
@@ -606,7 +699,7 @@ class SessionOwner:
                             return
                         break
             settings = self.request.get("params", {}).get("_meta", {})
-            if self.request.get("method") == "session/new" and settings:
+            if self.request.get("method") == "session/new" and "modelId" in settings:
                 # Precreation discovery on the authenticated creator connection
                 # creates no session and cannot disturb another actor's config.
                 catalog_id = INTERNAL_PREFIX + "owner-models"
@@ -638,6 +731,11 @@ class SessionOwner:
                 error = new_session_settings_error(settings, catalog)
                 if error is not None:
                     self.result.set_result(source_error(self.request, "settings_invalid", error))
+                    return
+            if self.request.get("method") == "session/new" and "agentProfile" in settings:
+                rejection = await self.bridge.directory.check_profile(self.request)
+                if rejection is not None:
+                    self.result.set_result(rejection)
                     return
             if self.before_dispatch is not None:
                 rejection = await self.before_dispatch()
@@ -736,9 +834,9 @@ class SessionOwner:
 
 
 class Bridge:
-    def __init__(self, socket: Path, secret: str, version: str, *, directory=None, root=None, workspace_reader=None):
+    def __init__(self, socket: Path, secret: str, version: str, *, directory=None, root=None, workspace_reader=None, profile_cli=None):
         self.socket, self.secret, self.version = socket.absolute(), secret, version
-        self.directory = directory or LeaderDirectory(socket, secret, version, workspace_reader=workspace_reader)
+        self.directory = directory or LeaderDirectory(socket, secret, version, workspace_reader=workspace_reader, profile_cli=profile_cli)
         self.root = root or self
         self.children: dict[str, Bridge] = {} if root is None else root.children
         self.owners: set[SessionOwner] = set() if root is None else root.owners
@@ -804,6 +902,7 @@ class Bridge:
         inflight: set[str] = set()
         initializing: set[str] = set()
         resident_only_supported = False
+        profiles_supported = False
         attached: dict[str, str] = {}
         attached_workspaces: dict[str, str] = {}
         attachment_ended = False
@@ -826,7 +925,7 @@ class Bridge:
             await write_frame(writer, {"type": "acp", "payload": json.dumps(value)})
 
         async def from_leader():
-            nonlocal resident_only_supported, attachment_ended
+            nonlocal resident_only_supported, profiles_supported, attachment_ended
             while True:
                 envelope = await read_frame(reader)
                 if envelope.get("type") in ("shutdown", "shutting_down"):
@@ -900,12 +999,16 @@ class Bridge:
                             and metadata.get("x.ai/residentOnlyAttach") is True
                             and metadata.get("x.ai/residentActorIdentity") is True
                         )
+                        profiles_supported = (resident_only_supported and isinstance(metadata, dict)
+                                              and metadata.get("x.ai/agentProfiles") is True
+                                              and self.directory.profile_cli is not None)
                         if isinstance(metadata, dict):
                             metadata.update({"x.ai/mobileLeaderDirectory": True,
                                              "x.ai/explicitSavedResume": True,
                                              "x.ai/idleSessionPreview": True,
                                              "x.ai/workspaceCommands": True,
                                              "x.ai/newSessionModelSettings": resident_only_supported,
+                                             "x.ai/agentProfiles": profiles_supported,
                                              "x.ai/bridgeLeaderId": selected_token})
                             payload = json.dumps(value)
                 preflight_entry = pending.pop(str(value.get("id")), None) if is_response else None
@@ -970,6 +1073,45 @@ class Bridge:
                     await ws.send_json({"jsonrpc": "2.0", "id": value["id"], "result": {"result": result}})
             except (ConnectionError, RuntimeError):
                 pass
+            finally:
+                inflight.discard(request_key(value))
+
+        async def list_profiles(value):
+            try:
+                params = value["params"]
+                cwd = params.get("cwd")
+                if (params.keys() != {"cwd"} or not isinstance(cwd, str)
+                    or not Path(cwd).is_absolute() or ".." in Path(cwd).parts
+                    or any(ord(c) < 32 or ord(c) == 127 for c in cwd)):
+                    raise ValueError("workspace_invalid")
+                workspace = Path(cwd).resolve(strict=True)
+                if not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK):
+                    raise ValueError("workspace_invalid")
+                catalog = await self.directory.profile_catalog(str(workspace))
+                # Phone needs display metadata only; system prompts, rules and
+                # credentials stay on the Mac and are resolved by native Grok.
+                profiles = []
+                for profile in catalog["profiles"]:
+                    if not isinstance(profile, dict):
+                        raise ValueError("profiles_invalid")
+                    definition = profile.get("definition", {})
+                    identity = definition.get("identity") or {}
+                    profiles.append({
+                        "id": profile.get("id"), "revision": profile.get("revision"),
+                        "name": identity.get("displayName") or definition.get("name"),
+                        "description": definition.get("description"), "avatar": identity.get("avatar"),
+                        "model": definition.get("model"), "reasoningEffort": definition.get("effort"),
+                        "speed": definition.get("speed"), "skills": definition.get("skills") or [],
+                        "ruleCount": len(definition.get("ruleFiles") or []),
+                        "valid": profile.get("validation", {}).get("valid") is True,
+                    })
+                if not ws.closed:
+                    await ws.send_json({"jsonrpc": "2.0", "id": value["id"], "result": {
+                        "version": 1, "revision": catalog["revision"], "profiles": profiles,
+                    }})
+            except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
+                if not ws.closed:
+                    await ws.send_json(source_error(value, "profiles_unavailable", "Profiles are unavailable for this workspace. Check the pinned Mac CLI and refresh."))
             finally:
                 inflight.discard(request_key(value))
 
@@ -1244,6 +1386,9 @@ class Bridge:
                         ))
                         continue
                     settings = params.get("_meta", {})
+                    if "agentProfile" in settings and not profiles_supported:
+                        await ws.send_json(source_error(value, "profiles_unavailable", "Update the Mac leader and bridge before choosing profiles."))
+                        continue
                     settings_error = new_session_settings_error(settings)
                     if settings_error is not None:
                         await ws.send_json(source_error(value, "settings_invalid", settings_error))
@@ -1299,6 +1444,13 @@ class Bridge:
                     delivery = asyncio.create_task(deliver_creation())
                     self.creations.add(delivery)
                     delivery.add_done_callback(self.creations.discard)
+                    continue
+                if method == PROFILE_METHOD:
+                    if not profiles_supported:
+                        await ws.send_json(source_error(value, "profiles_unavailable", "Update the Mac leader and configure the pinned profile CLI before choosing profiles."))
+                    elif "id" in value:
+                        inflight.add(request_key(value))
+                        spawn_background(list_profiles(value))
                     continue
                 if method == "_x.ai/commands/list":
                     sid = params.get("sessionId")
@@ -1536,6 +1688,7 @@ def main() -> None:
     parser.add_argument("--workspace-reader", type=Path,
                         default=default_workspace_reader(),
                         help="Pinned read-only native dashboard membership exporter")
+    parser.add_argument("--profile-cli", type=Path, help="Explicit pinned profile-capable Grok executable; no PATH fallback")
     parser.add_argument("--init-secret", action="store_true")
     args = parser.parse_args()
     if args.init_secret:
@@ -1548,7 +1701,8 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     web.run_app(
         make_app(Bridge(args.leader_socket, secret, args.cli_version,
-                        workspace_reader=args.workspace_reader.expanduser().absolute())),
+                        workspace_reader=args.workspace_reader.expanduser().absolute(),
+                        profile_cli=args.profile_cli.expanduser().absolute() if args.profile_cli else None)),
         host=args.host,
         port=args.port,
         access_log=None,
