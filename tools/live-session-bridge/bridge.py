@@ -1088,8 +1088,9 @@ class Bridge:
                 if not workspace.is_dir() or not os.access(workspace, os.R_OK | os.X_OK):
                     raise ValueError("workspace_invalid")
                 catalog = await self.directory.profile_catalog(str(workspace))
-                # Phone needs display metadata only; system prompts, rules and
-                # credentials stay on the Mac and are resolved by native Grok.
+                # Phone needs display metadata only. Native applies prompts and
+                # rules; credential references stay with their Mac-side provider
+                # or authorized workflow, never in this display response.
                 profiles = []
                 for profile in catalog["profiles"]:
                     if not isinstance(profile, dict):

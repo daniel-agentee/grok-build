@@ -895,6 +895,29 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(bridge.PROFILE_METHOD, self.native_methods, "Display adapter never forwards unknown methods to an old agent")
         await ws.close()
 
+    async def test_invalid_native_source_without_revision_does_not_hide_valid_profiles(self):
+        self.install_profile_cli()
+        self.profile_fixture["profiles"].append({
+            "id": "CFO", "revision": None,
+            "definition": {"name": "CFO", "description": "Unparsed legacy source"},
+            "validation": {"valid": False, "errors": ["invalid native source"]},
+        })
+        self.profile_payload.write_text(json.dumps(self.profile_fixture))
+        ws = await self.connect()
+        await ws.send_json({"jsonrpc": "2.0", "id": "profiles", "method": bridge.PROFILE_METHOD,
+                            "params": {"cwd": self.temp.name}})
+        rows = (await ws.receive_json())["result"]["profiles"]
+        self.assertEqual([row["id"] for row in rows], ["researcher", "CFO"])
+        self.assertTrue(rows[0]["valid"])
+        self.assertIsNone(rows[1]["revision"])
+        self.assertFalse(rows[1]["valid"])
+        self.assertNotIn("errors", rows[1])
+        await ws.send_json({"jsonrpc": "2.0", "id": "invalid-source", "method": "session/new", "params": {
+            "cwd": self.temp.name, "_meta": {"agentProfile": "CFO", "profileRevision": "invented-revision"}}})
+        self.assertIn("error", await ws.receive_json())
+        self.assertNotIn("session/new", self.native_methods)
+        await ws.close()
+
     async def test_named_creation_forwards_identity_revision_only_and_never_fabricates_native_proof(self):
         self.install_profile_cli()
         ws = await self.connect()
