@@ -940,3 +940,176 @@ fn disconnect_does_not_unload_a_session_mid_attach() {
         );
     });
 }
+
+#[test]
+fn profile_restore_overrides_refuse_before_workspace_or_history_side_effects() {
+    super::run_local_for_bridge_test(|| async {
+        for meta in [
+            json!({"agentProfile": "general-purpose"}),
+            json!({"agentProfile": {"name": "replacement", "description": "replacement"}}),
+            json!({"profileRevision": "changed-revision"}),
+            json!({"modelId": "replacement-model"}),
+            json!({"reasoningEffort": "high"}),
+        ] {
+            let agent = super::build_minimal_agent_for_tests();
+            let sid = acp::SessionId::new("saved-profile-refusal");
+            let error = agent
+                .load_session_inner(
+                    acp::LoadSessionRequest::new(
+                        sid.clone(),
+                        "/invalid/uninitialized/workspace".into(),
+                    )
+                    .meta(meta_of(meta.clone())),
+                )
+                .await
+                .expect_err("profile changes cannot enter the attach path");
+            assert_eq!(
+                error.data,
+                Some(json!(
+                    super::super::session_setup::ATTACH_REFUSES_PROFILE_OVERRIDES
+                ))
+            );
+            let error = agent
+                .resume_session_inner(resume_request(meta))
+                .await
+                .expect_err("resume has the same ownership guard");
+            assert_eq!(
+                error.data,
+                Some(json!(
+                    super::super::session_setup::ATTACH_REFUSES_PROFILE_OVERRIDES
+                ))
+            );
+            assert!(!agent.is_resident(&sid));
+            assert_eq!(super::workspace_session_count(&agent), 0);
+        }
+    });
+}
+
+#[test]
+fn profile_restore_keeps_frozen_role_after_source_edit_and_removal() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let ordinary = super::new_root_session(&agent, cwd.path()).await;
+        agent.close_active_session(&ordinary).await;
+        let profile_dir = cwd.path().join(".grok/agents");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let role_file = cwd.path().join("role.md");
+        let rule_file = cwd.path().join("rule.md");
+        std::fs::write(&role_file, "Frozen CFO role context.").unwrap();
+        std::fs::write(&rule_file, "Frozen fixture rule.").unwrap();
+        let definition = json!({"name": "restore-specialist", "description": "Fixture specialist",
+            "model": "inherit", "promptFiles": [role_file], "ruleFiles": [rule_file]});
+        let profile_file = profile_dir.join("restore-specialist.md");
+        std::fs::write(
+            &profile_file,
+            format!("---\n{definition}\n---\nFrozen fixture body.\n"),
+        )
+        .unwrap();
+        let response = agent
+            .new_session_inner(
+                acp::NewSessionRequest::new(cwd.path().to_path_buf())
+                    .meta(meta_of(json!({"agentProfile": "restore-specialist"}))),
+            )
+            .await
+            .expect("native named profile admission");
+        let sid = response.session_id;
+        let before = agent.resident_handle(&sid).unwrap();
+        let applied = serde_json::to_value(&before.spawn_snapshot.applied_profile).unwrap();
+        assert_eq!(applied["id"], "restore-specialist");
+        let info = before.info.clone();
+        agent.close_active_session(&sid).await;
+        let storage =
+            crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
+        let frozen = storage
+            .read_summary_sync(&info)
+            .unwrap()
+            .agent_profile()
+            .unwrap()
+            .to_json_value();
+        assert!(
+            frozen["promptBody"]
+                .as_str()
+                .unwrap()
+                .contains("Frozen CFO role context.")
+        );
+        assert!(frozen["promptFiles"].as_array().is_none_or(Vec::is_empty));
+        std::fs::write(&role_file, "Changed role must not be applied.").unwrap();
+        std::fs::write(&rule_file, "Changed rule must not be applied.").unwrap();
+        std::fs::write(&profile_file, "---\nname: restore-specialist\ndescription: Changed profile\nmodel: missing-model\n---\nChanged body.\n").unwrap();
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("load frozen specialist despite changed revision");
+        let loaded = agent.resident_handle(&sid).unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded.spawn_snapshot.applied_profile).unwrap(),
+            applied
+        );
+        assert_ne!(loaded.resident_actor_id, before.resident_actor_id);
+        agent.close_active_session(&sid).await;
+        std::fs::remove_file(role_file).unwrap();
+        std::fs::remove_file(rule_file).unwrap();
+        std::fs::remove_file(profile_file).unwrap();
+        agent
+            .resume_session_inner(acp::ResumeSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("resume frozen specialist without current source files");
+        assert_eq!(
+            serde_json::to_value(
+                &agent
+                    .resident_handle(&sid)
+                    .unwrap()
+                    .spawn_snapshot
+                    .applied_profile
+            )
+            .unwrap(),
+            applied
+        );
+        agent.close_active_session(&sid).await;
+        assert_eq!(
+            storage
+                .read_summary_sync(&info)
+                .unwrap()
+                .agent_profile()
+                .unwrap()
+                .to_json_value(),
+            frozen
+        );
+    });
+}
+
+#[test]
+fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
+    super::run_local_for_bridge_test(|| async {
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        let info = agent.resident_handle(&sid).unwrap().info.clone();
+        agent.close_active_session(&sid).await;
+        let storage =
+            crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
+        let before = storage.read_summary_sync(&info).unwrap();
+        let name = before.agent_name().unwrap().to_owned();
+        assert_ne!(name, "general-purpose");
+        agent.cfg.borrow_mut().agent.name = Some("general-purpose".into());
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("ordinary saved session keeps its prior profile");
+        agent.close_active_session(&sid).await;
+        assert_eq!(
+            storage.read_summary_sync(&info).unwrap().agent_name(),
+            Some(name.as_str())
+        );
+    });
+}

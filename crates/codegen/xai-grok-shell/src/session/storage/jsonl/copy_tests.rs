@@ -1818,3 +1818,74 @@ fn capped_line_reader_discards_overlong_lines_without_shifting_indexes() {
         vec![(0, b"aa".to_vec()), (1, b"bb".to_vec())]
     );
 }
+
+#[tokio::test]
+async fn profile_fork_preserves_snapshot_and_refuses_conflicting_model_before_target_creation() {
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let source_info = Info {
+        id: acp::SessionId::new("specialist-source"),
+        cwd: "/source".into(),
+    };
+    adapter
+        .init_session(&source_info, default_model_id())
+        .await
+        .unwrap();
+    let mut source = adapter.read_summary_sync(&source_info).unwrap();
+    let mut profile = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!({
+        "name": "cfo", "description": "Frozen CFO", "model": source.current_model_id.0.as_ref(),
+        "promptBody": "Frozen CFO context"
+    }))
+    .unwrap();
+    profile.applied_profile_revision = Some("frozen-revision".into());
+    source.set_agent(crate::session::persistence::PersistedAgent::Inline(
+        Box::new(profile),
+    ));
+    adapter.write_summary_sync(&source_info, &source).unwrap();
+    let refused = Info {
+        id: acp::SessionId::new("conflicting-specialist-fork"),
+        cwd: "/target".into(),
+    };
+    let error = adapter
+        .copy_session_data(
+            &source_info,
+            &refused,
+            CopySessionOptions {
+                new_model_id: Some("conflicting-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("a fork cannot silently change the frozen profile model");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(!adapter.session_dir(&refused).exists());
+    for (id, model) in [
+        ("inherited-specialist-fork", None),
+        (
+            "matching-specialist-fork",
+            Some(source.current_model_id.0.to_string()),
+        ),
+    ] {
+        let target = Info {
+            id: acp::SessionId::new(id),
+            cwd: "/target".into(),
+        };
+        adapter
+            .copy_session_data(
+                &source_info,
+                &target,
+                CopySessionOptions {
+                    new_model_id: model,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let copied = adapter.read_summary_sync(&target).unwrap();
+        assert_eq!(copied.current_model_id, source.current_model_id);
+        assert_eq!(
+            copied.agent_profile().unwrap().to_json_value(),
+            source.agent_profile().unwrap().to_json_value()
+        );
+    }
+}

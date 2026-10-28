@@ -3183,3 +3183,43 @@ async fn hydrate_team_capability_adapter_maps_every_reply_to_the_asking_identity
                 .is_err()
         );
 }
+
+#[test]
+fn profile_attach_metadata_omits_launch_defaults_but_keeps_permissions() {
+    for profile in [None, Some(serde_json::json!("cfo"))] {
+        let flags = SessionFlags { agent_override: profile, plan_mode: true,
+            subagents: true, ask_user: true, auto_mode: true, ..Default::default() };
+        assert!(flags.to_meta().unwrap().contains_key("agentProfile"));
+        let meta = flags.to_attach_meta().unwrap();
+        assert!(!meta.contains_key("agentProfile"));
+        assert!(!meta.contains_key("modelId"));
+        assert!(!meta.contains_key("reasoningEffort"));
+        assert_eq!(meta["autoMode"], true);
+        assert_eq!(meta["yoloMode"], false);
+    }
+}
+
+#[tokio::test]
+async fn profile_attach_load_effect_does_not_send_launcher_profile() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let receiver = tokio::spawn(async move {
+        let Some(xai_acp_lib::AcpAgentMessage::LoadSession(args)) = rx.recv().await else {
+            panic!("expected actual load request");
+        };
+        let metadata = args.request.meta.as_ref().unwrap();
+        assert!(!metadata.contains_key("agentProfile"));
+        assert_eq!(metadata["autoMode"], true);
+        let _ = args.response_tx.send(Err(acp::Error::invalid_params().data("fixture response")));
+    });
+    let cwd = tempfile::tempdir().unwrap();
+    let mut tasks = JoinSet::new();
+    let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    execute(Effect::LoadSession { agent_id: AgentId(7), session_id: "saved-session".into(),
+        session_cwd: Some(cwd.path().to_path_buf()), chat_kind: false },
+        &mut tasks, &tx, cwd.path(), &SessionFlags {
+            agent_override: Some(serde_json::json!("general-purpose")),
+            ask_user: true, auto_mode: true, ..Default::default()
+        }, &progress_tx);
+    tasks.join_next().await.unwrap().unwrap();
+    receiver.await.unwrap();
+}

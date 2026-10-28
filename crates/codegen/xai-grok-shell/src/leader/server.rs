@@ -746,7 +746,9 @@ fn inject_session_request_context(
             // state, not an explicit session override; leave explicit overrides
             // intact so native profile admission can reject them.
             if is_session_new
-                && !meta_obj.get("agentProfile").is_some_and(serde_json::Value::is_string)
+                && !meta_obj
+                    .get("agentProfile")
+                    .is_some_and(serde_json::Value::is_string)
                 && let Some(ref model_id) = capabilities.default_model
                 && !model_id.is_empty()
                 && !meta_obj.contains_key("modelId")

@@ -15,6 +15,7 @@ pub(super) const RESUME_REFUSES_CHAT: &str =
     "session/resume is not supported for chat sessions; use session/load";
 pub(super) const RESUME_REFUSES_EXTRA_DIRS: &str =
     "session/resume does not support additionalDirectories";
+pub(super) const ATTACH_REFUSES_PROFILE_OVERRIDES: &str = "Saved sessions own their profile and model settings; omit agentProfile, profileRevision, modelId and reasoningEffort when loading or resuming";
 const TOOL_OVERRIDES_ECHO_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 const BACKGROUND_TASKS_SNAPSHOT_ACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 pub(super) const RESIDENT_ONLY_REFUSAL: &str =
@@ -1031,6 +1032,18 @@ impl MvpAgent {
         op: AttachOperation,
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let attach_started_at = std::time::Instant::now();
+        if arguments.meta.as_ref().is_some_and(|meta| {
+            [
+                "agentProfile",
+                "profileRevision",
+                "modelId",
+                "reasoningEffort",
+            ]
+            .iter()
+            .any(|key| meta.contains_key(*key))
+        }) {
+            return Err(acp::Error::invalid_params().data(ATTACH_REFUSES_PROFILE_OVERRIDES));
+        }
         // Capture the actor before any await. A roster check in another RPC is
         // insufficient: close may remove the actor between discovery and load.
         let resident_only_target = self.resident_only_attach_target(&arguments)?;
@@ -1348,14 +1361,28 @@ impl MvpAgent {
                     (summary.agent_profile().cloned(), None)
                 }
                 Some(crate::session::persistence::PersistedAgent::Named(name)) => {
-                    (None, Some(name.clone()))
+                    let definition = xai_grok_agent::discovery::by_name_in_cwd(name, cwd.as_path())
+                        .ok_or_else(|| {
+                            acp::Error::invalid_params()
+                                .data("Saved session profile is unavailable; no agent was restored")
+                        })?;
+                    (Some(definition), None)
                 }
-                None => (
-                    None,
-                    self.resolve_model_id(&summary.current_model_id)
+                None => {
+                    // Legacy sessions without a stored profile use their saved
+                    // model harness, never the current launcher/config profile.
+                    let definition = self
+                        .resolve_model_id(&summary.current_model_id)
                         .ok()
-                        .map(|m| m.info().agent_type.clone()),
-                ),
+                        .and_then(|model| {
+                            xai_grok_agent::discovery::by_name_in_cwd(
+                                &model.info().agent_type,
+                                cwd.as_path(),
+                            )
+                        })
+                        .unwrap_or_else(xai_grok_agent::AgentDefinition::grok_build_plan);
+                    (Some(definition), None)
+                }
             };
             let load_is_current = self
                 .spawn_and_register_session(

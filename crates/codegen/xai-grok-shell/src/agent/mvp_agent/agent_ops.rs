@@ -4444,8 +4444,12 @@ impl MvpAgent {
         let skills = self.cfg.borrow().skills.clone();
         let compat = self.cfg.borrow().compat_resolved;
         let paths_config = self.cfg.borrow().paths.clone();
-        let acp_agent_profile = parse_agent_profile_from_meta(session_meta, cwd.as_path())?
-            .or(persisted_agent_profile);
+        // Saved definitions are already resolved snapshots. Do not parse launch
+        // metadata first: doing so can reread edited or missing role/rule files.
+        let acp_agent_profile = match persisted_agent_profile {
+            Some(definition) => Some(definition),
+            None => parse_agent_profile_from_meta(session_meta, cwd.as_path())?,
+        };
         let session_default_agent_profile = acp_agent_profile
             .as_ref()
             .map(|d| d.name.clone());

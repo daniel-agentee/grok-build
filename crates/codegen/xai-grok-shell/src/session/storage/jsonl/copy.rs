@@ -273,10 +273,23 @@ impl JsonlStorageAdapter {
         target_info: &Info,
         options: CopySessionOptions,
     ) -> io::Result<CopySessionResult> {
+        let source_summary = self.read_summary_sync(source_info)?;
+        if source_summary
+            .agent_profile()
+            .is_some_and(|profile| profile.applied_profile_revision.is_some())
+            && options
+                .new_model_id
+                .as_deref()
+                .is_some_and(|model| model != source_summary.current_model_id.0.as_ref())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "A saved specialist profile owns its model; omit the fork model override",
+            ));
+        }
+        // Validate profile ownership before creating any target state.
         // Canonical creator: the fork target chain is born owner-only.
         let target_dir = self.create_session_dir_owner_only(target_info)?;
-
-        let source_summary = self.read_summary_sync(source_info)?;
         let chat_format_version = source_summary.chat_format_version;
 
         let mut chat_to_copy: Vec<ConversationItem> =

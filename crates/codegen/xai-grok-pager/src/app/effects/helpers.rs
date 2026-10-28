@@ -516,6 +516,13 @@ impl SessionFlags {
             (false, _, false) => None,
         }
     }
+    /// Attach an existing session without applying launch-time profile defaults.
+    pub(crate) fn to_attach_meta(&self) -> Option<acp::Meta> {
+        self.to_meta().map(|mut meta| {
+            meta.remove("agentProfile");
+            meta
+        })
+    }
     /// In practice always `Some`: the permission seeds (`yoloMode` / `autoMode`) are emitted unconditionally.
     /// An absent key is not the same as off; see the emit-site comment below.
     /// `--no-ask-user` always forces `askUserQuestion: false` into the meta, even when paired with `GROK_AGENT`.

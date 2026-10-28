@@ -1532,7 +1532,12 @@ fn named_profile_context_does_not_inherit_client_model() {
                 "agentProfile": profile, "profileRevision": "frozen-revision"
             }}
         });
-        assert!(inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42)));
+        assert!(inject_session_request_context(
+            &mut json,
+            &caps,
+            "grok-tui",
+            ClientId(42)
+        ));
         assert_eq!(j(&json, "/params/_meta/agentProfile"), profile);
         assert_eq!(j(&json, "/params/_meta/profileRevision"), "frozen-revision");
         assert!(j(&json, "/params/_meta").get("modelId").is_none());
@@ -1580,12 +1585,20 @@ fn named_profile_context_load_and_resume_do_not_inject_routes() {
         default_model: Some("inherited-model".to_string()),
         ..Default::default()
     };
-    for method in [AGENT_METHOD_NAMES.session_load, AGENT_METHOD_NAMES.session_resume] {
+    for method in [
+        AGENT_METHOD_NAMES.session_load,
+        AGENT_METHOD_NAMES.session_resume,
+    ] {
         let mut json = serde_json::json!({
             "jsonrpc": "2.0", "method": method, "id": 1,
             "params": {"sessionId": "resident", "_meta": {"agentProfile": "cfo"}}
         });
-        assert!(inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42)));
+        assert!(inject_session_request_context(
+            &mut json,
+            &caps,
+            "grok-tui",
+            ClientId(42)
+        ));
         assert!(j(&json, "/params/_meta").get("modelId").is_none());
         assert!(j(&json, "/params/_meta").get("reasoningEffort").is_none());
         assert_eq!(j(&json, "/params/_meta/agentProfile"), "cfo");
