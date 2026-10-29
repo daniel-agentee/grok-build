@@ -687,11 +687,19 @@ async fn profile_completion_keeps_runner_execution_for_pending_and_legacy_active
         }
         .into();
         let id = child.id.clone();
-        let (registered, run) = spawn_noting_registration(backend.clone(), child);
-        tokio::time::timeout(std::time::Duration::from_secs(5), registered)
-            .await
-            .unwrap()
-            .unwrap();
+        // Foreground requests intentionally have no background registration ack.
+        // Observe the actual runner request before testing completion instead.
+        let run = tokio::spawn({
+            let backend = backend.clone();
+            async move { SubagentBackend::spawn(&backend, child, None).await }
+        });
+        let observed =
+            tokio::time::timeout(std::time::Duration::from_secs(5), harness.requests.recv())
+                .await
+                .expect("foreground runner request arrives")
+                .expect("runner request channel remains open");
+        assert_eq!(observed.id, id);
+        assert!(!observed.run_in_background);
         if !early {
             tokio::time::timeout(std::time::Duration::from_secs(5), harness.started.recv())
                 .await
