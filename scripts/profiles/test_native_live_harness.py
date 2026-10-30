@@ -7,8 +7,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pty
 import signal
 import subprocess
+import tty
 from unittest.mock import Mock
 
 import pytest
@@ -195,11 +197,81 @@ def test_trust_consent_happens_before_waiting_for_terminal_prompt(tmp_path: Path
     output = bytearray(trust_dialog(tmp_path))
     sent = []
     def write(fd, value):
-        sent.append((fd, value))
+        sent.append((fd, bytes(value)))
         output.extend("❯".encode())
+        return len(value)
     monkeypatch.setattr(HARNESS.os, "write", write)
     asyncio.run(HARNESS.wait_terminal_ready(terminal, output, 123, tmp_path, timeout=0.1))
     assert sent == [(123, b"y")]
+
+
+def test_large_terminal_paste_preserves_all_bytes_through_partial_writes_and_backpressure(monkeypatch) -> None:
+    async def scenario():
+        master, slave = pty.openpty()
+        tty.setraw(slave)
+        os.set_blocking(master, False)
+        os.set_blocking(slave, False)
+        payload = b"\x1b[200~" + ("long prompt ü\n" * 20000).encode() + b"\x1b[201~\r"
+        received = bytearray()
+        original_write = os.write
+        interrupted, blocked, partial = False, 0, 0
+
+        def write(fd, value):
+            nonlocal interrupted, blocked, partial
+            if fd != master:
+                return original_write(fd, value)
+            if not interrupted:
+                interrupted = True
+                raise InterruptedError()
+            try:
+                written = original_write(fd, value[:513])
+            except BlockingIOError:
+                blocked += 1
+                raise
+            partial += written < len(value)
+            return written
+
+        async def drain():
+            await asyncio.sleep(0.03)
+            while len(received) < len(payload):
+                try:
+                    received.extend(os.read(slave, 4096))
+                except BlockingIOError:
+                    pass
+                await asyncio.sleep(0.001)
+
+        monkeypatch.setattr(HARNESS.os, "write", write)
+        try:
+            await asyncio.wait_for(asyncio.gather(
+                HARNESS.write_terminal_input(master, payload, timeout=5), drain()), 6)
+            assert received == payload
+            assert interrupted and partial > 0 and blocked > 0
+        finally:
+            os.close(master)
+            os.close(slave)
+    asyncio.run(scenario())
+
+
+def test_terminal_input_deadline_stops_a_nonreading_real_pty() -> None:
+    async def scenario():
+        master, slave = pty.openpty()
+        tty.setraw(slave)
+        os.set_blocking(master, False)
+        try:
+            with pytest.raises(TimeoutError, match="input did not drain"):
+                await asyncio.wait_for(HARNESS.write_terminal_input(
+                    master, b"x" * 1048576, timeout=0.03), 1)
+        finally:
+            os.close(master)
+            os.close(slave)
+    asyncio.run(scenario())
+
+
+def test_terminal_input_refuses_zero_progress_without_echoing_payload(monkeypatch) -> None:
+    monkeypatch.setattr(HARNESS.os, "write", lambda fd, value: 0)
+    with pytest.raises(ConnectionError, match="input made no progress") as error:
+        asyncio.run(HARNESS.write_terminal_input(123, b"private-prompt"))
+    assert "private-prompt" not in str(error.value)
 
 
 @pytest.fixture

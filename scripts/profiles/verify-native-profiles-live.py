@@ -211,12 +211,31 @@ class WelcomeTrust:
         return True
 
 
+async def write_terminal_input(master, payload, timeout=10):
+    """Complete one ordered write to the nonblocking PTY, or fail boundedly."""
+    remaining = memoryview(payload)
+    deadline = time.monotonic() + timeout
+    while remaining:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Interactive Terminal input did not drain")
+        try:
+            written = os.write(master, remaining)
+        except InterruptedError:
+            await asyncio.sleep(0)
+        except BlockingIOError:
+            await asyncio.sleep(min(0.01, max(0, deadline - time.monotonic())))
+        else:
+            if written <= 0:
+                raise ConnectionError("Interactive Terminal input made no progress")
+            remaining = remaining[written:]
+
+
 async def wait_terminal_ready(terminal, output, master, workspace, timeout=30):
     deadline = time.monotonic() + timeout
     trust = WelcomeTrust(workspace)
     while True:
         if trust.accept(output):
-            os.write(master, b"y")
+            await write_terminal_input(master, b"y")
         if "❯".encode() in output:
             return
         if terminal.poll() is not None or time.monotonic() > deadline:
@@ -440,7 +459,7 @@ async def verify(args):
                 await asyncio.sleep(0.05)
         drainer = asyncio.create_task(drain())
         await wait_terminal_ready(terminal, terminal_output, master, workspace)
-        os.write(master, b"\x1b[200~Reply exactly PROFILE-TERMINAL-READY-20261028. Use no tools.\x1b[201~\r")
+        await write_terminal_input(master, b"\x1b[200~Reply exactly PROFILE-TERMINAL-READY-20261028. Use no tools.\x1b[201~\r")
         deadline = time.monotonic() + 90
         while True:
             roster = await native.rpc("_x.ai/sessions/list", {})
@@ -466,7 +485,7 @@ async def verify(args):
             return
         prompt = "Use the pick-right-subagent-and-assign-task skill to delegate this routine local acknowledgement task. Read the current catalog through the skill's documented local command and choose the available model, reasoning effort and speed that fit the task. Only the cached official Grok provider is authenticated in this fixture; optional local provider credentials are unavailable. Delegate exactly once to General. The child must reply exactly PROFILE-GENERAL-CHILD-ACK-20261028 and must use no tools or network. After its result, reply PROFILE-GENERAL-PARENT-ACK-20261028 and report its actual execution settings. The parent may only load the skill, read the catalog, spawn and wait for the child. Do not send Slack messages or access credentials."
         start = len(native.events)
-        os.write(master, b"\x1b[200~" + prompt.encode() + b"\x1b[201~\r")
+        await write_terminal_input(master, b"\x1b[200~" + prompt.encode() + b"\x1b[201~\r")
         await wait_turn_idle(native, bridge, sid, "PROFILE-GENERAL-PARENT-ACK-20261028", start)
         spawned = child_updates(native.events[start:], sid, "subagent_spawned")
         finished = child_updates(native.events[start:], sid, "subagent_finished")
@@ -513,7 +532,7 @@ async def verify(args):
                 if request is not None:
                     request_id, marker, text = request["id"], request["marker"], request["prompt"]
                     request_start = len(native.events)
-                    os.write(master, b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
+                    await write_terminal_input(master, b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
                     await wait_turn_idle(native, bridge, sid, marker, request_start)
                     result = {"id": request_id, "parentSessionId": sid,
                               "eventStart": request_start, "eventEnd": len(native.events),
