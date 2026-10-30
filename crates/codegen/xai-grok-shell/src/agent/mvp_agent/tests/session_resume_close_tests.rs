@@ -1118,32 +1118,45 @@ fn profile_restore_ordinary_saved_agent_ignores_current_launch_config() {
 #[test]
 fn profile_restore_named_and_child_settings_refuse_before_attach_side_effects() {
     super::run_local_for_bridge_test(|| async {
-        let agent = super::build_minimal_agent_for_tests();
-        let cwd = tempfile::tempdir().unwrap();
-        let sid = super::new_root_session(&agent, cwd.path()).await;
-        let info = agent.resident_handle(&sid).unwrap().info.clone();
-        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
-        let summary_path = crate::session::persistence::session_dir(&info).join("summary.json");
-        let original = std::fs::read(&summary_path).unwrap();
         for kind in ["subagent", "subagent_fork", "named-profile"] {
-            let mut summary: crate::session::persistence::Summary =
-                serde_json::from_slice(&original).unwrap();
+            let agent = super::build_minimal_agent_for_tests();
+            let cwd = tempfile::tempdir().unwrap();
+            let sid = super::new_root_session(&agent, cwd.path()).await;
+            let info = agent.resident_handle(&sid).unwrap().info.clone();
+            // Close is bounded; use the FIFO barrier before changing saved fixture state.
+            super::drain_persistence(&agent, &sid).await;
+            assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+            let storage = crate::session::storage::JsonlStorageAdapter::with_root(
+                xai_grok_config::grok_home(),
+            );
             let expected = if kind == "named-profile" {
                 let mut def = xai_grok_agent::AgentDefinition::from_json(
                     &json!({"name":"frozen-test","description":"Test"}),
                 )
                 .unwrap();
                 def.applied_profile_revision = Some("admitted-revision".into());
-                summary.set_agent(crate::session::persistence::PersistedAgent::Inline(
-                    Box::new(def),
-                ));
+                let saved = storage.load_summary(&info).await.unwrap();
+                storage
+                    .update_current_model_and_agent(
+                        &info,
+                        &saved.current_model_id,
+                        Some(&crate::session::persistence::PersistedAgent::Inline(
+                            Box::new(def),
+                        )),
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
                 super::super::session_setup::ATTACH_REFUSES_PROFILE_OVERRIDES
             } else {
-                summary.session_kind = Some(kind.into());
-                summary.parent_session_id = Some("parent-owned-route".into());
+                // Persisted child ownership also protects legacy children without parent metadata.
+                storage
+                    .set_session_kind_if_absent(&info, kind.into())
+                    .await
+                    .unwrap();
                 super::super::session_setup::ATTACH_REFUSES_CHILD_OVERRIDES
             };
-            std::fs::write(&summary_path, serde_json::to_vec(&summary).unwrap()).unwrap();
             for meta in [
                 json!({"modelId":"test-model"}),
                 json!({"reasoningEffort":"high"}),
@@ -1186,7 +1199,6 @@ fn profile_restore_named_and_child_settings_refuse_before_attach_side_effects() 
                 agent.session_registry.release(&sid);
             }
         }
-        std::fs::write(summary_path, original).unwrap();
     });
 }
 
@@ -1305,15 +1317,24 @@ fn profile_effort_precedence_keeps_inline_explicit_named_default_and_saved_effor
             agent.resident_handle(&named).unwrap().reasoning_effort,
             Some(ReasoningEffort::Low)
         );
+        super::drain_persistence(&agent, &named).await;
         assert_eq!(
             agent.close_active_session(&named).await,
             CloseOutcome::Closed
         );
-        let path = crate::session::persistence::session_dir(&info).join("summary.json");
-        let mut saved: crate::session::persistence::Summary =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        saved.reasoning_effort = Some(ReasoningEffort::Medium);
-        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let storage =
+            crate::session::storage::JsonlStorageAdapter::with_root(xai_grok_config::grok_home());
+        let saved = storage.load_summary(&info).await.unwrap();
+        storage
+            .update_current_model_and_agent(
+                &info,
+                &saved.current_model_id,
+                None,
+                Some(Some(ReasoningEffort::Medium)),
+                None,
+            )
+            .await
+            .unwrap();
         agent
             .load_session_inner(acp::LoadSessionRequest::new(
                 named.clone(),
