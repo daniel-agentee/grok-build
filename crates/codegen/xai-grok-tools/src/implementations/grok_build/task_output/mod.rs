@@ -645,7 +645,10 @@ pub(crate) fn format_subagent_snapshot(
                 snap.subagent_type, snap.description,
             );
             let raw_output_bytes = body.len();
-            let output = with_still_running_wait_hint(body, wait_hint, WaitSubject::Subagent);
+            let mut output = with_still_running_wait_hint(body, wait_hint, WaitSubject::Subagent);
+            if let Some(execution) = &snap.execution {
+                execution.append_model_metadata(&mut output);
+            }
             TaskOutputOutput::Result(TaskOutputResult {
                 task_id: snap.subagent_id.clone(),
                 command: format!("[subagent:{}] {}", snap.subagent_type, snap.description),
@@ -693,7 +696,10 @@ pub(crate) fn format_subagent_snapshot(
                 snap.duration_ms as f64 / 1000.0,
             );
             let raw_output_bytes = body.len();
-            let output = with_still_running_wait_hint(body, wait_hint, WaitSubject::Subagent);
+            let mut output = with_still_running_wait_hint(body, wait_hint, WaitSubject::Subagent);
+            if let Some(execution) = &snap.execution {
+                execution.append_model_metadata(&mut output);
+            }
             TaskOutputOutput::Result(TaskOutputResult {
                 task_id: snap.subagent_id.clone(),
                 command: format!("[subagent:{}] {}", snap.subagent_type, snap.description),
@@ -719,7 +725,7 @@ pub(crate) fn format_subagent_snapshot(
 
 /// Terminal statuses only; reminders render the same value, so notice and poll cannot drift.
 pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputResult {
-    let (status, exit_code, output) = match &snap.status {
+    let (status, exit_code, mut output) = match &snap.status {
         SubagentSnapshotStatus::Completed {
             output,
             tool_calls,
@@ -753,6 +759,9 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             unreachable!("terminal_subagent_result called for a live subagent")
         }
     };
+    if let Some(execution) = &snap.execution {
+        execution.append_model_metadata(&mut output);
+    }
     let ended_at_epoch_ms = snap.started_at_epoch_ms + snap.duration_ms;
     TaskOutputResult {
         task_id: snap.subagent_id.clone(),
@@ -2171,7 +2180,14 @@ mod tests {
     #[test]
     fn format_initializing_subagent_reports_status() {
         let snap = SubagentSnapshot {
-            execution: None,
+            execution: Some(xai_tool_types::SubagentExecution {
+                profile: "general-purpose".into(),
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                reasoning_effort: Some("low".into()),
+                speed: "standard".into(),
+                fallback: None,
+            }),
 
             subagent_id: "sub-init".to_string(),
             description: "Check PR status".to_string(),
@@ -2186,6 +2202,8 @@ mod tests {
             TaskOutputOutput::Result(r) => {
                 assert_eq!(r.task_id, "sub-init");
                 assert_eq!(r.status, "initializing");
+                assert!(r.output.contains("<subagent_execution>"));
+                assert!(r.output.contains("\"model\":\"test-model\""));
                 assert!(r.exit_code.is_none());
                 assert!(r.ended.is_none());
                 assert!(
@@ -2211,7 +2229,14 @@ mod tests {
     #[test]
     fn format_running_subagent_includes_progress_fields() {
         let snap = SubagentSnapshot {
-            execution: None,
+            execution: Some(xai_tool_types::SubagentExecution {
+                profile: "explore".into(),
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                reasoning_effort: Some("low".into()),
+                speed: "standard".into(),
+                fallback: None,
+            }),
 
             subagent_id: "sub-abc".to_string(),
             description: "Find all API endpoints".to_string(),
@@ -2236,6 +2261,8 @@ mod tests {
         let result = format_subagent_snapshot(&snap, WaitHint::NotRequested);
         match result {
             TaskOutputOutput::Result(r) => {
+                assert!(r.output.contains("<subagent_execution>"));
+                assert!(r.output.contains("\"model\":\"test-model\""));
                 assert_eq!(r.task_id, "sub-abc");
                 assert_eq!(r.status, "running");
                 assert!(r.exit_code.is_none());

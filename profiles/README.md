@@ -123,6 +123,18 @@ query parameters or fragments.
 
 The spawned child snapshots its definition, resolved runtime settings and
 execution metadata. Later profile/policy edits affect subsequent spawns only.
+Resident parents refresh the selectable profile IDs and descriptions for their
+next model request after an atomic profile edit. This preserves the parent's
+conversation, workspace and permission policy; it does not rebuild the agent.
+Verbatim forks keep their captured tool schemas, and previously admitted children
+keep their frozen definitions. Disabled and parent-disallowed profiles remain
+excluded from the refreshed menu.
+
+Custom profile IDs are case-sensitive: `CFO` and `cfo` can identify separate
+sources, prompts and credential bindings. Native and plugin lookup must match
+the definition's declared ID exactly, including on case-insensitive macOS
+filesystems. Parent allowlists and denylists use the same exact custom IDs;
+built-in aliases retain their existing case-insensitive policy matching.
 Resume and background wake reuse the child's frozen definition and actual
 provider/model/reasoning/speed; requesting new settings on resume is refused.
 Routing-mode changes or a malformed new policy do not stop already admitted
@@ -142,7 +154,10 @@ explicit valid retry. No automatic provider fallback is performed.
 Runtime `subagent_spawned`/`subagent_finished` updates and foreground/background
 tool results carry the actual execution fields, so Terminal and phone can show
 the admitted settings even when they differ from a display default. Metadata
-never contains provider credentials. The original permission and tool restrictions
+also reaches the parent's model-visible completion, admitted failure, background
+wake and polling results as a `<subagent_execution>` JSON block. These paths use the same metadata
+formatter as the display result, so the parent can report what actually ran.
+Metadata never contains provider credentials. The original permission and tool restrictions
 still apply; profile identity is not a credential sandbox or an authorization to
 send Slack messages.
 

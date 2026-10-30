@@ -112,9 +112,9 @@ pub fn gate_agent_definition(
         });
     }
     if let Some(allowed) = context.allowed_types
-        && !allowed
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(subagent_type))
+        && !allowed.iter().any(|candidate| {
+            xai_grok_agent::discovery::subagent_id_matches(candidate, subagent_type)
+        })
     {
         return Err(ResolutionError::NotAllowed {
             subagent_type: subagent_type.to_string(),
@@ -454,6 +454,27 @@ mod tests {
             resolve_agent_definition("explore", &restricted),
             Err(ResolutionError::NotAllowed { .. })
         ));
+    }
+    #[test]
+    fn custom_profile_allowlist_never_admits_a_different_case_identity() {
+        let cwd = tempfile::tempdir().unwrap();
+        let toggles = HashMap::new();
+        let allowed = ["CFO".to_string()];
+        let restricted = DefinitionResolutionContext {
+            allowed_types: Some(&allowed),
+            ..context(cwd.path(), &toggles)
+        };
+        assert!(gate_agent_definition("CFO", &restricted).is_ok());
+        assert!(matches!(
+            gate_agent_definition("cfo", &restricted),
+            Err(ResolutionError::NotAllowed { .. })
+        ));
+        let allowed_builtin = ["EXPLORE".to_string()];
+        let builtins = DefinitionResolutionContext {
+            allowed_types: Some(&allowed_builtin),
+            ..context(cwd.path(), &toggles)
+        };
+        assert!(gate_agent_definition("explore", &builtins).is_ok());
     }
     #[test]
     fn definition_defaults_fill_runtime_without_overwriting_explicit_values() {

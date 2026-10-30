@@ -2,6 +2,7 @@ use crate::agent::Agent;
 use crate::compaction::CompactionPolicy;
 use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name};
 use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMode};
+use crate::discovery::selectable_subagent_types;
 use crate::error::AgentBuildError;
 use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
@@ -213,38 +214,6 @@ fn implicit_subagent_type(
         return None;
     }
     Some(only.to_owned())
-}
-/// Plugin and user-defined agent types the parent may spawn, sorted by name.
-/// The list leaves out built-in agents, xAI-bundled agents, and any agent that shadows a built-in name.
-fn selectable_subagent_types(
-    subagents: &[crate::discovery::SubagentEntry],
-    allowed: Option<&[String]>,
-) -> Vec<xai_tool_types::SubagentDescriptor> {
-    let mut selectable: Vec<_> = subagents
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry.source,
-                crate::discovery::SubagentSource::UserDefined {
-                    scope: crate::config::AgentScope::Project | crate::config::AgentScope::User
-                }
-            ) && entry.shadows_builtin.is_none()
-        })
-        .filter(|entry| {
-            allowed.is_none_or(|allowed| {
-                allowed
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(&entry.name))
-            })
-        })
-        .map(|entry| xai_tool_types::SubagentDescriptor {
-            name: entry.name.clone(),
-            description: entry.description.clone(),
-            tools: None,
-        })
-        .collect();
-    selectable.sort_by(|a, b| a.name.cmp(&b.name));
-    selectable
 }
 /// Single copy of the params-merge loop the per-tool param injections share.
 fn merge_tool_params(
@@ -1089,7 +1058,11 @@ impl AgentBuilder {
                 if !denied_types.is_empty()
                     && let Some(ref mut allowed) = definition.allowed_subagent_types
                 {
-                    allowed.retain(|t| !denied_types.iter().any(|d| d.eq_ignore_ascii_case(t)));
+                    allowed.retain(|t| {
+                        !denied_types
+                            .iter()
+                            .any(|d| crate::discovery::subagent_id_matches(d, t))
+                    });
                 }
             }
         }
@@ -2523,16 +2496,26 @@ mod tests {
             )
             .from_definition(def)
             .with_subagents_enabled(true)
+            .with_subagent_toggle(HashMap::from([
+                ("worker".into(), false),
+                ("researcher".into(), false),
+            ]))
             .build()
             .await
             .unwrap()
         }
-        let several =
+        let disabled_named =
             build_spawnable(vec!["read_file".into(), "Agent(worker, researcher)".into()]).await;
-        let several_names = names_of(&several).await;
+        assert_eq!(
+            disabled_named.definition().allowed_subagent_types,
+            Some(vec!["worker".into(), "researcher".into()])
+        );
+        let disabled_named_names = names_of(&disabled_named).await;
         assert!(
-            !several_names.iter().any(|name| name == "spawn_subagent"),
-            "several non-general-purpose types cannot be chosen: {several_names:?}"
+            !disabled_named_names
+                .iter()
+                .any(|name| name == "spawn_subagent"),
+            "disabled named routes cannot keep task available: {disabled_named_names:?}"
         );
         let pinned = build_spawnable(vec!["read_file".into(), "Agent(explore)".into()]).await;
         let allowed = pinned.definition().allowed_subagent_types.clone();
@@ -2559,18 +2542,31 @@ mod tests {
         .as_object()
         .unwrap()
         .clone();
+        // This case has no allowed named fallback, regardless of installed profiles.
+        let mut general_only = crate::config::AgentDefinition::default_grok_build();
+        general_only.tools = general_only
+            .tool_config
+            .tools
+            .iter()
+            .map(|tool| tool.id.clone())
+            .chain(std::iter::once("Agent(general-purpose)".into()))
+            .collect();
         let disabled = AgentBuilder::new(
             std::env::temp_dir(),
             Arc::new(xai_grok_tools::computer::local::LocalTerminalBackend::new()),
             xai_grok_tools::notification::ToolNotificationHandle::noop(),
         )
-        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .from_definition(general_only)
         .with_subagents_enabled(true)
         .with_subagent_toggle(toggle)
         .with_bash_params(bash_params)
         .build()
         .await
         .expect("gp-disabled agent should build");
+        assert_eq!(
+            disabled.definition().allowed_subagent_types,
+            Some(vec!["general-purpose".into()])
+        );
         let disabled_names = names_of(&disabled).await;
         assert!(
             !disabled_names.iter().any(|name| name == "spawn_subagent"),
@@ -2607,18 +2603,31 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
+        // Disable the sole allowed route; ambient named profiles are outside this policy.
+        let mut general_only = crate::config::AgentDefinition::default_grok_build();
+        general_only.tools = general_only
+            .tool_config
+            .tools
+            .iter()
+            .map(|tool| tool.id.clone())
+            .chain(std::iter::once("Agent(general-purpose)".into()))
+            .collect();
         let agent = AgentBuilder::new(
             std::env::temp_dir(),
             Arc::new(LocalTerminalBackend::new()),
             ToolNotificationHandle::noop(),
         )
-        .from_definition(crate::config::AgentDefinition::default_grok_build())
+        .from_definition(general_only)
         .with_subagents_enabled(true)
         .with_subagent_toggle(toggle)
         .with_bash_params(bash_params)
         .build()
         .await
         .expect("a background-disabled shell should still build");
+        assert_eq!(
+            agent.definition().allowed_subagent_types,
+            Some(vec!["general-purpose".into()])
+        );
         let names: Vec<String> = agent
             .tool_definitions()
             .await
@@ -2685,8 +2694,9 @@ mod tests {
                 .collect()
         };
         assert_eq!(vec!["merlin:stash", "reviewer"], names(None));
-        let allowed = vec!["Reviewer".to_owned(), "explore".to_owned()];
+        let allowed = vec!["reviewer".to_owned(), "explore".to_owned()];
         assert_eq!(vec!["reviewer"], names(Some(&allowed)));
+        assert!(names(Some(&["Reviewer".to_owned()])).is_empty());
         assert!(names(Some(&[])).is_empty());
     }
     #[tokio::test]
@@ -2727,6 +2737,7 @@ mod tests {
             )
             .from_definition(definition)
             .with_subagents_enabled(true)
+            .with_subagent_toggle(HashMap::from([("general-purpose".into(), false)]))
             .with_plugin_registry(Arc::clone(&registry))
             .build()
         };
@@ -2749,7 +2760,9 @@ mod tests {
                 });
             Some(offered.unwrap_or_default())
         }
-        let open = build(Vec::new()).await.expect("unrestricted parent builds");
+        let open = build(Vec::new())
+            .await
+            .expect("parent with General disabled still builds");
         let offered = offered_types(&open)
             .await
             .expect("spawn_subagent is advertised");

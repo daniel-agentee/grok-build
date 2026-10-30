@@ -386,6 +386,46 @@ pub fn plugin_agents(registry: &crate::plugins::PluginRegistry) -> Vec<PluginAge
     agents
 }
 
+/// Custom profile IDs are exact. Only built-in agent aliases retain case-insensitive matching.
+pub fn subagent_id_matches(left: &str, right: &str) -> bool {
+    left == right
+        || (left.eq_ignore_ascii_case(right)
+            && BuiltinAgentName::from_str(&left.to_ascii_lowercase()).is_ok())
+}
+
+/// Plugin and user-defined agent types the parent may spawn, sorted by name.
+/// The list leaves out built-in agents, xAI-bundled agents, and any agent that shadows a built-in name.
+pub fn selectable_subagent_types(
+    subagents: &[crate::discovery::SubagentEntry],
+    allowed: Option<&[String]>,
+) -> Vec<xai_tool_types::SubagentDescriptor> {
+    let mut selectable: Vec<_> = subagents
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.source,
+                crate::discovery::SubagentSource::UserDefined {
+                    scope: crate::config::AgentScope::Project | crate::config::AgentScope::User
+                }
+            ) && entry.shadows_builtin.is_none()
+        })
+        .filter(|entry| {
+            allowed.is_none_or(|allowed| {
+                allowed
+                    .iter()
+                    .any(|name| subagent_id_matches(name, &entry.name))
+            })
+        })
+        .map(|entry| xai_tool_types::SubagentDescriptor {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            tools: None,
+        })
+        .collect();
+    selectable.sort_by(|a, b| a.name.cmp(&b.name));
+    selectable
+}
+
 /// Build the complete list of enabled subagents, including plugin agents.
 pub fn all_subagents_with_plugins(
     cwd: &Path,
@@ -482,6 +522,7 @@ fn by_name_in_cwd_with_plugins_and_home(
                 let agent_file = agent_dir.join(format!("{agent_name}.md"));
                 if agent_file.is_file()
                     && let Some(mut def) = load_plugin_agent_definition(plugin, &agent_file)
+                    && def.name == agent_name
                 {
                     substitute_plugin_vars(&mut def, plugin);
                     return Some(def);
@@ -490,22 +531,23 @@ fn by_name_in_cwd_with_plugins_and_home(
         }
 
         // Bare name lookup: only resolve if exactly one plugin has this agent.
-        let mut matches: Vec<(&crate::plugins::registry::LoadedPlugin, std::path::PathBuf)> =
+        let mut matches: Vec<(&crate::plugins::registry::LoadedPlugin, AgentDefinition)> =
             Vec::new();
         for plugin in registry.enabled_plugins() {
             for agent_dir in &plugin.agent_dirs {
                 let agent_file = agent_dir.join(format!("{name}.md"));
-                if agent_file.is_file() {
-                    matches.push((plugin, agent_file));
+                if agent_file.is_file()
+                    && let Some(def) = load_plugin_agent_definition(plugin, &agent_file)
+                    && def.name == name
+                {
+                    matches.push((plugin, def));
                 }
             }
         }
         if matches.len() == 1 {
-            let (plugin, agent_file) = matches.first()?;
-            if let Some(mut def) = load_plugin_agent_definition(plugin, agent_file) {
-                substitute_plugin_vars(&mut def, plugin);
-                return Some(def);
-            }
+            let (plugin, mut def) = matches.pop()?;
+            substitute_plugin_vars(&mut def, plugin);
+            return Some(def);
         } else if matches.len() > 1 {
             let plugin_names: Vec<&str> = matches.iter().map(|(p, _)| p.name.as_str()).collect();
             tracing::warn!(
@@ -618,6 +660,12 @@ fn load_definition_from_path(
 
     match AgentDefinition::from_file(agent_file) {
         Ok(mut def) => {
+            // Case-insensitive filesystems can open cfo.md for a request for CFO.
+            // A different declared identity must not supply another route's prompt or credentials.
+            if def.name != name {
+                tracing::warn!(requested = name, declared = %def.name, path = %agent_file.display(), "Agent definition identity does not match requested profile");
+                return None;
+            }
             if let Some(scope) = scope_override {
                 def.scope = scope;
             }
@@ -680,6 +728,129 @@ mod tests {
     use crate::plugins::{LoadedPlugin, PluginRegistry};
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn by_name_keeps_native_lowercase_and_legacy_uppercase_profile_identities_distinct() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let grok = root.path().join("grok");
+        let native = grok.join("agents/cfo.md");
+        let legacy = home.join(".claude/agents/CFO.md");
+        for (path, name) in [(&native, "cfo"), (&legacy, "CFO")] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    "---\nname: {name}\ndescription: {name} identity\n---\n{name} instructions.\n"
+                ),
+            )
+            .unwrap();
+        }
+        assert!(
+            load_definition_from_path(&native, "CFO", "test", None).is_none(),
+            "an opened file cannot silently substitute a different declared identity"
+        );
+        for (name, expected) in [("cfo", &native), ("CFO", &legacy)] {
+            let selected = by_name_with_home(name, Some(&home), Some(&grok)).unwrap();
+            assert_eq!(selected.name, name);
+            assert_eq!(selected.source_path.as_ref(), Some(expected));
+        }
+        fs::remove_file(&legacy).unwrap();
+        assert!(by_name_with_home("CFO", Some(&home), Some(&grok)).is_none());
+        assert_eq!(
+            by_name_with_home("cfo", Some(&home), Some(&grok))
+                .unwrap()
+                .name,
+            "cfo"
+        );
+    }
+
+    #[test]
+    fn selectable_profiles_respect_exact_allowlist_and_current_toggles() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("workspace");
+        let home = root.path().join("home");
+        let grok = root.path().join("grok");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(grok.join("agents")).unwrap();
+        fs::create_dir_all(home.join(".claude/agents")).unwrap();
+        write_agent_file(&grok.join("agents"), "cfo.md", "cfo", "Imported finance");
+        write_agent_file(
+            &home.join(".claude/agents"),
+            "CFO.md",
+            "CFO",
+            "Legacy finance",
+        );
+        let entries = all_subagents_with_plugins_and_home(
+            &cwd,
+            &HashMap::new(),
+            None,
+            Some(&home),
+            Some(&grok),
+        );
+        let names = |allowed: Option<&[String]>| {
+            selectable_subagent_types(&entries, allowed)
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(None), vec!["CFO", "cfo"]);
+        assert_eq!(names(Some(&["CFO".into()])), vec!["CFO"]);
+        assert_eq!(names(Some(&["cfo".into()])), vec!["cfo"]);
+        assert!(names(Some(&[])).is_empty());
+        let disabled = HashMap::from([("cfo".into(), false)]);
+        let current =
+            all_subagents_with_plugins_and_home(&cwd, &disabled, None, Some(&home), Some(&grok));
+        assert_eq!(
+            selectable_subagent_types(&current, None)
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["CFO"]
+        );
+    }
+
+    #[test]
+    fn plugin_lookup_refuses_a_different_declared_profile_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("workspace");
+        let home = root.path().join("home");
+        let grok = root.path().join("grok");
+        let agents = root.path().join("plugin/agents");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&agents).unwrap();
+        write_agent_file(&agents, "CFO.md", "cfo", "Other finance identity");
+        let registry = make_plugin_registry("finance", PluginScope::User, vec![agents.clone()]);
+        for name in ["CFO", "finance:CFO"] {
+            assert!(
+                by_name_in_cwd_with_plugins_and_home(
+                    name,
+                    &cwd,
+                    Some(&registry),
+                    Some(&home),
+                    Some(&grok)
+                )
+                .is_none(),
+                "{name} cannot select another declared profile"
+            );
+        }
+        fs::remove_file(agents.join("CFO.md")).unwrap();
+        write_agent_file(&agents, "cfo.md", "cfo", "Exact finance identity");
+        for name in ["cfo", "finance:cfo"] {
+            let selected = by_name_in_cwd_with_plugins_and_home(
+                name,
+                &cwd,
+                Some(&registry),
+                Some(&home),
+                Some(&grok),
+            )
+            .unwrap();
+            assert_eq!(selected.name, "cfo");
+            assert_eq!(selected.plugin_name.as_deref(), Some("finance"));
+        }
+    }
 
     fn test_origin_for_scope(scope: PluginScope) -> crate::plugins::PluginOrigin {
         use crate::plugins::PluginOrigin;

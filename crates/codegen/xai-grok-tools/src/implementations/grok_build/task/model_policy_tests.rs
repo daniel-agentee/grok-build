@@ -115,6 +115,48 @@ fn exported_schema_leaves_out_types_with_overlong_names() {
     assert_eq!(schema, exported_input_schema(&schema, &only_long));
 }
 
+#[test]
+fn live_route_projection_replaces_remapped_menu_and_retains_other_policy() {
+    let params = TaskParams {
+        model_selection: TaskModelSelection::Inherited,
+        selectable_subagent_types: vec![descriptor("old", "Old profile")],
+        ..TaskParams::default()
+    };
+    let original = exported_input_schema(&task_input_schema(), &params);
+    let mut schema = crate::util::remap::remap_schema_properties(
+        &original,
+        &std::collections::HashMap::from([("subagent_type".into(), "profile".into())]),
+    );
+    let non_route = |schema: &serde_json::Value| {
+        let mut copy = schema.clone();
+        copy["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("profile");
+        copy
+    };
+    let baseline = non_route(&schema);
+    set_selectable_subagent_types(
+        &mut schema,
+        "profile",
+        &[descriptor("cfo", "Current finance")],
+    );
+    assert_eq!(
+        schema["properties"]["profile"]["enum"],
+        serde_json::json!(["cfo"])
+    );
+    assert!(schema["properties"].get("subagent_type").is_none());
+    assert!(schema["properties"].get("model").is_none());
+    assert_eq!(baseline, non_route(&schema));
+    set_selectable_subagent_types(&mut schema, "profile", &[]);
+    assert!(schema["properties"].get("profile").is_none());
+    assert_eq!(baseline, schema);
+    assert_eq!(
+        original["properties"]["subagent_type"]["enum"],
+        serde_json::json!(["old"])
+    );
+}
+
 fn task_input_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(xai_tool_types::TaskToolInput))
         .expect("task input schema serializes")

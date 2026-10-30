@@ -359,6 +359,13 @@ pub struct SubagentExecution {
     pub fallback: Option<String>,
 }
 impl SubagentExecution {
+    /// Append the same admitted runtime metadata to display, prompt and poll results.
+    pub fn append_model_metadata(&self, text: &mut String) {
+        text.push_str(&format!(
+            "\n<subagent_execution>{}</subagent_execution>",
+            serde_json::to_string(self).expect("execution serializable")
+        ));
+    }
     pub fn display(&self) -> String {
         format!(
             "{} · {} · {} · {}",
@@ -412,10 +419,7 @@ impl SubagentCompletedOutput {
             self.persona.as_deref(),
         );
         if let Some(execution) = &self.execution {
-            text.push_str(&format!(
-                "\n<subagent_execution>{}</subagent_execution>",
-                serde_json::to_string(execution).expect("execution serializable")
-            ));
+            execution.append_model_metadata(&mut text);
         }
         text
     }

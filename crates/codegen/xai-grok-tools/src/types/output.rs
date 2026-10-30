@@ -844,6 +844,9 @@ impl ToolOutput {
                 }
                 text.push_str("\n\n");
                 text.push_str(&sub.resume_footer());
+                if let Some(execution) = &sub.execution {
+                    execution.append_model_metadata(&mut text);
+                }
                 text
             }
             ToolOutput::EnterPlanMode(EnterPlanModeOutput::Entered {
@@ -2178,7 +2181,14 @@ mod tests {
     #[test]
     fn subagent_completed_prompt_format_includes_resume_footer() {
         let output = ToolOutput::SubagentCompleted(SubagentCompletedOutput {
-            execution: None,
+            execution: Some(xai_tool_types::SubagentExecution {
+                profile: "researcher".into(),
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                reasoning_effort: Some("medium".into()),
+                speed: "standard".into(),
+                fallback: None,
+            }),
 
             output: "I found the auth middleware.".into(),
             subagent_id: "019e0000-0000-7000-8000-0000000000bb".into(),
@@ -2192,6 +2202,20 @@ mod tests {
             persona_hint: None,
         });
         let rendered = output.to_prompt_format();
+        let execution = rendered
+            .split_once("<subagent_execution>")
+            .unwrap()
+            .1
+            .split_once("</subagent_execution>")
+            .unwrap()
+            .0;
+        let execution: xai_tool_types::SubagentExecution = serde_json::from_str(execution).unwrap();
+        assert_eq!(execution.profile, "researcher");
+        assert_eq!(execution.provider, "test-provider");
+        assert_eq!(execution.model, "test-model");
+        assert_eq!(execution.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(execution.speed, "standard");
+        assert!(execution.fallback.is_none());
         assert!(
             rendered.contains("I found the auth middleware."),
             "original output preserved"

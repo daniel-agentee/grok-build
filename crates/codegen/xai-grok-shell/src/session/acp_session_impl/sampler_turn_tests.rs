@@ -5,6 +5,66 @@ use super::{
     MAX_OUTPUT_TOKEN_LIMIT_RETRIES, classifier_request_fits_context, resolve_configured_cutoff,
 };
 
+#[tokio::test(flavor = "current_thread")]
+async fn resident_task_schema_follows_profile_cas_without_changing_child_snapshot() {
+    use crate::session::acp_session::support::create_test_actor;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    tokio::task::LocalSet::new().run_until(async {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        let legacy = dir.path().join(".grok/agents");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(legacy.join("CFO.md"), "---\nname: CFO\ndescription: Legacy finance\nmodel: inherit\n---\nLegacy role.\n").unwrap();
+        let (gateway, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (persistence, _persist_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut actor = create_test_actor(0, 256_000, 85, gateway, persistence).await;
+        actor.session_info.cwd = workspace.to_string_lossy().into_owned();
+        let mut spec = crate::session::agent_rebuild::test_rebuild_spec_default();
+        let fields = Arc::get_mut(&mut spec).unwrap();
+        fields.working_directory = workspace.clone();
+        fields.bridge_state_path = dir.path().join("state.json");
+        fields.subagents_enabled = true;
+        let mut definition = xai_grok_agent::AgentDefinition::default_grok_build();
+        definition.agents_md = false;
+        definition.discover_skills = false;
+        *actor.agent.borrow_mut() = spec.build_agent(definition, xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL).await.unwrap();
+        actor.rebuild_spec = spec.clone();
+        fn route(definitions: &[crate::sampling::types::ToolDefinition]) -> &serde_json::Value {
+            &definitions.iter().find(|d| d.function.name == "spawn_subagent").unwrap().function.parameters["properties"]["subagent_type"]
+        }
+        let before = actor.prepare_tool_definitions_inner().await;
+        assert!(route(&before)["enum"].as_array().unwrap().iter().any(|v| v == "CFO"));
+        assert!(!route(&before)["enum"].as_array().unwrap().iter().any(|v| v == "cfo"));
+        let applied = crate::profiles::apply_profile_control_for_test(&workspace, json!({"id":"cfo","expectedRevision":null,"writeScope":"project","definition":{"description":"Imported finance","model":"inherit","effort":"medium","promptBody":"Imported CFO role."}})).unwrap();
+        let after = actor.prepare_tool_definitions_inner().await;
+        let names = route(&after)["enum"].as_array().unwrap();
+        assert!(names.iter().any(|v| v == "cfo"), "resident parent must offer the newly applied lowercase cfo: {names:?}");
+        assert!(names.iter().any(|v| v == "CFO"), "legacy uppercase CFO remains a distinct profile ID");
+        actor.forked_tool_override = Some(Vec::new());
+        assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(actor.prepare_tool_definitions_inner().await).unwrap(), "verbatim fork schemas stay frozen even after new profile admission");
+        actor.forked_tool_override = None;
+        let child_definition = xai_grok_agent::AgentDefinition::from_file(&workspace.join(".grok/agents/cfo.md")).unwrap();
+        let child = spec.build_agent(child_definition, xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL).await.unwrap();
+        let child_snapshot = child.definition().to_json_value();
+        let mut edit = json!({"id":"cfo","expectedRevision":"stale","writeScope":"project","definition":{"description":"Updated finance","effort":"high"}});
+        assert!(crate::profiles::apply_profile_control_for_test(&workspace, edit.clone()).is_err());
+        assert_eq!(serde_json::to_value(&after).unwrap(), serde_json::to_value(actor.prepare_tool_definitions_inner().await).unwrap(), "failed CAS cannot change the advertised routes");
+        edit["expectedRevision"] = applied["revision"].clone();
+        crate::profiles::apply_profile_control_for_test(&workspace, edit).unwrap();
+        let updated = actor.prepare_tool_definitions_inner().await;
+        assert!(route(&updated)["description"].as_str().unwrap().contains("Updated finance"));
+        assert_eq!(child_snapshot, child.definition().to_json_value(), "already-built children retain their admitted profile snapshot");
+        assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(actor.agent.borrow().tool_bridge().toolset().tool_definitions_builtins_only()).unwrap(), "per-turn projection must not mutate frozen bridge schemas");
+        std::fs::remove_file(workspace.join(".grok/agents/cfo.md")).unwrap();
+        let removed = actor.prepare_tool_definitions_inner().await;
+        assert!(!route(&removed)["enum"].as_array().unwrap().iter().any(|v| v == "cfo"));
+    }).await;
+}
+
 fn x_cut(to: &str) -> XSearchOptions {
     XSearchOptions {
         date_bound: Some(SearchDateBound::new(None, Some(to.into())).unwrap()),

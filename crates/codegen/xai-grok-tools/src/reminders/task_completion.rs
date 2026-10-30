@@ -2070,6 +2070,15 @@ mod tests {
         for ((outcome, success, cancelled, error), output, persona, worktree) in cases {
             let request = test_request("sub-same");
             let mut result = test_result("sub-same", success);
+            let execution = xai_tool_types::SubagentExecution {
+                profile: "general-purpose".into(),
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                reasoning_effort: Some("low".into()),
+                speed: "standard".into(),
+                fallback: None,
+            };
+            result.execution = Some(execution.clone());
             result.output = Arc::from(output);
             result.cancelled = cancelled;
             result.error = error.map(str::to_owned);
@@ -2095,6 +2104,18 @@ mod tests {
                 "{case}"
             );
             assert_eq!(body, tool_text, "{case}");
+            let metadata = body
+                .split_once("<subagent_execution>")
+                .unwrap()
+                .1
+                .split_once("</subagent_execution>")
+                .unwrap()
+                .0;
+            assert_eq!(
+                serde_json::from_str::<xai_tool_types::SubagentExecution>(metadata).unwrap(),
+                execution,
+                "{case}: admitted settings must reach model wake and poll results unchanged"
+            );
             assert!(!body.contains("to see the full output"), "{case}: {body}");
             assert_eq!(
                 body.contains("<worktree_path>/tmp/wt/sub-same</worktree_path>"),

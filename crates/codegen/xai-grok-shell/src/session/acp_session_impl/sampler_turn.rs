@@ -430,11 +430,34 @@ impl SessionActor {
         let bridge = self.agent.borrow().tool_bridge().clone();
 
         // Local mode: tool search is always enabled
-        let defs = if self.mcp_file_forms_hidden().await {
+        let mut defs = if self.mcp_file_forms_hidden().await {
             bridge.tool_definitions_builtins_only_inline_mcp().await
         } else {
             bridge.tool_definitions_builtins_only().await
         };
+
+        // Profiles can be added or edited while this actor is resident. Re-project the
+        // selectable IDs for the next request without rebuilding the agent or altering
+        // its context, permission policy, or any previously admitted child snapshot.
+        let toolset = bridge.toolset();
+        if self.forked_tool_override.is_none()
+            && toolset
+                .tool_name_for_kind(xai_grok_tools::types::tool::ToolKind::Task)
+                .is_some()
+        {
+            let registry = self.plugin_registry.borrow();
+            let entries = xai_grok_agent::discovery::all_subagents_with_plugins(
+                &self.rebuild_spec.working_directory,
+                &self.rebuild_spec.subagent_toggle,
+                registry.as_deref(),
+            );
+            let agent = self.agent.borrow();
+            let selectable = xai_grok_agent::discovery::selectable_subagent_types(
+                &entries,
+                agent.definition().allowed_subagent_types.as_deref(),
+            );
+            toolset.project_task_subagent_types(&mut defs, &selectable);
+        }
 
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)

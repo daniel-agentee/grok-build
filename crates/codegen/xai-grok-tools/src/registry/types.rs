@@ -1550,6 +1550,35 @@ impl FinalizedToolset {
             .map(|t| t.definition.clone())
             .collect()
     }
+    /// Refresh only an advertised Grok Task route menu in request-local definitions.
+    /// Uses registered identity and parameter mapping, never a client-facing name heuristic.
+    pub fn project_task_subagent_types(
+        &self,
+        definitions: &mut [ToolDefinition],
+        types: &[xai_tool_types::SubagentDescriptor],
+    ) {
+        use crate::implementations::grok_build::task::model_policy::{
+            SUBAGENT_TYPE_PARAM, set_selectable_subagent_types,
+        };
+        for tool in self.tools.read().iter().filter(|tool| {
+            tool.metadata.kind() == ToolKind::Task
+                && tool.metadata.tool_namespace() == ToolNamespace::GrokBuild
+        }) {
+            if let Some(definition) = definitions
+                .iter_mut()
+                .find(|definition| definition.function.name == tool.client_name)
+            {
+                let param = tool
+                    .reverse_params
+                    .iter()
+                    .find_map(|(client, canonical)| {
+                        (canonical == SUBAGENT_TYPE_PARAM).then_some(client.as_str())
+                    })
+                    .unwrap_or(SUBAGENT_TYPE_PARAM);
+                set_selectable_subagent_types(&mut definition.function.parameters, param, types);
+            }
+        }
+    }
     /// Built-in definitions with `use_tool` advertised inline-only. The Anthropic Messages API rejects the file-form
     /// schema's root-level union, and Messages-backed models must not see the file forms at all.
     pub fn tool_definitions_builtins_only_inline_mcp(&self) -> Vec<ToolDefinition> {
@@ -3614,6 +3643,62 @@ mod tests {
             )
             .expect("dynamic tool should register");
         assert_eq!(toolset.registered_identity("docs__search"), None);
+    }
+    #[tokio::test]
+    async fn live_task_projection_uses_registered_tool_and_parameter_identity() {
+        let tmp = TempDir::new().unwrap();
+        let toolset = ToolRegistryBuilder::new()
+            .finalize(
+                ToolServerConfig {
+                    tools: vec![
+                        ToolConfig::for_tool::<grok_build::TaskTool>()
+                            .with_name("delegate")
+                            .with_param_rename("subagent_type", "profile"),
+                        ToolConfig::for_tool::<grok_build::TaskOutputTool>(),
+                        ToolConfig::for_tool::<grok_build::KillTaskTool>(),
+                    ],
+                    behavior_preset: None,
+                },
+                test_session_context(&tmp),
+            )
+            .unwrap();
+        let frozen = toolset.tool_definitions_builtins_only();
+        let mut current = frozen.clone();
+        let unrelated = ToolDefinition::function(
+            "spawn_subagent",
+            None::<String>,
+            serde_json::json!({"type":"object", "properties":{"subagent_type":{"enum":["unrelated"]}}}),
+        );
+        current.push(unrelated.clone());
+        toolset.project_task_subagent_types(
+            &mut current,
+            &[xai_tool_types::SubagentDescriptor {
+                name: "cfo".into(),
+                description: "Finance".into(),
+                tools: None,
+            }],
+        );
+        let delegate = current
+            .iter()
+            .find(|definition| definition.function.name == "delegate")
+            .unwrap();
+        assert_eq!(
+            delegate.function.parameters["properties"]["profile"]["enum"],
+            serde_json::json!(["cfo"])
+        );
+        assert!(
+            delegate.function.parameters["properties"]
+                .get("subagent_type")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_value(current.last().unwrap()).unwrap(),
+            serde_json::to_value(unrelated).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(frozen).unwrap(),
+            serde_json::to_value(toolset.tool_definitions_builtins_only()).unwrap()
+        );
     }
     #[tokio::test]
     async fn call_sets_effective_tool_name_for_use_tool_dispatch() {

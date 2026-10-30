@@ -229,12 +229,13 @@ fn background_spawn_reject_error(
                 error = ?r.error,
                 "background spawn rejected by coordinator",
             );
-            xai_tool_runtime::ToolError::custom(
-                "spawn_rejected",
-                r.error.unwrap_or_else(|| {
-                    "background spawn was rejected by the coordinator".to_owned()
-                }),
-            )
+            let mut message = r
+                .error
+                .unwrap_or_else(|| "background spawn was rejected by the coordinator".to_owned());
+            if let Some(execution) = r.execution {
+                execution.append_model_metadata(&mut message);
+            }
+            xai_tool_runtime::ToolError::custom("spawn_rejected", message)
         }
     }
 }
@@ -732,13 +733,16 @@ impl xai_tool_runtime::Tool for TaskTool {
             let continue_parent =
                 detect_continue_parent_work(&resources, &input.description, &input.prompt).await;
 
-            let text = xai_tool_types::format_subagent_auto_backgrounded(
+            let mut text = xai_tool_types::format_subagent_auto_backgrounded(
                 &id,
                 &input.description,
                 &naming,
                 notified_on_completion,
                 continue_parent,
             );
+            if let Some(execution) = &result.execution {
+                execution.append_model_metadata(&mut text);
+            }
             return Ok(ToolOutput::Text(text.into()));
         }
 
@@ -768,11 +772,13 @@ impl xai_tool_runtime::Tool for TaskTool {
                 persona_hint,
             }))
         } else {
-            Err(xai_tool_runtime::ToolError::invalid_arguments(
-                result
-                    .error
-                    .unwrap_or_else(|| "Unknown subagent error".to_string()),
-            ))
+            let mut message = result
+                .error
+                .unwrap_or_else(|| "Unknown subagent error".to_string());
+            if let Some(execution) = result.execution {
+                execution.append_model_metadata(&mut message);
+            }
+            Err(xai_tool_runtime::ToolError::invalid_arguments(message))
         }
     }
 }
@@ -853,6 +859,31 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use xai_tool_types::SubagentCapabilityMode;
+
+    fn admitted_execution() -> xai_tool_types::SubagentExecution {
+        xai_tool_types::SubagentExecution {
+            profile: "general-purpose".into(),
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            reasoning_effort: Some("low".into()),
+            speed: "standard".into(),
+            fallback: None,
+        }
+    }
+
+    fn assert_admitted_execution(text: &str) {
+        let metadata = text
+            .split_once("<subagent_execution>")
+            .expect("actual admitted execution must reach model-visible failure and notice")
+            .1
+            .split_once("</subagent_execution>")
+            .unwrap()
+            .0;
+        assert_eq!(
+            serde_json::from_str::<xai_tool_types::SubagentExecution>(metadata).unwrap(),
+            admitted_execution()
+        );
+    }
 
     /// Backend whose `ValidateType` events are auto-acked with `Ok`.
     fn make_backend() -> (
@@ -1163,6 +1194,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn background_rejection_preserves_execution_only_when_admitted() {
+        let rejected = |execution| {
+            background_spawn_reject_error(
+                "child",
+                "general-purpose",
+                Ok(SubagentResult {
+                    execution,
+                    error: Some("Child session crashed".into()),
+                    ..Default::default()
+                }),
+            )
+            .to_string()
+        };
+        assert_admitted_execution(&rejected(Some(admitted_execution())));
+        let unadmitted = rejected(None);
+        assert!(unadmitted.contains("Child session crashed"));
+        assert!(!unadmitted.contains("<subagent_execution>"));
+    }
+
     #[tokio::test]
     async fn failed_subagent_returns_error() {
         let (backend, mut rx) = make_backend();
@@ -1181,6 +1232,7 @@ mod tests {
                 .respond_with(|_| SubagentResult {
                     success: false,
                     error: Some("Child session crashed".to_string()),
+                    execution: Some(admitted_execution()),
                     ..Default::default()
                 })
                 .unwrap();
@@ -1214,6 +1266,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Child session crashed"), "error: {err}");
+        assert_admitted_execution(&err);
     }
 
     #[tokio::test]
@@ -1289,6 +1342,7 @@ mod tests {
             if let Some(SubagentEvent::Spawn(boxed)) = rx.recv().await {
                 let _ = boxed.respond_with(|boxed| SubagentResult {
                     backgrounded: true,
+                    execution: Some(admitted_execution()),
                     subagent_id: boxed.id.clone(),
                     child_session_id: boxed.id.clone(),
                     ..Default::default()
@@ -1310,6 +1364,7 @@ mod tests {
 
         match result {
             ToolOutput::Text(text) => {
+                assert_admitted_execution(&text.text);
                 assert!(
                     text.text.contains("moved to the background"),
                     "expected background notice, got: {}",

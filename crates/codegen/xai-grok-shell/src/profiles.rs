@@ -807,6 +807,15 @@ fn edit_profile(cwd: &Path, input: &ProfileEdit, cfg: &Config, apply: bool) -> R
     }
     profile_value(&def, cfg, cwd)
 }
+#[cfg(test)]
+pub(crate) fn apply_profile_control_for_test(cwd: &Path, input: Value) -> Result<Value> {
+    edit_profile(
+        cwd,
+        &serde_json::from_value(input)?,
+        &Config::default(),
+        true,
+    )
+}
 pub async fn run(args: ProfilesArgs) -> Result<()> {
     match run_inner(args).await {
         Ok(()) => Ok(()),

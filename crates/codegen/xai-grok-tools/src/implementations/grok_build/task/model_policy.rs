@@ -101,16 +101,29 @@ fn exported_input_schema(
         }
     }
 
-    let listed = listed_subagent_types(&params.selectable_subagent_types);
-    if !listed.is_empty()
-        && let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut())
-    {
-        props.insert(
-            SUBAGENT_TYPE_PARAM.to_owned(),
-            subagent_type_property(&listed),
-        );
-    }
+    set_selectable_subagent_types(
+        &mut schema,
+        SUBAGENT_TYPE_PARAM,
+        &params.selectable_subagent_types,
+    );
     schema
+}
+
+/// Project current profile choices into a request-local schema, retaining all other settings.
+/// The finalized registry and already-captured child tool snapshots remain unchanged.
+pub fn set_selectable_subagent_types(
+    schema: &mut serde_json::Value,
+    param: &str,
+    types: &[SubagentDescriptor],
+) {
+    let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    props.remove(param);
+    let listed = listed_subagent_types(types);
+    if !listed.is_empty() {
+        props.insert(param.to_owned(), subagent_type_property(&listed));
+    }
 }
 
 /// The types the schema lists, within the name, count, and order limits.
