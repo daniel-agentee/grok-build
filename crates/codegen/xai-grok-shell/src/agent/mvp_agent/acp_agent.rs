@@ -613,6 +613,7 @@ impl acp::Agent for MvpAgent {
                     "agentInstanceId": agent_instance_id(),
                     "x.ai/residentOnlyAttach": true,
                     "x.ai/residentActorIdentity": true,
+                    "x.ai/promptCorrelation": true,
                     "x.ai/agentProfiles": true,
                     "hostname": hostname.to_string_lossy().to_string(),
                     "modelState": init_model_state,

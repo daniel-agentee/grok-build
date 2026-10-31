@@ -1126,6 +1126,10 @@ class Bridge:
                             and metadata.get("x.ai/residentOnlyAttach") is True
                             and metadata.get("x.ai/residentActorIdentity") is True
                         )
+                        prompt_correlation_supported = (
+                            isinstance(metadata, dict)
+                            and metadata.get("x.ai/promptCorrelation") is True
+                        )
                         profiles_supported = (resident_only_supported and isinstance(metadata, dict)
                                               and metadata.get("x.ai/agentProfiles") is True
                                               and self.directory.profile_cli is not None)
@@ -1135,7 +1139,7 @@ class Bridge:
                                              "x.ai/idleSessionPreview": True,
                                              "x.ai/workspaceCommands": True,
                                              "x.ai/newSessionModelSettings": resident_only_supported,
-                                             "x.ai/promptCorrelation": resident_only_supported,
+                                             "x.ai/promptCorrelation": prompt_correlation_supported,
                                              "x.ai/agentProfiles": profiles_supported,
                                              "x.ai/bridgeLeaderId": selected_token})
                             payload = json.dumps(value)

@@ -222,6 +222,22 @@ pub(crate) fn definition_revision(def: &AgentDefinition, cwd: &Path) -> Result<S
         &json!({"source": def.to_json_value(), "resolved": frozen.to_json_value(), "references": references}),
     ))
 }
+fn unreadable_reference(path: &Path, canonical: Option<&Path>, error: &std::io::Error) -> Value {
+    let metadata = std::fs::metadata(canonical.unwrap_or(path)).ok().map(|metadata| {
+        let mut state = json!({"size":metadata.len(),"isFile":metadata.is_file(),
+            "readonly":metadata.permissions().readonly(),
+            "modified":metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|time| (time.as_secs(),time.subsec_nanos()))});
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            state["unix"] = json!({"device":metadata.dev(),"inode":metadata.ino(),
+                "mode":metadata.mode(),"ctime":metadata.ctime(),"ctimeNanos":metadata.ctime_nsec()});
+        }
+        state
+    });
+    json!({"path":path,"canonical":canonical,"state":"unreadable",
+        "errorKind":format!("{:?}",error.kind()),"osError":error.raw_os_error(),"metadata":metadata})
+}
 /// Hash references even when their UTF-8/frontmatter is invalid. No referenced
 /// bytes enter the response; missing and refused targets have explicit states.
 fn repair_reference_fingerprint(def: &AgentDefinition, cwd: &Path) -> Result<String> {
@@ -241,14 +257,29 @@ fn repair_reference_fingerprint(def: &AgentDefinition, cwd: &Path) -> Result<Str
                 references.push(json!({"path":path,"state":"missing"}));
                 continue;
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                references.push(unreadable_reference(path, None, &error));
+                continue;
+            }
         };
         if !external_import && !canonical.starts_with(&root) {
             references.push(json!({"path":path,"canonical":canonical,"state":"outside-workspace"}));
             continue;
         }
-        let file = std::fs::File::open(&canonical)?;
-        let metadata = file.metadata()?;
+        let file = match std::fs::File::open(&canonical) {
+            Ok(file) => file,
+            Err(error) => {
+                references.push(unreadable_reference(path, Some(&canonical), &error));
+                continue;
+            }
+        };
+        let metadata = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                references.push(unreadable_reference(path, Some(&canonical), &error));
+                continue;
+            }
+        };
         if !metadata.is_file() {
             references.push(json!({"path":path,"canonical":canonical,"state":"not-file"}));
             continue;
@@ -259,12 +290,23 @@ fn repair_reference_fingerprint(def: &AgentDefinition, cwd: &Path) -> Result<Str
         let mut reader = file.take(metadata.len().saturating_add(1));
         let mut digest = blake3::Hasher::new();
         let mut buffer = [0u8; 8192];
+        let mut read_error = None;
         loop {
-            let count = reader.read(&mut buffer)?;
+            let count = match reader.read(&mut buffer) {
+                Ok(count) => count,
+                Err(error) => {
+                    read_error = Some(error);
+                    break;
+                }
+            };
             if count == 0 {
                 break;
             }
             digest.update(&buffer[..count]);
+        }
+        if let Some(error) = read_error {
+            references.push(unreadable_reference(path, Some(&canonical), &error));
+            continue;
         }
         references.push(json!({"path":path,"canonical":canonical,"size":metadata.len(),"digest":digest.finalize().to_hex().as_str()}));
     }
@@ -279,7 +321,11 @@ fn definition_control_revision(def: &AgentDefinition, cwd: &Path) -> Result<Stri
             if error
                 .downcast_ref::<xai_grok_agent::AgentBuildError>()
                 .is_some_and(|cause| {
-                    matches!(cause, xai_grok_agent::AgentBuildError::ParseError(_))
+                    matches!(
+                        cause,
+                        xai_grok_agent::AgentBuildError::ParseError(_)
+                            | xai_grok_agent::AgentBuildError::IoError(_)
+                    )
                 }) =>
         {
             Ok(hash(
@@ -1507,6 +1553,133 @@ mod tests {
         );
         assert!(relative.resolve_prompt_references(&workspace).is_err());
         assert_eq!(relative.prompt_files, vec![PathBuf::from("role.md")]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn profile_unreadable_reference_keeps_siblings_listable_and_exact_repair_cas() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".grok/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let reference = dir.path().join("locked-role.md");
+        std::fs::write(
+            &reference,
+            "Mandatory reference body must not enter the response",
+        )
+        .unwrap();
+        struct RestorePermissions(PathBuf, std::fs::Permissions);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+        let _restore = RestorePermissions(
+            reference.clone(),
+            std::fs::metadata(&reference).unwrap().permissions(),
+        );
+        let target = agents.join("locked-context.md");
+        let definition = json!({"name":"locked-context","description":"Mandatory context","promptFiles":[reference]});
+        std::fs::write(&target, format!("---\n{definition}\n---\nBody\n")).unwrap();
+        std::fs::write(
+            agents.join("healthy.md"),
+            "---\nname: healthy\ndescription: Healthy sibling\n---\nBody\n",
+        )
+        .unwrap();
+        let def = get_scoped(dir.path(), "locked-context", "project").unwrap();
+        let readable = definition_control_revision(&def, dir.path()).unwrap();
+        std::fs::set_permissions(&reference, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            std::fs::File::open(&reference).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let rows = listed_profiles(dir.path(), "project", &Config::default()).unwrap();
+        assert_eq!(rows.len(), 2);
+        let locked = rows
+            .iter()
+            .find(|row| row["id"] == "locked-context")
+            .unwrap();
+        assert_eq!(locked["validation"]["valid"], false);
+        assert_eq!(
+            rows.iter().find(|row| row["id"] == "healthy").unwrap()["validation"]["valid"],
+            true
+        );
+        assert!(!locked.to_string().contains("Mandatory reference body"));
+        let denied = locked["revision"].as_str().unwrap().to_owned();
+        assert_ne!(readable, denied);
+        assert_eq!(
+            denied,
+            definition_control_revision(&def, dir.path()).unwrap()
+        );
+        assert!(definition_revision(&def, dir.path()).is_err());
+        // Both modes deny reads; their observed metadata must still change CAS.
+        std::fs::set_permissions(&reference, std::fs::Permissions::from_mode(0o200)).unwrap();
+        assert_eq!(
+            std::fs::File::open(&reference).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let changed = definition_control_revision(&def, dir.path()).unwrap();
+        assert_ne!(denied, changed);
+        let original = std::fs::read(&target).unwrap();
+        let stale = ProfileEdit {
+            id: "locked-context".into(),
+            expected_revision: Some(denied),
+            write_scope: "project".into(),
+            definition: json!({"promptFiles":[],"promptBody":"Explicit replacement"}),
+        };
+        let error = edit_profile(dir.path(), &stale, &Config::default(), true).unwrap_err();
+        assert!(error.downcast_ref::<RevisionConflict>().is_some());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        let fresh = ProfileEdit {
+            expected_revision: Some(changed),
+            ..stale
+        };
+        let repaired = edit_profile(dir.path(), &fresh, &Config::default(), true).unwrap();
+        assert_eq!(repaired["validation"]["valid"], true);
+        assert!(
+            AgentDefinition::from_file(&target)
+                .unwrap()
+                .prompt_files
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777,
+            0o200
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn profile_unsearchable_reference_parent_has_stable_invalid_control_revision() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("locked");
+        std::fs::create_dir(&parent).unwrap();
+        let reference = parent.join("role.md");
+        std::fs::write(&reference, "Mandatory context").unwrap();
+        struct RestorePermissions(PathBuf, std::fs::Permissions);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+        let _restore = RestorePermissions(
+            parent.clone(),
+            std::fs::metadata(&parent).unwrap().permissions(),
+        );
+        let def =
+            profile(json!({"name":"locked-parent","description":"Test","promptFiles":[reference]}));
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&reference).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let first = profile_value(&def, &Config::default(), dir.path()).unwrap();
+        let second = profile_value(&def, &Config::default(), dir.path()).unwrap();
+        assert_eq!(first["validation"]["valid"], false);
+        assert_eq!(first["revision"], second["revision"]);
+        assert!(first["revision"].as_str().is_some());
+        assert!(definition_revision(&def, dir.path()).is_err());
     }
 
     #[test]

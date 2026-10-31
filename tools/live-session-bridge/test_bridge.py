@@ -33,6 +33,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.ready_type = "leader_ready"
         self.resident_only_supported = True
         self.actor_identity_supported = True
+        self.prompt_correlation_metadata = {"x.ai/promptCorrelation": True}
         self.profiles_supported = False
         self.answer_roster = True
         self.answer_load = True
@@ -116,6 +117,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                                             "x.ai/residentOnlyAttach": self.resident_only_supported,
                                             "x.ai/residentActorIdentity": self.actor_identity_supported,
                                             "x.ai/agentProfiles": self.profiles_supported,
+                                            **self.prompt_correlation_metadata,
                                         }
                                     },
                                 }
@@ -645,13 +647,38 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.seen.empty())
         await ws.close()
 
-    async def test_prompt_correlation_capability_requires_live_identity_guards(self):
+    async def test_prompt_correlation_capability_requires_native_literal_true(self):
         ws = await self.connect()
         self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), True)
         await ws.close()
-        self.actor_identity_supported = False
+        for value in (False, None, 0, 1, "true", "false"):
+            with self.subTest(value=value):
+                self.prompt_correlation_metadata = {"x.ai/promptCorrelation": value}
+                ws = await self.connect()
+                self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), False)
+                await ws.close()
+
+    async def test_older_resident_leader_remains_attachable_without_correlation(self):
+        self.prompt_correlation_metadata = {}
+        ws = await self.connect()
+        self.assertIs(self.mobile_metadata.get("x.ai/newSessionModelSettings"), True)
+        self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), False)
+        self.assertEqual((await self.load(ws))["method"], "session/update")
+        self.assertIn("result", await ws.receive_json())
+        await ws.close()
+
+    async def test_prompt_correlation_uses_current_native_flag_without_identity_inference(self):
+        ws = await self.connect()
+        self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), True)
+        await ws.close()
+        self.prompt_correlation_metadata = {}
         ws = await self.connect()
         self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), False)
+        await ws.close()
+        self.prompt_correlation_metadata = {"x.ai/promptCorrelation": True}
+        self.actor_identity_supported = False
+        ws = await self.connect()
+        self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), True)
         await ws.close()
 
     async def test_prompt_correlation_id_passes_through_with_resident_actor_guard(self):
