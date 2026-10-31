@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -202,17 +203,87 @@ def apply_definitions(
     if not isinstance(rows, list):
         raise ValueError("Native profile catalog is malformed; nothing was written")
     existing = {}
+    folded_ids = {}
+    source_paths = []
+
+    def path_key(path: Path) -> str:
+        # APFS can alias spelling and Unicode normalization; resolve ancestors too.
+        try:
+            return unicodedata.normalize("NFD", str(path.resolve())).casefold()
+        except (OSError, RuntimeError):
+            raise ValueError("Native profile catalog source path is malformed; nothing was written") from None
+
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("Native profile catalog is malformed; nothing was written")
         profile_id, revision = row.get("id"), row.get("revision")
         if (not isinstance(profile_id, str)
-                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", profile_id)
+                or not profile_id or profile_id in (".", "..")
+                or profile_id.strip() != profile_id or len(profile_id) > 512
+                or any(ord(char) < 32 or ord(char) == 127 or char in "/\\" for char in profile_id)
                 or not isinstance(revision, str) or not revision
-                or len(revision) > 256 or any(ord(char) < 32 for char in revision)
+                or revision.strip() != revision or len(revision) > 256
+                or any(ord(char) < 32 or ord(char) == 127 for char in revision)
                 or profile_id in existing):
             raise ValueError("Native profile catalog identity or revision is malformed; nothing was written")
+        selectable = re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", profile_id) is not None
+        validation = row.get("validation")
+        if "validation" in row and not (isinstance(validation, dict) and type(validation.get("valid")) is bool):
+            raise ValueError("Native profile catalog validation is malformed; nothing was written")
+        if not selectable and not (isinstance(validation, dict) and validation.get("valid") is False):
+            raise ValueError("Native profile catalog identity or revision is malformed; nothing was written")
+        # Invalid legacy names remain reserved. Only their unrelated validation
+        # failure is isolated; neither their identity nor their path is discarded.
+        source_path = row.get("sourcePath")
+        if source_path is not None:
+            if (not isinstance(source_path, str) or not source_path or len(source_path) > 4096
+                    or any(ord(char) < 32 or ord(char) == 127 for char in source_path)
+                    or not Path(source_path).is_absolute()):
+                raise ValueError("Native profile catalog source path is malformed; nothing was written")
+            source_paths.append((profile_id, path_key(Path(source_path))))
         existing[profile_id] = row
+        folded_ids.setdefault(profile_id.casefold(), []).append(profile_id)
+    for aliases in folded_ids.values():
+        if len(aliases) > 1:
+            paths = [path for raw_id, path in source_paths if raw_id in aliases]
+            if len(paths) != len(aliases) or len(set(paths)) != len(paths):
+                raise ValueError("Native profile catalog identity or revision is malformed; nothing was written")
+    if scope not in ("user", "project"):
+        raise ValueError("Import scope must be user or project")
+    target_dir = (Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok"))) / "agents"
+                  if scope == "user" else cwd / ".grok" / "agents")
+    target_ids = set()
+    target_store = path_key(target_dir) + os.sep
+    for profile_id in definitions:
+        if (not isinstance(profile_id, str) or profile_id in (".", "..")
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", profile_id)
+                or profile_id.casefold() in target_ids):
+            raise ValueError("Import profile identity is malformed or aliases another target; nothing was written")
+        target_ids.add(profile_id.casefold())
+        target = target_dir / f"{profile_id}.md"
+        target_path = path_key(target)
+        for alias in folded_ids.get(profile_id.casefold(), []):
+            if alias == profile_id:
+                continue
+            row = existing[alias]
+            source = row.get("sourcePath")
+            references = definitions[profile_id].get("promptFiles", [])
+            # Deliberate Claude reference imports create a distinct Grok file;
+            # their source's uppercase role ID is not a filesystem collision.
+            explicit_import = (
+                isinstance(source, str) and row.get("validation", {}).get("valid") is True
+                and Path(source).is_file() and Path(source).parent.name == "agents"
+                and Path(source).parent.parent.name == ".claude"
+                and not path_key(Path(source)).startswith(target_store)
+                and isinstance(references, list)
+                and any(isinstance(ref, str) and Path(ref).is_absolute()
+                        and path_key(Path(ref)) == path_key(Path(source)) for ref in references)
+                and not target.is_symlink() and not target.exists()
+            )
+            if not explicit_import:
+                raise ValueError("Existing profile identity or source path collides with an import target; nothing was written")
+        if any(raw_id != profile_id and path == target_path for raw_id, path in source_paths):
+            raise ValueError("Existing profile identity or source path collides with an import target; nothing was written")
     collisions = sorted(set(definitions) & set(existing))
     if collisions and not update:
         raise ValueError(

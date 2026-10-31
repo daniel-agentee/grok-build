@@ -267,6 +267,129 @@ def test_malformed_catalog_refuses_before_validation_or_writes(tmp_path: Path, c
     assert native.call_count == 1
 
 
+def test_unrelated_invalid_legacy_profile_does_not_block_valid_import(tmp_path: Path) -> None:
+    legacy = {
+        "id": "Chief of Staff",
+        "revision": "legacy-r1",
+        "sourcePath": str(tmp_path / ".claude/agents/ChiefOfStaff.md"),
+        "validation": {"valid": False, "errors": ["Invalid profile ID"]},
+    }
+    catalog = {"profiles": [legacy, {"id": "molty", "revision": "r2", "validation": {"valid": False}}]}
+    with patch.object(IMPORT, "grok_json", side_effect=[catalog, {}, {}, {}, {}]) as native:
+        assert IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}, "cos": {}}, False) == ["cfo", "cos"]
+    assert [call.args[2] for call in native.call_args_list] == [
+        ["list"], ["validate"], ["validate"], ["apply"], ["apply"],
+    ]
+    assert all(call.args[3]["expectedRevision"] is None for call in native.call_args_list[-2:])
+    assert catalog["profiles"][0] is legacy
+    assert legacy["id"] == "Chief of Staff"
+    assert legacy["revision"] == "legacy-r1"
+
+
+@pytest.mark.parametrize("row", [
+    {"id": "Chief of Staff", "revision": "r1", "validation": {"valid": True}},
+    {"id": "Chief of Staff", "revision": "r1"},
+    {"id": "Chief of Staff", "revision": "r1", "validation": {"valid": 0}},
+    {"revision": "r1", "validation": {"valid": False}},
+    {"id": "Chief of Staff", "validation": {"valid": False}},
+    {"id": "Chief of Staff", "revision": "", "validation": {"valid": False}},
+    {"id": "Chief of Staff", "revision": "r1\n", "validation": {"valid": False}},
+    {"id": "", "revision": "r1", "validation": {"valid": False}},
+    {"id": "../cfo", "revision": "r1", "validation": {"valid": False}},
+    {"id": ".", "revision": "r1", "validation": {"valid": True}},
+    {"id": "..", "revision": "r1", "validation": {"valid": False}},
+    {"id": "cfo", "revision": "r1", "validation": None},
+    {"id": "Chief\nStaff", "revision": "r1", "validation": {"valid": False}},
+    {"id": "Chief of Staff", "revision": "r1", "validation": {"valid": False}, "sourcePath": "relative.md"},
+    {"id": "cfo", "revision": "r1", "sourcePath": []},
+])
+def test_invalid_marker_does_not_hide_malformed_catalog_identity(tmp_path: Path, row: dict[str, object]) -> None:
+    with patch.object(IMPORT, "grok_json", return_value={"profiles": [row]}) as native:
+        with pytest.raises(ValueError, match="catalog.*malformed"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}}, False)
+    assert native.call_count == 1
+
+
+@pytest.mark.parametrize("profile_id,update", [("cfo", False), ("CFO", False), ("CFO", True)])
+def test_invalid_existing_target_and_case_alias_are_never_ignored(
+    tmp_path: Path, profile_id: str, update: bool,
+) -> None:
+    row = {"id": profile_id, "revision": "r1", "validation": {"valid": False}}
+    with patch.object(IMPORT, "grok_json", return_value={"profiles": [row]}) as native:
+        with pytest.raises(ValueError, match="Existing profile"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}}, update)
+    assert native.call_count == 1
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_invalid_legacy_source_path_cannot_alias_import_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, update: bool,
+) -> None:
+    grok_home = tmp_path / ".grok"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    source = grok_home / "agents/CFO.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Original legacy profile")
+    row = {
+        "id": "Old Finance Lead", "revision": "r1", "sourcePath": str(source),
+        "validation": {"valid": False},
+    }
+    with patch.object(IMPORT, "grok_json", return_value={"profiles": [row]}) as native:
+        with pytest.raises(ValueError, match="Existing profile"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": {}}, update)
+    assert native.call_count == 1
+    assert source.read_text() == "Original legacy profile"
+
+
+def test_case_alias_catalog_duplicates_refuse_before_validation(tmp_path: Path) -> None:
+    catalog = {"profiles": [{"id": "CFO", "revision": "r1"}, {"id": "cfo", "revision": "r2"}]}
+    with patch.object(IMPORT, "grok_json", return_value=catalog) as native:
+        with pytest.raises(ValueError, match="catalog.*malformed"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cro": {}}, False)
+    assert native.call_count == 1
+
+
+def test_explicit_claude_reference_import_allows_distinct_case_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grok_home = tmp_path / ".grok"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    source = tmp_path / ".claude/agents/CFO.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Original Claude role")
+    row = {"id": "CFO", "revision": "r1", "sourcePath": str(source), "validation": {"valid": True}}
+    definition = {"promptFiles": [str(source)]}
+    with patch.object(IMPORT, "grok_json", side_effect=[{"profiles": [row]}, {}, {}]) as native:
+        assert IMPORT.apply_definitions("grok", tmp_path, {"cfo": definition}, False) == ["cfo"]
+    assert native.call_args_list[-1].args[3]["expectedRevision"] is None
+    assert source.read_text() == "Original Claude role"
+    assert not (grok_home / "agents/cfo.md").exists()
+
+
+@pytest.mark.parametrize("existing_target", [False, True])
+def test_case_variant_exemption_requires_explicit_reference_and_absent_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_target: bool,
+) -> None:
+    grok_home = tmp_path / ".grok"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    source = tmp_path / ".claude/agents/CFO.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Original Claude role")
+    target = grok_home / "agents/cfo.md"
+    if existing_target:
+        target.parent.mkdir(parents=True)
+        target.write_text("Existing Grok role")
+    row = {"id": "CFO", "revision": "r1", "sourcePath": str(source), "validation": {"valid": True}}
+    definition = {"promptFiles": [str(source)]} if existing_target else {}
+    with patch.object(IMPORT, "grok_json", return_value={"profiles": [row]}) as native:
+        with pytest.raises(ValueError, match="Existing profile"):
+            IMPORT.apply_definitions("grok", tmp_path, {"cfo": definition}, True)
+    assert native.call_count == 1
+    assert source.read_text() == "Original Claude role"
+    if existing_target:
+        assert target.read_text() == "Existing Grok role"
+
+
 @pytest.mark.parametrize("failure", [OSError("private-process-material"), subprocess.TimeoutExpired("private-process-material", 30)])
 def test_partial_apply_report_survives_process_failure(tmp_path: Path, failure: Exception) -> None:
     with patch.object(IMPORT, "grok_json", side_effect=[{"profiles": []}, {}, {}, {}, failure]) as native:
