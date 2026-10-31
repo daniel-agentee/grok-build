@@ -662,7 +662,9 @@ requests can remain outstanding on a connection. Prompt submissions are forwarde
 to the native leader's queue; the bridge never retries a prompt automatically.
 
 Initialize advertises `_meta["x.ai/promptCorrelation"]: true` only for a compatible
-resident leader. Such clients may send `session/prompt` with optional
+resident leader. Clients enable correlation only for literal JSON `true`, after
+verifying the attached source, session and resident actor. Such clients may send
+`session/prompt` with optional
 `_meta: {"promptId": "<canonical hyphenated UUID>"}`. UUID hex may use either
 case; the bridge forwards the exact value together with its own verified
 `x.ai/residentActorId`. All other prompt metadata, malformed IDs and correlation
@@ -675,6 +677,25 @@ Native queue snapshots are republished on resident attachment and ordered with
 its canonical replay. Exact queue/running/completion prompt IDs can confirm an
 uncertain send only after the load verifies the same actor. Text equality never
 proves delivery, including two identical instructions from different devices.
+
+The authoritative actor also emits direct human admission receipts as live
+`x.ai/session_notification` notifications. Their `params.sessionId` identifies the
+accepting session; `update` is
+`{"sessionUpdate":"prompt_accepted","prompt_id":"<admitted UUID>"}` and `_meta`
+contains the same `promptId`, a generated `eventId` and `agentTimestampMs`. Clients
+accept a receipt only from their verified attached source/session/actor and match
+the exact prompt ID. The stored canonical envelope uses `_x.ai/session/update`;
+its identity and metadata replay unchanged. Each admitted human input retains its
+own receipt even if its queue row is later combined into another prompt or removed.
+Synthetic inputs and queue promotion emit no new receipt, and client-supplied
+receipts cannot establish admission.
+
+A receipt confirms admission only. It creates no message bubble, turn start,
+completion or cancellation and does not replace the running turn. The actor
+enqueues it on the durable persistence rail before live delivery; this is not an
+acknowledged fsync-before-live guarantee. Reconciliation preserves the existing
+same-leader attachment, authentication and permission boundaries; it does not
+enable an `agent serve` fallback or automatic prompt retries.
 
 The transport deliberately exposes a small method set: initialize/authenticate,
 session discovery/info, workspace/model discovery, billing reads, and live `session/load`, `session/prompt`, `session/cancel`,

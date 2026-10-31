@@ -1,12 +1,13 @@
 //! Outbound updates for `SessionActor`: `send_update` and its buffered/transient/direct variants.
 //! Also xAI-notification handling and the gateway-bridge dispatch shims.
 use super::*;
-/// Hook / image-intake diagnostics and background_tasks snapshots leave the no-output rewind window open; every other variant closes it.
+/// Admission receipts, hook / image-intake diagnostics and background_tasks snapshots leave the no-output rewind window open; every other variant closes it.
 /// `HookRunStarted` fires for the prompt gate before any output, so a Ctrl+C during a slow gate must still rewind the prompt.
 pub(super) fn closes_cancel_rewind_window(update: &XaiSessionUpdate) -> bool {
     !matches!(
         update,
-        XaiSessionUpdate::HookRunStarted { .. }
+        XaiSessionUpdate::PromptAccepted { .. }
+            | XaiSessionUpdate::HookRunStarted { .. }
             | XaiSessionUpdate::HookExecution { .. }
             | XaiSessionUpdate::ImageCompressed { .. }
             | XaiSessionUpdate::ImageDropped { .. }
@@ -636,6 +637,13 @@ impl SessionActor {
         &self,
         mut notification: XaiSessionNotification,
     ) {
+        // Only queue_input may issue an admission receipt, after the actor has
+        // actually accepted a direct human input. Client metadata/events cannot
+        // create proof of an input that this actor never admitted.
+        if matches!(notification.update, XaiSessionUpdate::PromptAccepted { .. }) {
+            tracing::debug!("ignoring client-supplied prompt admission receipt");
+            return;
+        }
         if !matches!(
             notification.update,
             XaiSessionUpdate::SubagentProgress { .. }

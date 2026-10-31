@@ -1,6 +1,30 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
     use super::*;
 
+    #[test]
+    fn prompt_admission_receipt_does_not_render_start_complete_or_replace_terminal_turn() {
+        for (is_replay, running) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut app = make_app_with_agent("sess-1");
+            let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+            agent.session.state = if running { AgentState::TurnRunning } else { AgentState::Idle };
+            agent.session.current_prompt_id = Some("running-terminal-prompt".into());
+            agent.session.loading_replay = is_replay;
+            agent.prompt.set_text("unsent terminal draft");
+            let before = agent.scrollback.len();
+            let receipt = acp_fixtures::ext_notification("x.ai/session_notification", &serde_json::json!({
+                "sessionId": "sess-1", "update": {"sessionUpdate": "prompt_accepted", "prompt_id": "queued-phone-prompt"},
+                "_meta": {"promptId": "queued-phone-prompt", "eventId": "sess-1-123", "isReplay": is_replay}
+            }));
+            assert!(!handle_ext_notification(&receipt, &mut app));
+            let agent = test_agent(&app, AgentId(0));
+            assert_eq!(agent.scrollback.len(), before, "an admission receipt is not a user bubble");
+            assert_eq!(agent.session.current_prompt_id.as_deref(), Some("running-terminal-prompt"));
+            assert_eq!(agent.session.state.is_turn_running(), running, "acceptance is neither start nor completion");
+            assert_eq!(agent.prompt.text(), "unsent terminal draft");
+            assert!(agent.permission_queue.is_empty());
+        }
+    }
+
     /// The pager reconciles the authoritative shared prompt queue from the `x.ai/queue/changed` broadcast, and an empty broadcast clears it.
     #[test]
     fn queue_changed_reconciles_shared_queue() {

@@ -157,6 +157,12 @@ impl SessionActor {
             .join("\n\n");
 
         let policy = input_origin.policy();
+        // Initial delegated-child tasks use a normal UUID / User policy for
+        // their turn, but the parent model authored them. The existing readiness
+        // signal identifies that intake without excluding later human input to
+        // a child session.
+        let is_direct_human_prompt =
+            policy.analytics.is_human_prompt() && initial_child_prompt_ready.is_none();
 
         // Bump before any await so a LocalSet recap cannot commit/emit after this Prompt was accepted but before handle_prompt runs
         if policy.authority.is_human_intent() {
@@ -375,6 +381,24 @@ impl SessionActor {
         }
         if merge_into_goal || send_now {
             self.broadcast_queue_changed(&state);
+        }
+        drop(state);
+        if is_direct_human_prompt {
+            // The accepted ID belongs to this input, never the running turn or
+            // client-provided block metadata. Enqueue on the durable rail before
+            // a combine/removal can erase its row; readers reconcile by exact ID.
+            let mut meta = serde_json::Map::new();
+            meta.insert("promptId".into(), serde_json::json!(log_prompt_id));
+            // Keep the existing notification-hook future off the queue/turn
+            // stack, including its dormant branch for this receipt variant.
+            Box::pin(self.send_xai_notification_with_extra_meta(
+                XaiSessionUpdate::PromptAccepted {
+                    prompt_id: log_prompt_id,
+                },
+                Some(meta),
+                crate::session::storage::jsonl::AppendDurability::Durable,
+            ))
+            .await;
         }
         cancel_running_turn
     }

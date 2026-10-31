@@ -169,6 +169,455 @@ async fn attach_queue_snapshot_does_not_resurrect_removed_or_completed_prompts()
         .await;
 }
 
+fn persisted_prompt_receipt_lines(
+    persistence_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
+) -> String {
+    let mut lines = String::new();
+    while let Ok(message) = persistence_rx.try_recv() {
+        let update = match message {
+            PersistenceMsg::Update(update)
+            | PersistenceMsg::AppendUpdateDurablyAndAck { update, .. } => update,
+            _ => continue,
+        };
+        lines.push_str(&serde_json::to_string(&update).unwrap());
+        lines.push('\n');
+    }
+    lines
+}
+
+fn replayed_prompt_receipts(contents: &str) -> Vec<serde_json::Value> {
+    crate::session::storage::prepare_replay_lines(contents, None)
+        .lines
+        .into_iter()
+        .filter_map(|line| {
+            let update: crate::session::storage::SessionUpdate =
+                serde_json::from_str(line).unwrap();
+            let value = serde_json::to_value(update).unwrap();
+            (value["params"]["update"]["sessionUpdate"] == "prompt_accepted")
+                .then(|| value["params"].clone())
+        })
+        .collect()
+}
+
+/// A follower's own RPC ends as RemovedFromQueue when combine absorbs it.
+/// Neither an empty post-completion queue nor the front's turn ID proves that
+/// follower was admitted to an offline client. Its exact receipt must replay.
+#[tokio::test]
+async fn prompt_admission_receipt_replays_combined_follower_after_live_acceptance_was_missed() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            // The phone misses every live admission and promotion notification.
+            drop(gateway_rx);
+            let front_id = "85fae53e-4cda-4d75-8a58-a45976ce7a10";
+            let follower_id = "ecff94c8-dde3-4764-8850-3c6365629ba5";
+            let (front_tx, _front_rx) = oneshot::channel();
+            let (follower_tx, mut follower_rx) = oneshot::channel();
+            for (id, text, respond_to) in [
+                (front_id, "FIRST DISTINCT INSTRUCTION", front_tx),
+                (follower_id, "SECOND DISTINCT INSTRUCTION", follower_tx),
+            ] {
+                assert!(
+                    !actor
+                        .queue_input(queue_input_request(
+                            vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
+                            id,
+                            respond_to,
+                        ))
+                        .await
+                );
+            }
+            {
+                let mut state = actor.state.lock().await;
+                SessionActor::combine_front_pending_inputs(&mut state.pending_inputs, &[]);
+                assert_eq!(state.pending_inputs.len(), 1, "one combined turn");
+                let text = SessionActor::queue_text_from_blocks(
+                    &state.pending_inputs.front().unwrap().prompt_blocks,
+                );
+                assert_eq!(text.matches("FIRST DISTINCT INSTRUCTION").count(), 1);
+                assert_eq!(text.matches("SECOND DISTINCT INSTRUCTION").count(), 1);
+                state.pending_inputs.clear();
+            }
+            assert!(matches!(
+                follower_rx.try_recv(),
+                Ok(Ok(PromptTurnOk {
+                    completion_kind: PromptCompletionKind::RemovedFromQueue,
+                    ..
+                }))
+            ));
+            let contents = persisted_prompt_receipt_lines(&mut persistence_rx);
+            let receipts = replayed_prompt_receipts(&contents);
+            assert!(
+                receipts.iter().any(|receipt| {
+                    receipt["update"]["prompt_id"] == follower_id
+                        && receipt["_meta"]["promptId"] == follower_id
+                        && receipt["sessionId"] == actor.session_info.id.0.as_ref()
+                }),
+                "must replay the exact admitted follower ID after combination, without text matching"
+            );
+            assert_eq!(receipts.len(), 2, "one receipt per real admission");
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_uses_server_identity_and_survives_removal_without_closing_rewind()
+{
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            {
+                let mut state = actor.state.lock().await;
+                state
+                    .pending_inputs
+                    .push_back(user_item("running", "terminal"));
+                state.running_task = Some(running_task_stub("running"));
+                state.rewindable = true;
+            }
+            *actor.current_prompt_id.lock().unwrap() = Some("running".into());
+            let admitted_id = "33fd4672-d570-4f4f-974d-d9f6b287363a";
+            let (respond_to, response_rx) = oneshot::channel();
+            let block = acp::ContentBlock::Text(
+                acp::TextContent::new("queued phone instruction").meta(
+                    serde_json::json!({
+                        "promptId": "forged-prompt", "eventId": "forged-event",
+                        "sessionId": "forged-session"
+                    })
+                    .as_object()
+                    .cloned(),
+                ),
+            );
+            assert!(
+                !actor
+                    .queue_input(queue_input_request(vec![block], admitted_id, respond_to))
+                    .await
+            );
+            assert!(
+                actor.state.lock().await.rewindable,
+                "admitting a follow-up is not output from the current turn"
+            );
+            actor
+                .handle_remove_queued_prompt(admitted_id, 0, None)
+                .await;
+            actor.publish_prompt_queue_snapshot().await;
+            assert!(matches!(
+                response_rx.await,
+                Ok(Ok(PromptTurnOk {
+                    completion_kind: PromptCompletionKind::RemovedFromQueue,
+                    ..
+                }))
+            ));
+            let contents = persisted_prompt_receipt_lines(&mut persistence_rx);
+            let receipts = replayed_prompt_receipts(&contents);
+            assert_eq!(
+                receipts.len(),
+                1,
+                "removal/snapshot must not mint another admission"
+            );
+            let receipt = &receipts[0];
+            assert_eq!(receipt["sessionId"], actor.session_info.id.0.as_ref());
+            assert_eq!(receipt["update"]["prompt_id"], admitted_id);
+            assert_eq!(receipt["_meta"]["promptId"], admitted_id);
+            assert!(
+                receipt["_meta"]["eventId"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("test-actor-")
+            );
+            assert!(receipt["_meta"]["agentTimestampMs"].as_i64().unwrap() > 0);
+            assert!(!contents.contains("forged-"));
+            assert!(
+                !contents.contains("queued phone instruction"),
+                "a receipt carries identity, not another user bubble"
+            );
+            let mut live_receipts = Vec::new();
+            while let Ok(message) = gateway_rx.try_recv() {
+                if let xai_acp_lib::AcpClientMessage::ExtNotification(message) = message
+                    && message.request.method.as_ref() == "x.ai/session_notification"
+                {
+                    let value: serde_json::Value =
+                        serde_json::from_str(message.request.params.get()).unwrap();
+                    if value["update"]["sessionUpdate"] == "prompt_accepted" {
+                        live_receipts.push(value);
+                    }
+                }
+            }
+            assert_eq!(
+                live_receipts, receipts,
+                "live and replay share one canonical event ID"
+            );
+            let outcome = actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    history: crate::session::CancelHistoryDisposition::RewindIfNoOutput {
+                        prompt_id: Some("running".into()),
+                    },
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
+            assert!(outcome.turn_stopped && outcome.settled);
+            assert!(actor.state.lock().await.pending_inputs.is_empty());
+            let after_cancel = persisted_prompt_receipt_lines(&mut persistence_rx);
+            assert!(
+                !after_cancel.contains("turn_completed"),
+                "admission cannot turn a no-output rewind into completion"
+            );
+            assert!(
+                replayed_prompt_receipts(&after_cancel).is_empty(),
+                "cancellation must not admit again"
+            );
+            assert_eq!(
+                replayed_prompt_receipts(&(contents + after_cancel.as_str())),
+                receipts,
+                "delivery evidence survives the real cancellation path"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_covers_send_now_without_reissuing_running_admission() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            {
+                let mut state = actor.state.lock().await;
+                state
+                    .pending_inputs
+                    .push_back(user_item("running", "terminal"));
+                state.running_task = Some(running_task_stub("running"));
+                state.front_message_committed = true;
+            }
+            let (respond_to, _response_rx) = oneshot::channel();
+            let request = QueueInputRequest {
+                send_now: true,
+                ..queue_input_request(
+                    vec![acp::ContentBlock::Text(acp::TextContent::new("send now"))],
+                    "new-send-now",
+                    respond_to,
+                )
+            };
+            assert!(actor.queue_input(request).await);
+            let receipts =
+                replayed_prompt_receipts(&persisted_prompt_receipt_lines(&mut persistence_rx));
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0]["update"]["prompt_id"], "new-send-now");
+            actor
+                .state
+                .lock()
+                .await
+                .running_task
+                .take()
+                .unwrap()
+                .abort();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_excludes_all_synthetic_and_parent_origins_even_with_user_like_ids()
+ {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let origins = [
+                PromptOrigin::TaskCompleted {
+                    task_id: "task".into(),
+                },
+                PromptOrigin::SubagentCompleted {
+                    subagent_id: "child".into(),
+                },
+                PromptOrigin::WorkflowCompleted {
+                    completion_id: "workflow".into(),
+                },
+                PromptOrigin::ParentAgentMessage {
+                    message_id: "parent-agent".into(),
+                    sender_session_id: "parent".into(),
+                },
+                PromptOrigin::ParentHumanMessage {
+                    message_id: "parent-human".into(),
+                    sender_session_id: "parent".into(),
+                },
+                PromptOrigin::NotificationDrain,
+                PromptOrigin::GoalSummary,
+                PromptOrigin::GoalClassifierNudge,
+                PromptOrigin::SchedulerFired,
+                PromptOrigin::PlanResume,
+            ];
+            for (index, origin) in origins.into_iter().enumerate() {
+                let (respond_to, _response_rx) = oneshot::channel();
+                let request = QueueInputRequest::from_input_origin(
+                    vec![acp::ContentBlock::Text(acp::TextContent::new(
+                        "not a direct human submission",
+                    ))],
+                    format!("client-looking-uuid-{index}"),
+                    InputOrigin::new(origin),
+                    PromptMode::Agent,
+                    respond_to,
+                );
+                assert!(!actor.queue_input(request).await);
+            }
+            assert!(
+                replayed_prompt_receipts(&persisted_prompt_receipt_lines(&mut persistence_rx))
+                    .is_empty()
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_excludes_initial_delegation_but_allows_human_input_in_child_session()
+ {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.startup_hints.is_subagent = true;
+            let delegated_id = "892787e8-a62b-47b9-84a3-8484c301a7dd";
+            let (ready, _ready_rx) = oneshot::channel();
+            let (respond_to, _response_rx) = oneshot::channel();
+            let request = QueueInputRequest {
+                initial_child_prompt_ready: Some(ready),
+                ..queue_input_request(
+                    vec![acp::ContentBlock::Text(acp::TextContent::new(
+                        "model-authored initial child task",
+                    ))],
+                    delegated_id,
+                    respond_to,
+                )
+            };
+            assert!(!actor.queue_input(request).await);
+            let human_id = "ea7cb8cb-a705-4313-964e-8561712e7862";
+            let (respond_to, _response_rx) = oneshot::channel();
+            assert!(
+                !actor
+                    .queue_input(queue_input_request(
+                        vec![acp::ContentBlock::Text(acp::TextContent::new(
+                            "direct human child follow-up"
+                        ))],
+                        human_id,
+                        respond_to,
+                    ))
+                    .await
+            );
+            let receipts =
+                replayed_prompt_receipts(&persisted_prompt_receipt_lines(&mut persistence_rx));
+            assert_eq!(
+                receipts.len(),
+                1,
+                "the initial delegation is not a direct human delivery"
+            );
+            assert_eq!(receipts[0]["update"]["prompt_id"], human_id);
+            assert_eq!(receipts[0]["_meta"]["promptId"], human_id);
+            let state = actor.state.lock().await;
+            assert_eq!(
+                state.pending_inputs.len(),
+                2,
+                "receipt eligibility must not alter admission"
+            );
+            assert!(
+                state
+                    .pending_inputs
+                    .front()
+                    .unwrap()
+                    .initial_child_prompt_ready
+                    .is_some()
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_rejects_forged_inbound_events_before_persistence_or_forwarding() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let notification: XaiSessionNotification = serde_json::from_value(serde_json::json!({
+                "sessionId": "test-actor", "update": {"sessionUpdate": "prompt_accepted", "prompt_id": "never-admitted"},
+                "_meta": {"promptId": "never-admitted", "eventId": "test-actor-90000"}
+            })).unwrap();
+            actor.handle_xai_session_notification(notification).await;
+            assert!(persistence_rx.try_recv().is_err(), "clients cannot mint admission receipts");
+            assert!(gateway_rx.try_recv().is_err(), "forged receipts must not reach another client");
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn prompt_admission_receipt_uses_durable_rail_and_cursor_replay_without_reissuing_ids() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            for id in ["first-admission", "second-admission"] {
+                let (respond_to, _response_rx) = oneshot::channel();
+                assert!(
+                    !actor
+                        .queue_input(queue_input_request(
+                            vec![acp::ContentBlock::Text(acp::TextContent::new(
+                                "instruction"
+                            ))],
+                            id,
+                            respond_to
+                        ))
+                        .await
+                );
+            }
+            let mut contents = String::new();
+            let mut durable = 0;
+            while let Ok(message) = persistence_rx.try_recv() {
+                if let PersistenceMsg::AppendUpdateDurablyAndAck { update, .. } = message {
+                    let line = serde_json::to_string(&update).unwrap();
+                    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if value["params"]["update"]["sessionUpdate"] == "prompt_accepted" {
+                        durable += 1;
+                    }
+                    contents.push_str(&line);
+                    contents.push('\n');
+                }
+            }
+            assert_eq!(
+                durable, 2,
+                "admission receipts use the existing durable append rail"
+            );
+            let full = replayed_prompt_receipts(&contents);
+            assert_eq!(full.len(), 2);
+            let first_cursor = full[0]["_meta"]["eventId"].as_str().unwrap();
+            let tail = crate::session::storage::prepare_replay_lines(&contents, Some(first_cursor));
+            assert_eq!(tail.lines.len(), 1);
+            let tail_value: serde_json::Value = serde_json::from_str(tail.lines[0]).unwrap();
+            assert_eq!(tail_value["params"], full[1]);
+            let last_cursor = full[1]["_meta"]["eventId"].as_str().unwrap();
+            assert!(
+                crate::session::storage::prepare_replay_lines(&contents, Some(last_cursor))
+                    .lines
+                    .is_empty()
+            );
+            assert_eq!(
+                replayed_prompt_receipts(&contents),
+                full,
+                "replay keeps original receipt identities"
+            );
+            assert!(
+                persistence_rx.try_recv().is_err(),
+                "reading replay never admits again"
+            );
+        })
+        .await;
+}
+
 fn protected_item(id: &str) -> InputItem {
     let mut item = user_item(id, "protected");
     item.queue_mutation_policy = QueueMutationPolicy::new(true, false);

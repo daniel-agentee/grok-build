@@ -515,6 +515,10 @@ pub const MODEL_FAMILY_SWITCH_COMPACT_BANNER: &str = "Switching model. Compactin
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "sessionUpdate")]
 pub enum SessionUpdate {
+    /// A direct human prompt was admitted by this session's authoritative actor.
+    /// This is an exact delivery receipt, not execution, completion, or a user
+    /// message. It survives queue combination/removal and replays unchanged.
+    PromptAccepted { prompt_id: String },
     /// A diff review request containing one or more file diffs for user review.
     DiffReview {
         /// The diff content to be reviewed.
@@ -1938,6 +1942,51 @@ mod tests {
         let json = r#"{"sessionUpdate": "some_future_feature", "data": 42}"#;
         let update: SessionUpdate = serde_json::from_str(json).unwrap();
         assert_eq!(update, SessionUpdate::Unknown);
+    }
+
+    #[test]
+    fn prompt_admission_receipt_wire_round_trips_with_exact_identity_and_no_execution_fields() {
+        let params = serde_json::json!({
+            "sessionId": "session-authority",
+            "update": {"sessionUpdate": "prompt_accepted", "prompt_id": "admitted-uuid"},
+            "_meta": {"eventId": "session-authority-123", "promptId": "admitted-uuid", "agentTimestampMs": 1234}
+        });
+        let notification: SessionNotification = serde_json::from_value(params.clone()).unwrap();
+        assert_eq!(
+            notification.update,
+            SessionUpdate::PromptAccepted {
+                prompt_id: "admitted-uuid".into()
+            }
+        );
+        assert_eq!(serde_json::to_value(&notification).unwrap(), params);
+        let record = crate::session::storage::SessionUpdate::Xai(Box::new(notification));
+        let envelope = serde_json::to_value(&record).unwrap();
+        assert_eq!(envelope["method"], "_x.ai/session/update");
+        assert_eq!(envelope["params"], params);
+        let disk_envelope = serde_json::to_value(
+            crate::session::storage::SessionUpdateEnvelope::from_update(&record).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(disk_envelope["method"], "_x.ai/session/update");
+        assert_eq!(disk_envelope["params"], params);
+        assert!(disk_envelope["timestamp"].as_u64().unwrap() > 0);
+        for value in [envelope, disk_envelope] {
+            let restored: crate::session::storage::SessionUpdate =
+                serde_json::from_value(value).unwrap();
+            let crate::session::storage::SessionUpdate::Xai(restored) = restored else {
+                panic!("receipt stays on the extension rail")
+            };
+            assert_eq!(
+                restored.update,
+                SessionUpdate::PromptAccepted {
+                    prompt_id: "admitted-uuid".into()
+                }
+            );
+            assert_eq!(
+                restored.meta.as_ref().unwrap()["eventId"],
+                "session-authority-123"
+            );
+        }
     }
 
     #[test]

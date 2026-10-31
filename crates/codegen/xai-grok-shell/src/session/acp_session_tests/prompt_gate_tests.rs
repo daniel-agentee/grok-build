@@ -10,6 +10,25 @@ use super::*;
 
 use tokio::sync::mpsc;
 
+/// Full-turn futures need the same 8 MiB stack as production session threads (spawn.rs).
+/// Construct and poll the future on that thread, without changing other tests' stacks.
+fn on_session_stack<F: std::future::Future<Output = ()>>(
+    future: impl FnOnce() -> F + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(future());
+        })
+        .expect("spawn test thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
 fn prompt_gate_registry(script: &str) -> xai_grok_hooks::discovery::HookRegistry {
     let (mut registry, _) = xai_grok_hooks::discovery::load_hooks(None, None);
     registry.append_specs(vec![xai_grok_hooks::config::HookSpec {
@@ -235,8 +254,12 @@ async fn flushed_interjection_stays_parked_under_hold() {
 
 /// A synthetic (auto-wake) origin is observe-only: the same blocking hook must not cancel the turn.
 /// The turn proceeds toward the sampler, so the test watches for the not-enforced annotation and then aborts the turn.
-#[tokio::test(flavor = "current_thread")]
-async fn synthetic_prompt_ignores_hook_block() {
+#[test]
+fn synthetic_prompt_ignores_hook_block() {
+    on_session_stack(synthetic_prompt_ignores_hook_block_on_session_stack);
+}
+
+async fn synthetic_prompt_ignores_hook_block_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -302,8 +325,12 @@ async fn synthetic_prompt_ignores_hook_block() {
 }
 
 /// A real user prompt on a subagent session is observe-only: subagent sessions never enforce prompt blocks (`should_enforce_prompt_block`).
-#[tokio::test(flavor = "current_thread")]
-async fn subagent_session_ignores_hook_block() {
+#[test]
+fn subagent_session_ignores_hook_block() {
+    on_session_stack(subagent_session_ignores_hook_block_on_session_stack);
+}
+
+async fn subagent_session_ignores_hook_block_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -632,8 +659,12 @@ async fn non_hook_cancel_does_not_hold_queue() {
 /// The observe-only scope must not inherit the storage boundary.
 /// A blocking hook on a synthetic (auto-wake) origin still commits the wake text to chat state.
 /// The turn proceeds toward the sampler, so the test watches for the commit and then aborts the turn.
-#[tokio::test(flavor = "current_thread")]
-async fn synthetic_prompt_commits_despite_blocking_hook() {
+#[test]
+fn synthetic_prompt_commits_despite_blocking_hook() {
+    on_session_stack(synthetic_prompt_commits_despite_blocking_hook_on_session_stack);
+}
+
+async fn synthetic_prompt_commits_despite_blocking_hook_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -695,8 +726,12 @@ async fn synthetic_prompt_commits_despite_blocking_hook() {
 
 /// Storage boundary: a blocked prompt never enters conversation history, so no later turn can carry it as context.
 /// The allow path still commits before the sampler runs.
-#[tokio::test(flavor = "current_thread")]
-async fn blocked_prompt_never_enters_chat_state() {
+#[test]
+fn blocked_prompt_never_enters_chat_state() {
+    on_session_stack(blocked_prompt_never_enters_chat_state_on_session_stack);
+}
+
+async fn blocked_prompt_never_enters_chat_state_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -793,6 +828,11 @@ fn spawn_persistence_capture(
                         sink.borrow_mut().push(s);
                     }
                 }
+                PersistenceMsg::AppendUpdateDurablyAndAck { update, respond_to } => {
+                    sink.borrow_mut()
+                        .push(serde_json::to_string(&update).unwrap());
+                    let _ = respond_to.send(Ok(()));
+                }
                 PersistenceMsg::ContentChunk(c) => sink.borrow_mut().push(format!("{c:?}")),
                 PersistenceMsg::Chat(item) => {
                     if let Ok(s) = serde_json::to_string(&item) {
@@ -809,8 +849,14 @@ fn spawn_persistence_capture(
 /// The strongest storage boundary: a blocked prompt's text reaches NO persistence channel.
 /// Chat-history rebuilds and resume scrollback replay both read the `updates.jsonl` stream.
 /// An allowed prompt's echo is the control proving the capture sees persistence traffic.
-#[tokio::test(flavor = "current_thread")]
-async fn blocked_prompt_never_reaches_persistence() {
+#[test]
+fn blocked_prompt_never_reaches_persistence_but_admission_receipt_does() {
+    on_session_stack(
+        blocked_prompt_never_reaches_persistence_but_admission_receipt_does_on_session_stack,
+    );
+}
+
+async fn blocked_prompt_never_reaches_persistence_but_admission_receipt_does_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -826,6 +872,19 @@ async fn blocked_prompt_never_reaches_persistence() {
             *actor.hook_registry.borrow_mut() = Some(std::sync::Arc::new(prompt_gate_registry(
                 "if grep -q secret; then echo 'not allowed' >&2; exit 2; fi",
             )));
+
+            let (respond_to, _response_rx) = oneshot::channel();
+            assert!(
+                !actor
+                    .queue_input(QueueInputRequest::from_input_origin(
+                        text_prompt("deploy the secret token"),
+                        "p-blocked".into(),
+                        InputOrigin::new(PromptOrigin::User),
+                        PromptMode::Agent,
+                        respond_to,
+                    ))
+                    .await
+            );
 
             let result = Box::pin(actor.handle_prompt(
                 "p-blocked",
@@ -851,6 +910,25 @@ async fn blocked_prompt_never_reaches_persistence() {
                 assert!(
                     !seen.iter().any(|s| s.contains("secret")),
                     "blocked text reached a persistence channel: {seen:?}"
+                );
+                let contents = seen.join("\n");
+                let replay = crate::session::storage::prepare_replay_lines(&contents, None);
+                let receipts: Vec<serde_json::Value> = replay
+                    .lines
+                    .into_iter()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter(|line| line["params"]["update"]["sessionUpdate"] == "prompt_accepted")
+                    .collect();
+                assert_eq!(
+                    receipts.len(),
+                    1,
+                    "hook rejection does not revoke actual admission"
+                );
+                assert_eq!(receipts[0]["params"]["update"]["prompt_id"], "p-blocked");
+                assert_eq!(receipts[0]["params"]["_meta"]["promptId"], "p-blocked");
+                assert_eq!(
+                    receipts[0]["params"]["sessionId"],
+                    actor.session_info.id.0.as_ref()
                 );
             }
 
@@ -1029,8 +1107,12 @@ async fn blocked_turn_preserves_redirect_marker() {
 
 /// A blocked turn consumes no prompt index: `prompt_index == prompt_texts.len()` is a rewind invariant.
 /// A gap would put rewind preview and edit-and-retry out of sync for every later prompt.
-#[tokio::test(flavor = "current_thread")]
-async fn blocked_prompt_consumes_no_prompt_index() {
+#[test]
+fn blocked_prompt_consumes_no_prompt_index() {
+    on_session_stack(blocked_prompt_consumes_no_prompt_index_on_session_stack);
+}
+
+async fn blocked_prompt_consumes_no_prompt_index_on_session_stack() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
