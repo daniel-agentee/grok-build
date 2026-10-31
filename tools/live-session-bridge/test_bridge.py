@@ -644,6 +644,54 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.seen.empty())
         await ws.close()
 
+    async def test_prompt_correlation_id_passes_through_with_resident_actor_guard(self):
+        ws = await self.connect()
+        await self.load(ws)
+        await ws.receive_json()
+        await self.seen.get()
+        await self.seen.get()
+        prompt_id = "60000000-0000-4000-8000-000000000001"
+        await ws.send_json({"jsonrpc": "2.0", "id": "correlated-prompt", "method": "session/prompt",
+                            "params": {"sessionId": "live-1", "prompt": [], "_meta": {"promptId": prompt_id}}})
+        # A rejection is a real baseline failure, rather than an unbounded queue wait.
+        forwarded_task = asyncio.create_task(self.seen.get())
+        reply_task = asyncio.create_task(ws.receive_json())
+        done, _ = await asyncio.wait([forwarded_task, reply_task], timeout=2, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            self.assertIn(forwarded_task, done, "The bridge must accept a strictly validated prompt correlation ID")
+            forwarded = json.loads(forwarded_task.result()["payload"])
+            self.assertEqual(forwarded["params"]["_meta"], {
+                "promptId": prompt_id, "x.ai/residentActorId": "actor-1"})
+        finally:
+            for task in [forwarded_task, reply_task]:
+                task.cancel()
+            await asyncio.gather(forwarded_task, reply_task, return_exceptions=True)
+            await ws.close()
+
+    async def test_prompt_correlation_metadata_rejects_malformed_ids_and_overrides(self):
+        ws = await self.connect()
+        await self.load(ws)
+        await ws.receive_json()
+        await self.seen.get()
+        await self.seen.get()
+        valid_id = "60000000-0000-4000-8000-000000000001"
+        for meta in [None, [], {"promptId": None}, {"promptId": 7}, {"promptId": ""},
+                     {"promptId": "a" * 5000}, {"promptId": "not-a-uuid"}, {"promptId": " " + valid_id},
+                     {"promptId": valid_id.replace("-", "")}, {"promptId": "{" + valid_id + "}"},
+                     {"promptId": valid_id, "mode": "agent"},
+                     {"promptId": valid_id, "x.ai/residentActorId": "invented"}]:
+            with self.subTest(meta_type=type(meta).__name__):
+                await ws.send_json({"jsonrpc": "2.0", "id": "bad-correlation", "method": "session/prompt",
+                                    "params": {"sessionId": "live-1", "prompt": [], "_meta": meta}})
+                self.assertIn("error", await asyncio.wait_for(ws.receive_json(), 2))
+                self.assertTrue(self.seen.empty())
+        for method in ["session/cancel", "session/set_model"]:
+            await ws.send_json({"jsonrpc": "2.0", "id": "wrong-method", "method": method,
+                                "params": {"sessionId": "live-1", "_meta": {"promptId": valid_id}}})
+            self.assertIn("error", await asyncio.wait_for(ws.receive_json(), 2))
+        self.assertTrue(self.seen.empty())
+        await ws.close()
+
     async def test_initialize_auth_and_read_methods_cannot_change_configuration(self):
         ws = await self.connect()
         for method, params in [

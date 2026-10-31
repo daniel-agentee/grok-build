@@ -179,6 +179,21 @@ SESSION_PARAM_KEYS = {
 }
 
 
+def valid_prompt_meta(meta: Any) -> bool:
+    """Allow correlation only; the bridge supplies the live actor assertion."""
+    if not isinstance(meta, dict) or meta.keys() - {"promptId"}:
+        return False
+    if "promptId" not in meta:
+        return True
+    identifier = meta["promptId"]
+    if not isinstance(identifier, str) or len(identifier) != 36:
+        return False
+    try:
+        return str(uuid.UUID(identifier)) == identifier.lower()
+    except ValueError:
+        return False
+
+
 def reject_nonfinite(value: str) -> None:
     raise ValueError("Non-finite numbers are not JSON")
 
@@ -1633,7 +1648,10 @@ class Bridge:
                     if params.keys() - SESSION_PARAM_KEYS[method]:
                         await ws.send_json(rpc_error(value, "Unsupported live-session parameters"))
                         continue
-                    if method != "session/load" and params.get("_meta", {}) != {}:
+                    meta = params.get("_meta", {})
+                    if method != "session/load" and not (
+                        valid_prompt_meta(meta) if method == "session/prompt" else meta == {}
+                    ):
                         await ws.send_json(
                             rpc_error(
                                 value,
@@ -1742,7 +1760,10 @@ class Bridge:
                     continue
                 # ACP responses to permission reverse-requests keep their original id.
                 if method in SESSION_METHODS:
+                    prompt_id = params.get("_meta", {}).get("promptId") if method == "session/prompt" else None
                     params["_meta"] = {"x.ai/residentActorId": attached[params["sessionId"]]}
+                    if prompt_id is not None:
+                        params["_meta"]["promptId"] = prompt_id
                 # Native leader handles first-answer-wins and broadcasts resolution.
                 if method == "initialize" and "id" in value:
                     initializing.add(request_key(value))
