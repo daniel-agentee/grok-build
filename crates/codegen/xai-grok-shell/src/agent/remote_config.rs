@@ -9,11 +9,10 @@ mod resolution;
 pub mod settings_get;
 pub(crate) mod task_model_policy;
 
+pub(in crate::agent::remote_config) use model_fetch_auth::resolve_live_models_cache_scope;
 pub(crate) use model_fetch_auth::{
-    ModelFetchAuth, external_provider_auth, models_fetch_enabled, task_model_error_for_catalog,
-};
-pub(in crate::agent::remote_config) use model_fetch_auth::{
-    resolve_live_models_cache_scope, resolve_models_cache_scope,
+    ModelFetchAuth, external_provider_auth, load_cached_models, models_fetch_enabled,
+    resolve_models_cache_scope, task_model_error_for_catalog,
 };
 pub(in crate::agent::remote_config) use prefetch::resolve_startup_endpoints;
 pub(crate) use prefetch::{

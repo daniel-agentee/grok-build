@@ -168,6 +168,14 @@ The final transport requires a **patched source build, Grok 1.0.45**, leader
 protocol **1**, Python **3.12**, and aiohttp **3.13.3**. The official source base is
 `xai-org/grok-build` commit `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`
 (monorepo `SOURCE_REV` `559751fdcec02d413e4c57c8832ab275e4f44980`).
+The specialist-profile R11 runtime includes subsequent shared-session/profile
+patches. Its exact clean patched commit, source tree and executable are resolved
+from the retained `r11-live-release.json` and the artifact's adjacent
+`final-committed-source-binding.receipt.json`; see the binding check and guarded
+launch recipe in [the profile guide](../../profiles/README.md#build-and-start).
+The iOS repository's historical `UPSTREAM_PIN` is a mirror input, not that tested
+native runtime. The older patch/build-manifest receipts below remain historical
+records and must not be substituted for the R11 artifact binding.
 The focused native patch advertises `x.ai/residentOnlyAttach` and
 `x.ai/residentActorIdentity`, with opt-in `_meta["x.ai/resident_only"]=true`
 load semantics. Attachment either

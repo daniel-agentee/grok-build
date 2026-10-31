@@ -140,7 +140,9 @@ fn config() -> Result<Config> {
     Ok(config)
 }
 fn catalog(cfg: &Config) -> indexmap::IndexMap<String, ModelEntry> {
-    crate::agent::remote_config::resolve_model_catalog(cfg, None)
+    let auth = cfg.create_auth_manager().current_or_expired();
+    let cached = crate::agent::remote_config::load_cached_models(&cfg.endpoints, auth.as_ref());
+    crate::agent::remote_config::resolve_model_catalog(cfg, cached.map(|c| c.models))
 }
 fn provider(entry: &ModelEntry) -> String {
     safe_provider(&entry.info.base_url)
@@ -932,6 +934,237 @@ pub(crate) fn admit_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_cached_catalog(test_name: &str, test: impl FnOnce(Config, &Path)) {
+        use crate::agent::remote_config::{ModelFetchAuth, resolve_models_cache_scope};
+        use xai_grok_cloud_config::remote_settings::ModelsCacheManager;
+        use xai_grok_test_support::EnvGuard;
+
+        const CHILD_ENV: &str = "GROK_TEST_PROFILE_CATALOG_CHILD";
+        let pass_marker = format!("profile-catalog-isolated-passed:{test_name}");
+        // grok_home() is process-cached. Re-exec with the private home already
+        // selected so earlier catalog tests cannot redirect this cache fixture.
+        if std::env::var(CHILD_ENV).ok().as_deref() != Some(test_name) {
+            let home = tempfile::tempdir().unwrap();
+            let filter = module_path!().split_once("::").unwrap().1;
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .env("GROK_HOME", home.path())
+                .env(CHILD_ENV, test_name)
+                .arg("--exact")
+                .arg(format!("{filter}::{test_name}"))
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .stdin(std::process::Stdio::null());
+            xai_tty_utils::detach_std_command(&mut command);
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success() && stdout.contains(&pass_marker),
+                "isolated catalog test failed:\n{stdout}\n{stderr}"
+            );
+            return;
+        }
+        let home = PathBuf::from(std::env::var_os("GROK_HOME").unwrap());
+        let _environment = [
+            EnvGuard::set(
+                "GROK_AUTH_PATH",
+                home.join("absent-auth.json").to_str().unwrap(),
+            ),
+            EnvGuard::unset("GROK_AUTH"),
+            EnvGuard::unset("GROK_CODE_XAI_API_KEY"),
+            EnvGuard::set("XAI_API_KEY", "profile-catalog-test-key"),
+        ];
+        let cfg = Config::default();
+        let auth = cfg.create_auth_manager().current_or_expired();
+        assert!(auth.is_none());
+        let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, auth.is_some());
+        assert_eq!(fetch_auth, ModelFetchAuth::ApiKey);
+        let scope = resolve_models_cache_scope(&cfg.endpoints, fetch_auth, auth.as_ref());
+        let models = ["cached-only-model", "grok-4.7-build-fast"]
+            .into_iter()
+            .map(|id| {
+                let mut info = crate::agent::config::ModelInfo::fallback(id);
+                info.base_url = "https://api.x.ai/v1".into();
+                info.hidden = false;
+                info.supports_reasoning_effort = true;
+                info.reasoning_efforts = vec![xai_grok_sampling_types::ReasoningEffortOption {
+                    id: "xhigh".into(),
+                    value: xai_grok_sampling_types::ReasoningEffort::Xhigh,
+                    label: "Extra high".into(),
+                    description: None,
+                    default: true,
+                }];
+                (
+                    id.into(),
+                    ModelEntry {
+                        info,
+                        mtls_cert_dir: None,
+                        api_key: None,
+                        env_key: None,
+                        auth_provider: None,
+                        api_base_url: None,
+                    },
+                )
+            })
+            .collect();
+        let cache = ModelsCacheManager::new();
+        assert_eq!(cache.path, home.join("models_cache.json"));
+        cache.persist(&models, None, &scope, chrono::Utc::now());
+        assert!(cache.load_fresh(&scope).is_some());
+        test(cfg, &cache.path);
+        println!("{pass_marker}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn profile_catalog_uses_fresh_scoped_cache_for_list_and_validation_siblings() {
+        with_cached_catalog(
+            "profile_catalog_uses_fresh_scoped_cache_for_list_and_validation_siblings",
+            |cfg, cache| {
+                let original_cache = std::fs::read(cache).unwrap();
+                let models = catalog(&cfg);
+                assert!(
+                    models.contains_key("cached-only-model"),
+                    "profile catalog must include the authenticated fresh cached catalog"
+                );
+                assert_eq!(effort_choices(&models["cached-only-model"]), ["xhigh"]);
+                assert_eq!(speed_choices("grok-4.7-build-fast", &models), ["fast"]);
+                let def = profile(json!({"name":"cached-profile","description":"Cached route",
+                "model":"grok-4.7-build-fast","effort":"xhigh","speed":"fast"}));
+                let cwd = cache.parent().unwrap();
+                assert!(validate_definition(&def, &cfg, cwd).is_empty());
+                assert_eq!(
+                    profile_value(&def, &cfg, cwd).unwrap()["validation"]["valid"],
+                    true
+                );
+                let policy = DelegationPolicy {
+                    mode: "automatic".into(),
+                    defaults: DelegationDefaults {
+                        model: Some("grok-4.7-build-fast".into()),
+                        effort: Some("xhigh".into()),
+                        speed: Some("fast".into()),
+                    },
+                };
+                assert!(validate_policy(&policy, &cfg).is_empty());
+                assert_eq!(policy_value(&policy, &cfg)["validation"]["valid"], true);
+                assert_eq!(
+                    edit_profile(
+                        cwd,
+                        &ProfileEdit {
+                            id: def.name.clone(),
+                            expected_revision: None,
+                            write_scope: "project".into(),
+                            definition: safe_definition(&def)
+                        },
+                        &cfg,
+                        false
+                    )
+                    .unwrap()["validation"]["valid"],
+                    true
+                );
+                assert_eq!(
+                    original_cache,
+                    std::fs::read(cache).unwrap(),
+                    "catalog reads must not renew or rewrite cache provenance"
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn profile_catalog_rejects_absent_stale_malformed_and_mismatched_cache() {
+        with_cached_catalog(
+            "profile_catalog_rejects_absent_stale_malformed_and_mismatched_cache",
+            |cfg, cache| {
+                let original: Value =
+                    serde_json::from_slice(&std::fs::read(cache).unwrap()).unwrap();
+                for (field, invalid) in [
+                    ("grok_version", json!("different-version")),
+                    ("auth_method", json!("session")),
+                    ("origin", json!("https://another-endpoint.invalid")),
+                    ("identity", json!("another-identity")),
+                    ("fetched_at", json!("2000-01-01T00:00:00Z")),
+                    ("renewed_at", json!("2000-01-01T00:00:00Z")),
+                ] {
+                    let mut changed = original.clone();
+                    changed[field] = invalid;
+                    std::fs::write(cache, serde_json::to_vec(&changed).unwrap()).unwrap();
+                    assert!(!catalog(&cfg).contains_key("cached-only-model"), "{field}");
+                }
+                std::fs::write(cache, b"malformed").unwrap();
+                assert!(!catalog(&cfg).contains_key("cached-only-model"));
+                std::fs::remove_file(cache).unwrap();
+                assert!(!catalog(&cfg).contains_key("cached-only-model"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn profile_catalog_uses_session_scope_before_an_available_api_key() {
+        use crate::agent::remote_config::{ModelFetchAuth, resolve_models_cache_scope};
+        use xai_grok_test_support::EnvGuard;
+
+        with_cached_catalog(
+            "profile_catalog_uses_session_scope_before_an_available_api_key",
+            |cfg, cache| {
+                let auth = xai_grok_login::GrokAuth::test_default();
+                let _auth = EnvGuard::set("GROK_AUTH", &serde_json::to_string(&auth).unwrap());
+                let actual_auth = cfg.create_auth_manager().current_or_expired().unwrap();
+                let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, true);
+                assert_eq!(fetch_auth, ModelFetchAuth::Session);
+                let scope =
+                    resolve_models_cache_scope(&cfg.endpoints, fetch_auth, Some(&actual_auth));
+                let mut cached: Value =
+                    serde_json::from_slice(&std::fs::read(cache).unwrap()).unwrap();
+                cached["auth_method"] = json!(scope.auth_method);
+                cached["origin"] = json!(scope.origin);
+                cached["identity"] = json!(scope.identity);
+                std::fs::write(cache, serde_json::to_vec(&cached).unwrap()).unwrap();
+                assert!(catalog(&cfg).contains_key("cached-only-model"));
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn profile_catalog_applies_model_policy_to_cached_routes() {
+        with_cached_catalog(
+            "profile_catalog_applies_model_policy_to_cached_routes",
+            |mut cfg, _| {
+                cfg.models.allowed_models = Some(vec!["cached-only-model".into()]);
+                let allowed = catalog(&cfg);
+                assert!(allowed.contains_key("cached-only-model"));
+                assert!(!allowed["grok-4.7-build-fast"].info.user_selectable);
+                assert!(
+                    !validate_settings(Some("grok-4.7-build-fast"), None, None, &allowed)
+                        .is_empty()
+                );
+                cfg.models.allowed_models = None;
+                cfg.models.hidden_models = Some(vec!["cached-only-model".into()]);
+                let hidden = catalog(&cfg);
+                assert!(hidden["cached-only-model"].info.hidden);
+                assert!(
+                    !validate_settings(Some("cached-only-model"), None, None, &hidden).is_empty()
+                );
+                cfg.models.disabled_models = Some(vec!["cached-only-model".into()]);
+                assert!(!catalog(&cfg).contains_key("cached-only-model"));
+                cfg.models.disabled_models = None;
+                cfg.models.hidden_models = None;
+                cfg.models.allowed_models = Some(vec!["grok-4.7-build-fast".into()]);
+                cfg.requirements.allowed_models.pin(
+                    crate::agent::config::AllowlistPin::List(vec!["cached-only-model".into()]),
+                    crate::config::RequirementSource::Unknown,
+                );
+                let fleet = catalog(&cfg);
+                assert!(fleet["cached-only-model"].info.user_selectable);
+                assert!(!fleet["grok-4.7-build-fast"].info.user_selectable);
+            },
+        );
+    }
 
     fn profile(value: Value) -> AgentDefinition {
         AgentDefinition::from_json(&value).expect("valid test profile")

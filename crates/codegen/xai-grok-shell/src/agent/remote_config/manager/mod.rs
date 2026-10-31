@@ -11,9 +11,9 @@ use agent_client_protocol as acp;
 use super::{
     CatalogSource, HttpModelsEndpoint, ModelFetchAuth, ModelsCacheManager, ModelsCacheScope,
     ModelsEndpoint, allowlist_excludes_all_message, allowlist_matches_nothing, available_models,
-    fallback_model_id, is_campaign_only_flip, models_endpoint_empty_message, models_fetch_enabled,
-    resolve_catalog_key, resolve_default_model, resolve_model_catalog, resolve_models_cache_scope,
-    task_model_error_for_catalog, validate_selectable,
+    fallback_model_id, is_campaign_only_flip, load_cached_models, models_endpoint_empty_message,
+    models_fetch_enabled, resolve_catalog_key, resolve_default_model, resolve_model_catalog,
+    resolve_models_cache_scope, task_model_error_for_catalog, validate_selectable,
 };
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
 use crate::agent::remote_config::task_model_policy::{
@@ -251,20 +251,11 @@ impl ModelsManager {
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
-        let has_session = auth_manager.current_or_expired().is_some();
-        let is_session_auth = auth_manager
-            .current_or_expired()
-            .is_some_and(|a| a.is_session_auth());
-        let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, has_session);
-        let scope = resolve_models_cache_scope(
-            &cfg.endpoints,
-            fetch_auth,
-            auth_manager.current_or_expired().as_ref(),
-        );
+        let auth = auth_manager.current_or_expired();
+        let is_session_auth = auth.as_ref().is_some_and(|a| a.is_session_auth());
         let mut cached_etag = None;
         let prefetched_models = prefetched_models.or_else(|| {
-            let cache = ModelsCacheManager::new();
-            cache.load_fresh(&scope).map(|c| {
+            load_cached_models(&cfg.endpoints, auth.as_ref()).map(|c| {
                 cached_etag = c.etag;
                 c.models
             })

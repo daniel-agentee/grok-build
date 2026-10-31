@@ -16,9 +16,13 @@ The compatible native source is Grok Build **1.0.45**, based on official commit
 `559751fdcec02d413e4c57c8832ab275e4f44980`), plus this checkout's shared-session
 and specialist-profile changes. The original iOS repository's `UPSTREAM_PIN`
 is not the native build input. The tested compiler is Rust/Cargo **1.94.0**.
-R9 is the compatible native/bridge revision for queue recovery and
-client-generated prompt IDs; the immutable release receipt records its exact
-clean source commit and executable SHA256.
+R11 adds the authenticated catalog-cache fix to the shared-session, queue recovery
+and client-generated prompt-ID changes. The acceptance run's immutable
+`r11-live-release.json` and adjacent `final-committed-source-binding.receipt.json`
+identify the exact patched source commit/tree, executable SHA256, source manifests
+and scoped test receipts. Read those records together; a version string alone
+does not identify the patched executable. The original iOS mirror pin is
+historical provenance, not the native runtime selected by those records.
 Use this branch and its `Cargo.lock`; a feature-only diff applied to stock Grok
 does not include the earlier shared-session prerequisites.
 
@@ -41,16 +45,58 @@ starting, stops below 16 GiB free or above 24 GiB in its owned target, and uses:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/absolute/owned/target \
-  cargo +1.94.0 test --locked -p xai-grok-shell -p xai-grok-pager -p xai-tool-types -p xai-grok-agent --lib --no-run
+  cargo +1.94.0 test --locked -p xai-grok-shell --lib --no-run --message-format=json
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/absolute/owned/target \
   cargo +1.94.0 build --locked -p xai-grok-pager-bin --bin xai-grok-pager
 ```
 
-The release receipt and SHA-checked test logs identify the exact invocation,
-source manifest and scoped test selectors. Transfer the stripped executable
+R11's diff-scoped test selectors are `profiles::tests::` and
+`agent::remote_config::manager::tests::`, run from the resulting shell test
+executable. The release receipt and SHA-checked test logs identify the exact
+invocation, source manifest and scoped test selectors. Transfer the stripped executable
 back once, verify its SHA256, and launch it against existing Mac authentication.
-Headless live fixtures require at least 9.5 GiB free before launch, an 8 GiB
-runtime floor, at most 1 GiB owned growth and a 45-minute lifetime.
+Headless live fixtures require 10.5 GiB physical free before launch and a 10 GiB
+runtime floor, including the reserved 1 GiB backup staging allowance. Native and
+Hub growth are each bounded to 128 MiB; Simulator growth is bounded to 256 MiB.
+The shared native fixture has a maximum 45-minute lifetime.
+
+To resolve the exact R11 executable without hardcoding a source commit inside
+itself, set `RELEASE` to the retained `r11-live-release.json`, then inspect and
+verify its source/artifact binding before using the launch commands below:
+
+```sh
+python3 - "$RELEASE" <<'PY'
+import hashlib, json, pathlib, sys
+release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+binary = pathlib.Path(release["binary"])
+binding_path = binary.parent / "final-committed-source-binding.receipt.json"
+binding = json.loads(binding_path.read_text())
+assert hashlib.sha256(binding_path.read_bytes()).hexdigest() == release["committedSourceBindingSha256"]
+assert hashlib.sha256(binary.read_bytes()).hexdigest() == release["binarySha256"] == binding["sha256"]
+assert release["head"] == binding["sourceHead"]
+print(json.dumps({"binary": str(binary), "sourceHead": binding["sourceHead"], "sourceTree": binding["sourceTree"]}))
+PY
+```
+
+The R11 acceptance helpers retained beside that release receipt are
+`r11-genuine-catalog-prefetch.py`, `r11-live-supervisor.py` and
+`r11-live-check.py`. The supervisor starts the bound leader, a real Terminal and
+the authenticated bridge on `127.0.0.1:18749`; it verifies the source/artifact
+binding and enforces the limits above. Its exact launch is
+`python3 r11-live-supervisor.py --mode full --root /private/tmp/FRESH_SHORT_NAME --run-id UNIQUE_RUN_ID`
+from the evidence directory. An existing root is refused. The final external
+report records the actual paths, run IDs, literal hashes and observed behavior.
+
+Profile listing and validation share native runtime's versioned, authenticated
+model cache. Only a fresh cache with matching authentication mode, origin and
+credential identity is admitted, then normal model/fleet policy still applies.
+These disk-only commands neither fetch nor renew the cache. A genuine no-prompt
+bootstrap uses native initialize, cached-token authentication and `session/new`
+before handing the unchanged cache to the Hub within its 300-second TTL.
+Absent, stale, malformed or mismatched caches do not authorize cached-only routes.
+The fixture retains default managed/system policy, uses private
+`fail_closed = true` / `strict_known_marketplaces = []` requirements, and sets only
+`GROK_OFFICIAL_MARKETPLACE_AUTO_REGISTER=0` for marketplace behavior.
 
 A named profile owns its saved model and reasoning defaults. Do not combine
 `--agent cfo` with `--model` or `--reasoning-effort`; edit the profile first or

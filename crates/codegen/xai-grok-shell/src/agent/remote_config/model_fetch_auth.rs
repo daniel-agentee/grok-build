@@ -58,7 +58,18 @@ impl ModelFetchAuth {
     }
 }
 
-pub(in crate::agent::remote_config) fn resolve_models_cache_scope(
+/// Read the same versioned, fresh, credential-scoped catalog at runtime startup
+/// and in disk-only control-plane commands. This never fetches or renews it.
+pub(crate) fn load_cached_models(
+    endpoints: &config::EndpointsConfig,
+    auth: Option<&GrokAuth>,
+) -> Option<xai_grok_cloud_config::remote_settings::CacheResult<ModelEntry>> {
+    let fetch_auth = ModelFetchAuth::resolve(endpoints, auth.is_some());
+    let scope = resolve_models_cache_scope(endpoints, fetch_auth, auth);
+    super::ModelsCacheManager::new().load_fresh(&scope)
+}
+
+pub(crate) fn resolve_models_cache_scope(
     endpoints: &config::EndpointsConfig,
     fetch_auth: ModelFetchAuth,
     auth: Option<&GrokAuth>,
