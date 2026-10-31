@@ -366,6 +366,47 @@ def test_explicit_claude_reference_import_allows_distinct_case_variant(
     assert not (grok_home / "agents/cfo.md").exists()
 
 
+@pytest.mark.parametrize("home_override", [None, "", "custom"])
+@pytest.mark.parametrize("existing_target", [False, True])
+def test_import_collision_check_uses_native_home_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    home_override: str | None, existing_target: bool,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    grok_home = tmp_path / "custom-grok" if home_override == "custom" else home / ".grok"
+    if home_override is None:
+        monkeypatch.delenv("GROK_HOME", raising=False)
+    else:
+        monkeypatch.setenv("GROK_HOME", str(grok_home) if home_override else "")
+    unrelated = tmp_path / "unrelated-working-directory"
+    decoy = unrelated / "agents/cfo.md"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("Unrelated file must not affect the native import target")
+    monkeypatch.chdir(unrelated)
+    source = home / ".claude/agents/CFO.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Original Claude role")
+    target = grok_home / "agents/cfo.md"
+    if existing_target:
+        target.parent.mkdir(parents=True)
+        target.write_text("Existing Grok role")
+    row = {"id": "CFO", "revision": "r1", "sourcePath": str(source), "validation": {"valid": True}}
+    definition = {"promptFiles": [str(source)]}
+    with patch.object(IMPORT, "grok_json", side_effect=[{"profiles": [row]}, {}, {}]) as native:
+        if existing_target:
+            with pytest.raises(ValueError, match="Existing profile"):
+                IMPORT.apply_definitions("grok", tmp_path, {"cfo": definition}, False)
+            assert native.call_count == 1
+        else:
+            assert IMPORT.apply_definitions("grok", tmp_path, {"cfo": definition}, False) == ["cfo"]
+            assert native.call_args_list[-1].args[3]["expectedRevision"] is None
+    assert source.read_text() == "Original Claude role"
+    assert decoy.read_text() == "Unrelated file must not affect the native import target"
+    if existing_target:
+        assert target.read_text() == "Existing Grok role"
+
+
 @pytest.mark.parametrize("existing_target", [False, True])
 def test_case_variant_exemption_requires_explicit_reference_and_absent_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_target: bool,

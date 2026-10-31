@@ -250,7 +250,7 @@ def apply_definitions(
                 raise ValueError("Native profile catalog identity or revision is malformed; nothing was written")
     if scope not in ("user", "project"):
         raise ValueError("Import scope must be user or project")
-    target_dir = (Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok"))) / "agents"
+    target_dir = (Path(os.environ.get("GROK_HOME") or Path.home() / ".grok") / "agents"
                   if scope == "user" else cwd / ".grok" / "agents")
     target_ids = set()
     target_store = path_key(target_dir) + os.sep
