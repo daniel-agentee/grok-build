@@ -15,7 +15,10 @@ The compatible native source is Grok Build **1.0.45**, based on official commit
 `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` (`SOURCE_REV`
 `559751fdcec02d413e4c57c8832ab275e4f44980`), plus this checkout's shared-session
 and specialist-profile changes. The original iOS repository's `UPSTREAM_PIN`
-is not the native build input. The local compiler is Rust/Cargo **1.94.0**.
+is not the native build input. The tested compiler is Rust/Cargo **1.94.0**.
+R9 is the compatible native/bridge revision for queue recovery and
+client-generated prompt IDs; the immutable release receipt records its exact
+clean source commit and executable SHA256.
 Use this branch and its `Cargo.lock`; a feature-only diff applied to stock Grok
 does not include the earlier shared-session prerequisites.
 
@@ -30,18 +33,42 @@ python3 scripts/profiles/install-routing-skill.py
 /private/durable/path/grok --agent cfo --cwd /absolute/workspace
 ```
 
+For this acceptance run, compilation and Rust tests run on `m1-worker`, using
+strict known-host SSH, one build job and no incremental compilation. Copy only
+the pinned tracked checkout/lockfile to that host; keep Mac login and provider
+credentials on the Mac. The guarded build requires at least 40 GiB free before
+starting, stops below 16 GiB free or above 24 GiB in its owned target, and uses:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/absolute/owned/target \
+  cargo +1.94.0 test --locked -p xai-grok-shell -p xai-grok-pager -p xai-tool-types -p xai-grok-agent --lib --no-run
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/absolute/owned/target \
+  cargo +1.94.0 build --locked -p xai-grok-pager-bin --bin xai-grok-pager
+```
+
+The release receipt and SHA-checked test logs identify the exact invocation,
+source manifest and scoped test selectors. Transfer the stripped executable
+back once, verify its SHA256, and launch it against existing Mac authentication.
+Headless live fixtures require at least 9.5 GiB free before launch, an 8 GiB
+runtime floor, at most 1 GiB owned growth and a 45-minute lifetime.
+
 A named profile owns its saved model and reasoning defaults. Do not combine
 `--agent cfo` with `--model` or `--reasoning-effort`; edit the profile first or
 start General. A normal stock Terminal harness keeps its ordinary model controls.
 General subagents expose `model`, `reasoning_effort` and `speed` to the parent;
 named subagent defaults may be selected explicitly through those same fields.
-Only catalog-supported choices pass native admission. In this version `fast`
-uses the catalog's `grok-4.7-build-fast` variant; it does not invent a provider
+Only catalog-supported choices pass native admission. When the authenticated
+catalog advertises it, `fast` uses its `grok-4.7-build-fast` variant; it does not invent a provider
 service tier. Other models use `standard` and reject unsupported fast requests.
 The fast-only variant advertises only `fast`; explicitly requesting `standard`
 with that variant is refused without substituting the base model.
 Fast routing also requires the base and fast variant to use the same provider
 endpoint; a model name alone never authorizes a provider change.
+Check every advertised model/reasoning/speed combination in the acceptance
+account's current live catalog before selecting a Fast test route. A catalog
+without an authenticated Fast route is a capability limitation, not proof of
+Fast inference; no silent standard fallback or additional provider credentials
+are used to bypass it.
 With a first-party-only catalog, parent model selection requires
 `[features] subagent_model_inheritance = false` in native config. An enabled
 inheritance restriction continues to hide and refuse explicit parent model
@@ -151,15 +178,42 @@ reference or provider lacking its own credentials returns a clear refusal before
 workspace/child creation. The parent may inspect the current catalog and make an
 explicit valid retry. No automatic provider fallback is performed.
 
-Runtime `subagent_spawned`/`subagent_finished` updates and foreground/background
-tool results carry the actual execution fields, so Terminal and phone can show
-the admitted settings even when they differ from a display default. Metadata
+Runtime `subagent_spawned` updates and foreground/background tool results carry
+the actual execution fields, so Terminal and phone can show the admitted
+settings even when they differ from a display default. `subagent_finished`
+identifies the same child/attempt; clients retain that attempt's admitted
+settings rather than expecting a second execution payload. Metadata
 also reaches the parent's model-visible completion, admitted failure, background
 wake and polling results as a `<subagent_execution>` JSON block. These paths use the same metadata
 formatter as the display result, so the parent can report what actually ran.
 Metadata never contains provider credentials. The original permission and tool restrictions
 still apply; profile identity is not a credential sandbox or an authorization to
 send Slack messages.
+
+### Live queue recovery
+
+`session/load` (including `x.ai/resident_only`) and `session/resume` republish
+the same resident actor's current `x.ai/queue/changed` notification after
+history replay. It includes the accepted `entries[].id`, version, owner, kind
+and position, plus `runningPromptId` and its display fields. An empty snapshot
+is authoritative and clears completed/cancelled queue rows. Queue notifications
+are transient; replaying saved conversation lines alone cannot reconstruct them.
+
+The actor samples and enqueues this snapshot under its queue-state lock,
+without a network await. A change during history replay is therefore sampled
+at mailbox service time. The leader subscribes the loading client and buffers
+live notifications before forwarding load; it flushes snapshots and subsequent
+mutations in order after the load response. Replay event-ID cutoffs do not
+discard these unsequenced snapshots. Queue text stays scoped to subscribers of
+that session, including its already-attached Terminal.
+
+The authenticated phone bridge accepts an optional canonical UUID string at
+`session/prompt._meta.promptId`, forwards it alongside the bridge-owned
+`x.ai/residentActorId`, and rejects other client metadata/overrides. Native
+queue/running updates and persisted user-message metadata preserve this prompt
+identity. The phone reconciles ambiguous delivery only against the same source,
+session, verified actor and prompt ID, so identical prompt text is insufficient
+to confirm a different send. Reconnect never resubmits an ambiguous prompt.
 
 The isolated acceptance harness boots a real interactive Terminal and native
 leader in a disposable Git workspace using the Mac's existing authentication:
@@ -246,18 +300,35 @@ Historical seat launch, permission and Slack-watchdog prose does not change the
 native admitted settings or register a newly spawned child as that persistent
 seat. Existing seats, inbox routing and bot watchers are preserved.
 
-Slack identity uses `botKey`, `botUserId` and an `env:NAME` or
-`op://vault/item/field` credential reference. Avatars accept the native bounded
-emoji form or an HTTPS URL without credentials, query parameters or fragments.
-The importer never reads token files. Identity metadata does not authorize a
-Slack send or provide credential isolation. The runtime must resolve references
-in its approved credential path and preserve permission checks.
-For the imported C-level roles, their existing source instructions use the shared
-`~/.agentee-hub/bin/seat-bot.py <botKey>` workflow. That helper loads the selected
-bot's token internally from `~/.grok/<botKey>-slack.env`; its key is `cro`, even
-though Slack displays the CRO bot's handle as `cso`. A generic profile's custom
-credential reference still requires an authorized workflow capable of resolving
-that reference. Setting metadata alone does not create a new Slack integration.
+Slack identity uses `botKey`, `botUserId` and the explicit matching reference
+`seat-bot:<botKey>`. Imported C-level roles use their existing
+`~/.agentee-hub/bin/seat-bot.py <botKey>` workflow. This helper loads only the
+selected bot's token from its private `~/.grok/<botKey>-slack.env`, using the key
+`<BOTKEY>_SLACK_BOT_TOKEN`; the CRO key is `cro`, although Slack displays its
+handle as `cso`. There is no default-bot fallback. Before child/workspace
+allocation, Task admission checks the matching binding, ownership, file type and
+permissions, then runs a bounded local helper/token-readiness probe. Network
+calls are blocked before the trusted Python helper is imported, and subprocess
+stdout/stderr are discarded. This is a local readiness check, not Slack
+authentication or an OS sandbox for arbitrary helper code.
+The same admission check protects inline, named and CLI/config primary-session
+creation before persistence/workspace setup, so refusal leaves no empty saved
+conversation. A nonserializable 30-second proof tied to the exact profile source,
+revision and bot identity avoids importing the helper twice during one admission;
+it is never accepted from JSON or retained across persisted history/reconnects.
+Profile lists, command loading and the ACP handshake do not run credential probes.
+
+Portable profile validation still accepts reference-only `env:NAME` and
+`op://vault/item/field` syntax, without reading credentials or implying runtime
+readiness. Task admission refuses those unsupported bindings and mismatches
+cleanly; the parent must select a supported profile or explicitly correct its
+binding and retry. The importer requires the matching `seat-bot:` binding and
+never reads token files. The runtime prompt names the exact selected helper and
+its supported commands with message text on stdin. Identity metadata neither
+authorizes sending nor registers a persistent seat, changes inbox routing or
+provides credential isolation. Existing permission checks remain in force.
+Avatars accept the native bounded emoji form or an HTTPS URL without credentials,
+query parameters or fragments.
 
 Policy modes are `automatic` (named profiles and General), `profiles-only`, and
 `general-only`. Defaults fill absent settings. Edits apply to future child

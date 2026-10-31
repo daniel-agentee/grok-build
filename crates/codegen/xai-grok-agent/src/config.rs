@@ -744,6 +744,10 @@ pub struct AgentDefinition {
     /// Display and channel identity. References contain no credential values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<ProfileIdentity>,
+    /// Short-lived proof for this one in-memory admission; never accepted from
+    /// profile JSON or persisted with a frozen definition.
+    #[serde(skip)]
+    pub(crate) admitted_slack_binding: Option<crate::profile_identity::ResolvedSlackBinding>,
     /// Referenced role bodies, resolved once before building an agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_files: Vec<PathBuf>,
@@ -1585,6 +1589,7 @@ impl AgentDefinition {
             effort: None,
             speed: None,
             identity: None,
+            admitted_slack_binding: None,
             prompt_files: vec![],
             rule_files: vec![],
             applied_profile_revision: None,

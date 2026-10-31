@@ -48,6 +48,127 @@ fn ids(wire: &[crate::session::prompt_queue::QueueEntryWire]) -> Vec<String> {
     wire.iter().map(|e| e.id.clone()).collect()
 }
 
+async fn next_queue_snapshot(
+    gateway: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) -> crate::session::prompt_queue::QueueChanged {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while let Some(message) = gateway.recv().await {
+            if let xai_acp_lib::AcpClientMessage::ExtNotification(message) = message
+                && message.request.method.as_ref()
+                    == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
+            {
+                return serde_json::from_str(message.request.params.get()).unwrap();
+            }
+        }
+        panic!("gateway closed before queue snapshot");
+    })
+    .await
+    .expect("queue snapshot must not wait for model/tool/network work")
+}
+
+#[tokio::test]
+async fn attach_queue_snapshot_reads_current_ids_versions_kind_and_running_state() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, mut gateway) = build_actor().await;
+            let mut state = actor.state.lock().await;
+            state
+                .pending_inputs
+                .push_back(user_item("running", "terminal"));
+            state
+                .pending_inputs
+                .push_back(bash_item("phone-accepted-id", "phone", "pwd"));
+            state.running_task = Some(running_task_stub("running"));
+            let snapshot_actor = actor.clone();
+            let snapshot = tokio::task::spawn_local(async move {
+                snapshot_actor.publish_prompt_queue_snapshot().await;
+            });
+            tokio::task::yield_now().await;
+            assert!(
+                !snapshot.is_finished(),
+                "snapshot must share the queue state lock"
+            );
+            // A change made while an attaching reader is waiting must be in its
+            // snapshot, rather than a copy captured before history replay.
+            let row = state
+                .pending_inputs
+                .get_mut(1)
+                .unwrap()
+                .queue_meta
+                .as_mut()
+                .unwrap();
+            row.version = 7;
+            row.last_editor = Some("terminal".into());
+            row.text = "pwd -P".into();
+            drop(state);
+            snapshot.await.unwrap();
+            let current = next_queue_snapshot(&mut gateway).await;
+            assert_eq!(current.session_id, actor.session_info.id.0.as_ref());
+            assert_eq!(current.running_prompt_id.as_deref(), Some("running"));
+            assert_eq!(current.running_text.as_deref(), Some("text for running"));
+            assert_eq!(current.running_kind.as_deref(), Some("prompt"));
+            assert_eq!(current.entries.len(), 1);
+            let row = &current.entries[0];
+            assert_eq!(row.id, "phone-accepted-id");
+            assert_eq!(row.version, 7);
+            assert_eq!(row.owner.as_deref(), Some("phone"));
+            assert_eq!(row.last_editor.as_deref(), Some("terminal"));
+            assert_eq!(row.kind, "bash");
+            assert_eq!(row.text, "pwd -P");
+            assert_eq!(row.position, 0);
+            let state = actor.state.lock().await;
+            assert_eq!(
+                state.pending_inputs.len(),
+                2,
+                "snapshot must not dequeue or execute"
+            );
+            state.running_task.as_ref().unwrap().abort();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn attach_queue_snapshot_does_not_resurrect_removed_or_completed_prompts() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, mut gateway) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state
+                    .pending_inputs
+                    .push_back(user_item("running", "terminal"));
+                state
+                    .pending_inputs
+                    .push_back(user_item("phone-accepted-id", "phone"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+            actor.publish_prompt_queue_snapshot().await;
+            let accepted = next_queue_snapshot(&mut gateway).await;
+            assert_eq!(ids(&accepted.entries), ["phone-accepted-id"]);
+            actor
+                .handle_remove_queued_prompt("phone-accepted-id", 0, None)
+                .await;
+            let removed = next_queue_snapshot(&mut gateway).await;
+            assert!(removed.entries.is_empty());
+            actor.publish_prompt_queue_snapshot().await;
+            let after_remove = next_queue_snapshot(&mut gateway).await;
+            assert!(after_remove.entries.is_empty());
+            assert_eq!(after_remove.running_prompt_id.as_deref(), Some("running"));
+            {
+                let mut state = actor.state.lock().await;
+                state.running_task.take().unwrap().abort();
+                state.pending_inputs.clear();
+            }
+            actor.publish_prompt_queue_snapshot().await;
+            let completed = next_queue_snapshot(&mut gateway).await;
+            assert!(completed.entries.is_empty());
+            assert!(completed.running_prompt_id.is_none());
+            assert!(completed.running_text.is_none());
+            assert!(completed.running_kind.is_none());
+        })
+        .await;
+}
+
 fn protected_item(id: &str) -> InputItem {
     let mut item = user_item(id, "protected");
     item.queue_mutation_policy = QueueMutationPolicy::new(true, false);

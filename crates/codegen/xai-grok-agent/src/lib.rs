@@ -11,6 +11,7 @@ pub mod config;
 pub mod discovery;
 pub mod error;
 pub mod plugins;
+mod profile_identity;
 pub mod prompt;
 pub mod repo;
 pub mod system_reminder;

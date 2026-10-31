@@ -397,6 +397,8 @@ pub enum SessionCommand {
     },
     /// Sent when a client attaches to a resident session, which the transient `SessionStatus` notification would otherwise never reach.
     EmitStatusSnapshot,
+    /// Republish the live prompt queue on attach; queue notifications are transient and cannot be replayed from history.
+    PublishPromptQueueSnapshot,
     /// Resume hook: after a session is restored with `awaiting_plan_approval == true`, re-issue the `exit_plan_mode` reverse-request.
     /// The client then re-shows its approval UI over a real live waiter.
     /// Fire-and-forget; the actor spawns the round-trip and the decision.

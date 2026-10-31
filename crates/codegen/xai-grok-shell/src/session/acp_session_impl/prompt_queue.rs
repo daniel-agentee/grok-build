@@ -447,6 +447,13 @@ impl SessionActor {
         out
     }
 
+    /// Read at actor-mailbox service time so changes during history replay are included.
+    /// Capture and enqueue under one state lock, without awaiting network I/O, so a later queue mutation cannot be followed by a stale snapshot.
+    pub(super) async fn publish_prompt_queue_snapshot(&self) {
+        let state = self.state.lock().await;
+        self.broadcast_queue_changed(&state);
+    }
+
     /// Broadcast the current authoritative prompt queue to all subscribers.
     /// The notification goes fire-and-forget through the gateway and carries `sessionId` so session routing fans it to every attached client.
     /// It is never persisted.

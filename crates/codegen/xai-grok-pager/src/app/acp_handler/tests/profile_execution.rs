@@ -37,7 +37,11 @@ fn profile_execution_display_uses_actual_attempt_over_legacy_model_default() {
     let RenderBlock::Subagent(block) = &row.block else {
         panic!("Expected the spawned child row");
     };
-    assert_eq!(block.model.as_deref(), Some(actual.display().as_str()));
+    assert_eq!(
+        block.model.as_deref(),
+        Some("cfo · api.x.ai · grok-4.7-build-fast · low · fast"),
+        "the deterministic child row must show actual profile identity and all admitted settings"
+    );
     assert!(
         !block
             .model

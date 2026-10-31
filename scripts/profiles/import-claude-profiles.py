@@ -43,15 +43,13 @@ def checked_identity(identity: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(refused)
     if any(not isinstance(value, str) for value in slack.values()):
         raise ValueError(refused)
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", slack["botKey"]) or not re.fullmatch(
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,96}", slack["botKey"]) or not re.fullmatch(
         r"U[A-Z0-9]+", slack["botUserId"]
     ):
         raise ValueError(refused)
     reference = slack["credentialRef"]
-    env_reference = re.fullmatch(r"env:[A-Z_][A-Z0-9_]*", reference)
-    op_reference = re.fullmatch(r"op://[^/\r\n?#]+/[^/\r\n?#]+/[^/\r\n?#]+", reference)
-    if not env_reference and not op_reference:
-        raise ValueError(refused)
+    if reference != f"seat-bot:{slack['botKey']}":
+        raise ValueError("Imported roles require the explicit matching seat-bot:BOT_KEY credential reference; arbitrary env: and op:// references are not resolved by the seat helper")
     if not valid_avatar(identity["avatar"]):
         raise ValueError(refused)
     return identity

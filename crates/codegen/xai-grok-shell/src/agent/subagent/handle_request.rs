@@ -653,6 +653,13 @@ async fn run_shell_child_inner(
             None,
         );
     }
+    if let Err(error) = definition.admit_slack_identity().await {
+        return child_run_output(
+            failure_result(&request, &error.to_string()),
+            completion_data,
+            None,
+        );
+    }
     if let Err(_) = definition.resolve_prompt_references(&ctx.parent_cwd) {
         return child_run_output(
             failure_result(

@@ -156,6 +156,12 @@ fn valid_credential_ref(reference: &str) -> bool {
         !v.is_empty()
             && v.chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    }) || reference.strip_prefix("seat-bot:").is_some_and(|key| {
+        !key.is_empty()
+            && key.len() <= 96
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     }) || (reference.starts_with("op://")
         && !reference.contains(['\n', '\r'])
         && reference.len() < 512)
@@ -480,7 +486,7 @@ fn validate_definition(def: &AgentDefinition, cfg: &Config, cwd: &Path) -> Vec<S
         && let Some(reference) = &slack.credential_ref
     {
         if !valid_credential_ref(reference) {
-            errors.push("Slack credentialRef must be an env:VARIABLE or op:// reference, never a credential value.".into());
+            errors.push("Slack credentialRef must be a seat-bot:BOT_KEY, env:VARIABLE or op:// reference, never a credential value. Runtime currently supports only the matching seat-bot binding.".into());
         }
     }
     if def
@@ -1103,6 +1109,38 @@ mod tests {
         let exported = safe_definition(&def);
         assert_eq!(exported["model"], "inherit");
         assert!(AgentDefinition::from_json(&exported).is_ok());
+    }
+
+    #[test]
+    fn profile_slack_reference_validation_is_portable_and_does_not_claim_readiness() {
+        for reference in [
+            "seat-bot:cfo",
+            "seat-bot:Finance_1",
+            "env:CFO_SLACK_BOT_TOKEN",
+            "op://Private/CFO/token",
+        ] {
+            assert!(valid_credential_ref(reference));
+            let def = profile(
+                json!({"name":"cfo","description":"Finance","identity":{"slack":{"botKey":"cfo","botUserId":"UTESTCFO","credentialRef":reference}}}),
+            );
+            assert!(validate_definition(&def, &Config::default(), Path::new(".")).is_empty());
+            assert_eq!(
+                safe_definition(&def)["identity"]["slack"]["credentialRef"],
+                reference
+            );
+        }
+        for reference in [
+            "seat-bot:",
+            "seat-bot:../cfo",
+            "seat-bot:cfo\n",
+            "private-token-material",
+        ] {
+            assert!(!valid_credential_ref(reference));
+        }
+        assert!(!valid_credential_ref(&format!(
+            "seat-bot:{}",
+            "x".repeat(97)
+        )));
     }
 
     #[test]

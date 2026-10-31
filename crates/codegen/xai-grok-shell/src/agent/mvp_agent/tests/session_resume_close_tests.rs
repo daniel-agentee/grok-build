@@ -127,6 +127,108 @@ fn resident_request(sid: &acp::SessionId, cwd: &std::path::Path) -> acp::LoadSes
 }
 
 #[test]
+fn session_attach_republishes_authoritative_empty_prompt_queue() {
+    super::run_local_for_bridge_test(|| async {
+        let auth_home = tempfile::tempdir().unwrap();
+        let auth = std::sync::Arc::new(xai_grok_login::AuthManager::new(
+            auth_home.path(),
+            xai_grok_login::GrokComConfig::default(),
+        ));
+        let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = super::super::MvpAgent::new(
+            xai_acp_lib::AcpAgentGatewaySender::new(gateway_tx),
+            &crate::agent::config::Config::default(),
+            auth,
+            None,
+            None,
+        )
+        .unwrap();
+        let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::unbounded_channel();
+        let collector = tokio::task::spawn_local(async move {
+            while let Some(message) = gateway_rx.recv().await {
+                match message {
+                    xai_acp_lib::AcpClientMessage::ExtNotification(message) => {
+                        if message.request.method.as_ref()
+                            == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
+                        {
+                            let snapshot: crate::session::prompt_queue::QueueChanged =
+                                serde_json::from_str(message.request.params.get()).unwrap();
+                            let _ = snapshot_tx.send(snapshot);
+                        }
+                        let _ = message.response_tx.send(Ok(()));
+                    }
+                    xai_acp_lib::AcpClientMessage::SessionNotification(message) => {
+                        let _ = message.response_tx.send(Ok(()));
+                    }
+                    // Drop reverse requests rather than granting permissions in this test.
+                    _ => {}
+                }
+            }
+        });
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = super::new_root_session(&agent, cwd.path()).await;
+        let original_actor = agent.resident_handle(&sid).unwrap().resident_actor_id;
+        let mut snapshots = Vec::new();
+        for attach in ["resident-only load", "ordinary load", "resume"] {
+            // Drain startup/previous-attach notifications before each independent attach.
+            while snapshot_rx.try_recv().is_ok() {}
+            match attach {
+                "resident-only load" => {
+                    agent
+                        .load_session_inner(resident_request(&sid, cwd.path()))
+                        .await
+                        .unwrap();
+                }
+                "ordinary load" => {
+                    agent
+                        .load_session_inner(acp::LoadSessionRequest::new(
+                            sid.clone(),
+                            cwd.path().to_path_buf(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                _ => {
+                    agent
+                        .resume_session_inner(acp::ResumeSessionRequest::new(
+                            sid.clone(),
+                            cwd.path().to_path_buf(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            }
+            assert_eq!(
+                agent.resident_handle(&sid).unwrap().resident_actor_id,
+                original_actor,
+                "{attach} must preserve the resident actor"
+            );
+            let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while let Some(snapshot) = snapshot_rx.recv().await {
+                    if snapshot.session_id == sid.0.as_ref() {
+                        return snapshot;
+                    }
+                }
+                panic!("gateway closed before queue snapshot");
+            })
+            .await;
+            snapshots.push((attach, snapshot.ok()));
+        }
+        assert_eq!(agent.close_active_session(&sid).await, CloseOutcome::Closed);
+        collector.abort();
+        for (attach, snapshot) in snapshots {
+            let snapshot = snapshot.unwrap_or_else(|| {
+                panic!(
+                    "{attach} must republish the authoritative prompt queue, including empty state"
+                )
+            });
+            assert!(snapshot.entries.is_empty());
+            assert!(snapshot.running_prompt_id.is_none());
+        }
+    });
+}
+
+#[test]
 fn resident_only_load_rejects_missing_actor_before_history_access() {
     super::run_local_for_bridge_test(|| async {
         let agent = super::build_minimal_agent_for_tests();
@@ -1350,6 +1452,93 @@ fn profile_effort_precedence_keeps_inline_explicit_named_default_and_saved_effor
             agent.close_active_session(&named).await,
             CloseOutcome::Closed
         );
+    });
+}
+
+#[test]
+fn profile_slack_primary_refusal_leaves_no_session_or_workspace_for_inline_named_and_cli() {
+    super::run_local_for_bridge_test(|| async {
+        use crate::agent::config::{EndpointsConfig, ModelEntry};
+        let agent = super::build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let initial = super::new_root_session(&agent, cwd.path()).await;
+        assert_eq!(
+            agent.close_active_session(&initial).await,
+            CloseOutcome::Closed
+        );
+        let model = "profile-slack-test-model";
+        agent.cfg.borrow_mut().config_models.insert(
+            model.into(),
+            crate::agent::config::ConfigModelOverride {
+                model: Some(model.into()),
+                ..Default::default()
+            },
+        );
+        agent.models_manager.insert_test_entry(
+            model,
+            ModelEntry::fallback(model, &EndpointsConfig::default()),
+        );
+        let profile_dir = cwd.path().join(".grok/agents");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let bot = format!("missing-test-{}", uuid::Uuid::now_v7());
+        for reference in [
+            None,
+            Some("env:CFO_SLACK_BOT_TOKEN".to_owned()),
+            Some("op://Private/CFO/token".to_owned()),
+            Some("seat-bot:other".to_owned()),
+            Some(format!("seat-bot:{bot}")),
+        ] {
+            let mut slack = json!({"botKey":bot,"botUserId":"UTESTMISSING"});
+            if let Some(reference) = &reference {
+                slack["credentialRef"] = json!(reference);
+            }
+            let definition = json!({"name":"slack-primary-probe","description":"Primary admission","model":model,"identity":{"slack":slack}});
+            let profile_path = profile_dir.join("slack-primary-probe.md");
+            std::fs::write(
+                &profile_path,
+                format!("---\n{definition}\n---\nFixture body"),
+            )
+            .unwrap();
+            for selection in ["inline", "named", "cli"] {
+                let id = acp::SessionId::new(uuid::Uuid::now_v7().to_string());
+                let info = super::SessionInfo {
+                    id: id.clone(),
+                    cwd: cwd.path().to_string_lossy().into_owned(),
+                };
+                let persisted = crate::session::persistence::session_dir(&info);
+                assert!(!persisted.exists());
+                let mut meta = meta_of(json!({"sessionId":id.0}));
+                match selection {
+                    "inline" => {
+                        meta.insert("agentProfile".into(), definition.clone());
+                    }
+                    "named" => {
+                        meta.insert("agentProfile".into(), json!("slack-primary-probe"));
+                    }
+                    _ => {
+                        agent.cfg.borrow_mut().agent_profile_path = Some(profile_path.clone());
+                    }
+                }
+                let error = agent
+                    .new_session_inner(acp::NewSessionRequest::new(cwd.path()).meta(meta))
+                    .await
+                    .unwrap_err();
+                agent.cfg.borrow_mut().agent_profile_path = None;
+                let rendered = error.to_string();
+                assert!(
+                    rendered.contains("Slack identity unavailable"),
+                    "{selection} must refuse its unavailable Slack binding: {rendered}"
+                );
+                assert!(!rendered.contains("Private/CFO"));
+                assert_eq!(agent.session_registry.resident_count(), 0);
+                assert_eq!(super::workspace_session_count(&agent), 0);
+                assert!(agent.session_registry.root_for_session(&id).is_none());
+                assert!(
+                    !persisted.exists(),
+                    "rejected {selection} admission must not create a saved empty conversation"
+                );
+            }
+        }
     });
 }
 

@@ -244,6 +244,9 @@ pub(crate) struct SessionSpawnOptions<'a> {
     >,
     pub session_meta: Option<&'a acp::Meta>,
     pub persisted_agent_profile: Option<xai_grok_agent::AgentDefinition>,
+    /// Fresh profile frozen and checked before session/new side effects. Kept
+    /// separate from a restore so inline effort precedence remains unchanged.
+    pub admitted_agent_profile: Option<xai_grok_agent::AgentDefinition>,
     pub model_agent_type: Option<&'a str>,
     pub session_model_id: acp::ModelId,
     /// A `session/new` reasoning-effort hint applied to the spawn sampling; `None` for loads.
@@ -389,6 +392,7 @@ pub(crate) fn chat_session_spawn_options<'a>(
         persisted_announcement_state: None,
         session_meta,
         persisted_agent_profile: None,
+        admitted_agent_profile: None,
         model_agent_type,
         session_model_id,
         initial_reasoning_effort: None,

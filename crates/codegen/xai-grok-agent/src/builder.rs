@@ -676,10 +676,8 @@ impl AgentBuilder {
         let mut definition = self.resolve_definition();
         definition.resolve_prompt_references(&self.working_directory)?;
         let mut identity_parts = Vec::new();
-        if let Some(identity) = &definition.identity
-            && let Some(slack) = &identity.slack
-        {
-            identity_parts.push(format!("## Channel identity\n\nUse Slack bot key {} and bot user ID {} when an authorized task requires a Slack action. Its credential reference is {}. Resolve that reference inside the tool process; never print credentials. A configured identity does not authorize sending a message.", slack.bot_key.as_deref().unwrap_or("(not configured)"), slack.bot_user_id.as_deref().unwrap_or("(not configured)"), slack.credential_ref.as_deref().unwrap_or("(not configured)")));
+        if let Some(identity_prompt) = definition.resolve_slack_identity().await? {
+            identity_parts.push(identity_prompt);
         }
         if !identity_parts.is_empty() {
             let mut parts = definition

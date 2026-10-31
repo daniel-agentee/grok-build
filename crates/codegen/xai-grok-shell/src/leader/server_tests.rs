@@ -3542,6 +3542,98 @@ async fn live_broadcast_during_load_is_buffered_then_flushed_after_response() {
     cancel.cancel();
 }
 
+/// Queue snapshots remain authoritative across live mutations during history replay.
+/// Only subscribers to this session may receive their IDs and prompt text.
+#[tokio::test]
+async fn queue_snapshots_remain_ordered_through_load_replay_and_session_scoped() {
+    let temp = TempDir::new().unwrap();
+    let (socket, cancel, responses, mut requests) = setup_persistent_server_with_agent(&temp).await;
+    let (mut terminal, mut terminal_writer) = connect_and_register(&socket, "terminal").await;
+    load_session(&mut terminal_writer, "queue-session").await;
+    complete_load(&mut requests, &responses).await;
+    next_acp_payload(&mut terminal).await.unwrap();
+    let (mut outsider, mut outsider_writer) =
+        connect_and_register(&socket, "other-workspace").await;
+    load_session(&mut outsider_writer, "other-session").await;
+    complete_load(&mut requests, &responses).await;
+    next_acp_payload(&mut outsider).await.unwrap();
+    let (mut phone, mut phone_writer) = connect_and_register(&socket, "phone").await;
+    load_session(&mut phone_writer, "queue-session").await;
+    let load: serde_json::Value = serde_json::from_str(
+        &tokio::time::timeout(Duration::from_secs(1), requests.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let client_id = load["params"]["_meta"]["x.ai/leaderClientId"].clone();
+    assert!(client_id.is_u64());
+    // High replay IDs must never dedupe away the transient queue snapshots.
+    let replay = serde_json::json!({
+        "jsonrpc":"2.0", "method":"_x.ai/session/update",
+        "params":{"sessionId":"queue-session", "update":{"sessionUpdate":"user_message_chunk"},
+            "_meta":{"x.ai/leaderClientId":client_id, "eventId":"queue-session-9999"}}
+    });
+    responses.send(replay.to_string()).unwrap();
+    assert!(
+        next_acp_payload(&mut phone)
+            .await
+            .unwrap()
+            .contains("queue-session-9999")
+    );
+    let queued = serde_json::json!({
+        "sessionId":"queue-session", "runningPromptId":"terminal-running", "runningKind":"prompt",
+        "entries":[{"id":"phone-accepted-id", "version":0, "owner":"phone", "kind":"bash", "text":"pwd", "position":0}]
+    });
+    let mut changed = queued.clone();
+    changed["entries"][0]["version"] = serde_json::json!(1);
+    changed["entries"][0]["text"] = serde_json::json!("pwd -P");
+    let promoted = serde_json::json!({
+        "sessionId":"queue-session", "runningPromptId":"phone-accepted-id", "runningKind":"bash", "entries":[]
+    });
+    let empty = serde_json::json!({"sessionId":"queue-session", "entries":[]});
+    let expected = [queued, changed, promoted, empty];
+    for params in &expected {
+        responses
+            .send(serde_json::json!({"jsonrpc":"2.0", "method":"_x.ai/queue/changed", "params":params}).to_string())
+            .unwrap();
+    }
+    // The already-attached Terminal continues to see every mutation during the
+    // phone's replay; another session receives none of its queue text or IDs.
+    for expected in &expected {
+        let delivered: serde_json::Value =
+            serde_json::from_str(&next_acp_payload(&mut terminal).await.unwrap()).unwrap();
+        assert_eq!(&delivered["params"], expected);
+    }
+    assert!(next_acp_payload(&mut outsider).await.is_none());
+    assert!(
+        next_acp_payload(&mut phone).await.is_none(),
+        "queue snapshots wait for load response"
+    );
+    responses
+        .send(
+            serde_json::json!({"jsonrpc":"2.0", "id":load["id"], "result":{"models":[]}})
+                .to_string(),
+        )
+        .unwrap();
+    let response: serde_json::Value =
+        serde_json::from_str(&next_acp_payload(&mut phone).await.unwrap()).unwrap();
+    assert!(response.get("result").is_some());
+    for expected in &expected {
+        let delivered: serde_json::Value =
+            serde_json::from_str(&next_acp_payload(&mut phone).await.unwrap()).unwrap();
+        assert_eq!(
+            &delivered["params"], expected,
+            "snapshot mutations must flush FIFO after history/load"
+        );
+    }
+    assert!(
+        next_acp_payload(&mut phone).await.is_none(),
+        "no duplicate snapshots"
+    );
+    cancel.cancel();
+}
+
 /// Two clients load the same session.
 /// A `session/notification` (no `id`) must reach BOTH, while a reverse-request (`id` and `method`) reaches ONLY the driver.
 /// The second client's `session/load` must not black out the first: it joins, it does not steal.

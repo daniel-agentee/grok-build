@@ -397,6 +397,7 @@ impl MvpAgent {
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let session_started_at = std::time::Instant::now();
         let mut stock_inherited_harness = false;
+        let mut admitted_agent_profile = None;
         // Freeze the named profile before persistence/workspace/actor side effects.
         // A bridge preflight alone cannot protect against concurrent profile edits.
         if let Some(value) = arguments
@@ -499,10 +500,60 @@ impl MvpAgent {
                 definition.model =
                     xai_grok_agent::config::ModelOverride::Override("grok-4.7-build-fast".into());
             }
+            definition
+                .admit_slack_identity()
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
             arguments
                 .meta
                 .get_or_insert_with(Default::default)
                 .insert("agentProfile".into(), definition.to_json_value());
+            admitted_agent_profile = Some(definition);
+        }
+        if admitted_agent_profile.is_none() {
+            // CLI/config profiles also enter through session/new. Resolve the
+            // same selected definition before persistence or workspace setup.
+            let configured = {
+                let cfg = self.cfg.borrow();
+                let explicit = cfg.agent_profile_path.is_some()
+                    || cfg.agent.definition.is_some()
+                    || cfg.agent.name.is_some()
+                    || std::env::var("GROK_AGENT")
+                        .ok()
+                        .is_some_and(|value| !value.trim().is_empty());
+                explicit.then(|| {
+                    let model = self.models_manager.models();
+                    let model_agent_type = model
+                        .get(self.models_manager.current_model_id().0.as_ref())
+                        .map(|entry| entry.info.agent_type.as_str());
+                    Self::resolve_agent_definition(
+                        arguments.cwd.as_path(),
+                        cfg.agent_profile_path.as_deref(),
+                        &cfg.agent,
+                        None,
+                        model_agent_type,
+                    )
+                })
+            };
+            if let Some(mut definition) = configured
+                && definition
+                    .identity
+                    .as_ref()
+                    .and_then(|identity| identity.slack.as_ref())
+                    .is_some()
+            {
+                definition
+                    .admit_slack_identity()
+                    .await
+                    .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+                definition
+                    .resolve_prompt_references(arguments.cwd.as_path())
+                    .map_err(|_| {
+                        acp::Error::invalid_params()
+                            .data("Profile references could not be read; no agent was started")
+                    })?;
+                admitted_agent_profile = Some(definition);
+            }
         }
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
         tracing::debug!(cwd = %arguments.cwd.as_path().display(), has_profile = arguments.meta.as_ref().is_some_and(|m| m.contains_key("agentProfile")), "Received new session request");
@@ -808,6 +859,7 @@ impl MvpAgent {
                     persisted_announcement_state: None,
                     session_meta: arguments.meta.as_ref(),
                     persisted_agent_profile: None,
+                    admitted_agent_profile,
                     prefetch: None,
                     model_agent_type: model_agent_type.as_deref(),
                     session_model_id,
@@ -1511,6 +1563,7 @@ impl MvpAgent {
                         persisted_announcement_state,
                         session_meta: request_meta.as_ref(),
                         persisted_agent_profile: restore_profile,
+                        admitted_agent_profile: None,
                         model_agent_type: restore_model_agent_type.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
                         initial_reasoning_effort: initial_reasoning_effort
@@ -1637,7 +1690,16 @@ impl MvpAgent {
             .models(Some(model_state))
             .config_options(Some(config_options))
             .meta(response_meta.as_object().cloned());
+        // No await follows this check before the snapshot is queued, so a live-only
+        // attach cannot publish a replacement actor's queue and then refuse it.
+        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
         if let Some(handle) = self.resident_handle(&session_id) {
+            // The leader subscribes/buffers the loading client before forwarding this
+            // request. Snapshot the current actor queue after history replay; its
+            // transient notification then follows the load response or streams live.
+            let _ = handle
+                .cmd_tx
+                .send(SessionCommand::PublishPromptQueueSnapshot);
             let _ = handle.cmd_tx.send(SessionCommand::AdvertiseCommands {
                 trigger: crate::session::AdvertiseTrigger::SessionLoad,
             });
@@ -1671,7 +1733,6 @@ impl MvpAgent {
             attach_started_at.elapsed(),
             restored_from_disk,
         );
-        self.verify_resident_only_attach_target(&session_id, resident_only_target.as_ref())?;
         if let Some(target) = resident_only_target.as_ref() {
             response.meta.get_or_insert_with(Default::default).insert(
                 "x.ai/residentActorId".into(),

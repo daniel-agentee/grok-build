@@ -703,6 +703,9 @@ pub(super) async fn run_session(
                         SessionCommand::EmitStatusSnapshot => {
                             session.emit_status_snapshot_detached();
                         }
+                        SessionCommand::PublishPromptQueueSnapshot => {
+                            session.publish_prompt_queue_snapshot().await;
+                        }
                         SessionCommand::RestorePlanApproval => {
                             // Spawn the restored plan-approval round-trip so the command loop is not blocked on the open-ended user decision.
                             // Detaching the handle is safe: the task lives on this session's `LocalSet` and is dropped when the session ends.

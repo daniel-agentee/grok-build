@@ -27,7 +27,7 @@ IDENTITY = {
     "slack": {
         "botKey": "finance",
         "botUserId": "UTESTFINANCE",
-        "credentialRef": "env:CFO_SLACK_BOT_TOKEN",
+        "credentialRef": "seat-bot:finance",
     },
 }
 
@@ -56,7 +56,7 @@ def test_import_preserves_source_and_does_not_copy_permission_bypass(tmp_path: P
     assert definition["promptFiles"] == [str(home / ".claude" / "agents" / "CFO.md")]
     assert len(definition["ruleFiles"]) == 2
     assert "Confidential body" not in definition["promptBody"]
-    assert definition["identity"]["slack"]["credentialRef"] == "env:CFO_SLACK_BOT_TOKEN"
+    assert definition["identity"]["slack"]["credentialRef"] == "seat-bot:finance"
     assert "bypassPermissions" not in str(definition)
     assert definition["identity"] == IDENTITY
     assert "parent-assigned workspace" in definition["promptBody"]
@@ -233,9 +233,22 @@ def test_import_refuses_invalid_avatar_without_echoing_it(avatar: str) -> None:
     assert "secret" not in str(error.value)
 
 
-def test_import_accepts_reference_only_one_password_identity() -> None:
-    identity = {**IDENTITY, "slack": {**IDENTITY["slack"], "credentialRef": "op://Shared/CFO/token"}}
-    assert IMPORT.checked_identity(identity) == identity
+@pytest.mark.parametrize("reference", [
+    "seat-bot:cfo", "env:CFO_SLACK_BOT_TOKEN", "op://Shared/CFO/token",
+    "private-token-material", "seat-bot:finance\nprivate-token-material",
+])
+def test_import_requires_matching_supported_slack_binding(reference: str) -> None:
+    identity = {**IDENTITY, "slack": {**IDENTITY["slack"], "credentialRef": reference}}
+    with pytest.raises(ValueError, match="matching seat-bot:BOT_KEY") as error:
+        IMPORT.checked_identity(identity)
+    assert "private-token-material" not in str(error.value)
+    assert "Shared/CFO" not in str(error.value)
+
+
+def test_import_refuses_overlong_bot_key() -> None:
+    identity = {**IDENTITY, "slack": {**IDENTITY["slack"], "botKey": "x" * 97}}
+    with pytest.raises(ValueError, match="configured metadata"):
+        IMPORT.checked_identity(identity)
 
 
 @pytest.mark.parametrize("catalog", [

@@ -367,7 +367,7 @@ impl SubagentExecution {
         ));
     }
     pub fn display(&self) -> String {
-        format!(
+        let settings = format!(
             "{} · {} · {} · {}",
             self.provider,
             self.model,
@@ -375,7 +375,12 @@ impl SubagentExecution {
                 .as_deref()
                 .unwrap_or("provider default"),
             self.speed
-        )
+        );
+        if self.profile.trim().is_empty() {
+            settings
+        } else {
+            format!("{} · {settings}", self.profile)
+        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1594,6 +1599,40 @@ pub fn build_wait_tasks_description(naming: &WaitTasksToolNaming) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_display_preserves_exact_profile_identity_and_actual_settings() {
+        let execution = SubagentExecution {
+            profile: "CFO".into(),
+            provider: "api.x.ai".into(),
+            model: "grok-4.7".into(),
+            reasoning_effort: Some("high".into()),
+            speed: "standard".into(),
+            fallback: None,
+        };
+        assert_eq!(
+            execution.display(),
+            "CFO · api.x.ai · grok-4.7 · high · standard"
+        );
+    }
+
+    #[test]
+    fn execution_display_keeps_legacy_missing_profile_without_inventing_a_role() {
+        for profile in ["", "   "] {
+            let execution = SubagentExecution {
+                profile: profile.into(),
+                provider: "api.x.ai".into(),
+                model: "grok-4.7".into(),
+                reasoning_effort: None,
+                speed: "standard".into(),
+                fallback: None,
+            };
+            assert_eq!(
+                execution.display(),
+                "api.x.ai · grok-4.7 · provider default · standard"
+            );
+        }
+    }
 
     fn result_with_status(status: &str) -> TaskOutputOutput {
         TaskOutputOutput::Result(TaskOutputResult {

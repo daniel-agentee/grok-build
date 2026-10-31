@@ -4171,6 +4171,7 @@ impl MvpAgent {
             persisted_announcement_state,
             session_meta,
             persisted_agent_profile,
+            admitted_agent_profile,
             model_agent_type,
             session_model_id,
             initial_reasoning_effort,
@@ -4459,7 +4460,10 @@ impl MvpAgent {
         let restoring_profile = persisted_agent_profile.is_some();
         let acp_agent_profile = match persisted_agent_profile {
             Some(definition) => Some(definition),
-            None => parse_agent_profile_from_meta(session_meta, cwd.as_path())?,
+            None => match admitted_agent_profile {
+                Some(definition) => Some(definition),
+                None => parse_agent_profile_from_meta(session_meta, cwd.as_path())?,
+            },
         };
         let session_default_agent_profile = acp_agent_profile
             .as_ref()

@@ -129,6 +129,62 @@ impl xai_grok_tools::implementations::grok_build::task::coordinator::ChildRunner
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn profile_slack_task_admission_refuses_unsupported_binding_before_child_resources() {
+    use xai_grok_tools::implementations::grok_build::task::backend::{
+        ChannelBackend, SubagentBackend,
+    };
+    use xai_grok_tools::implementations::grok_build::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::task::LocalSet::new().run_until(async {
+        for reference in [None, Some("env:CFO_SLACK_BOT_TOKEN"), Some("op://Private/CFO/token"), Some("seat-bot:cro")] {
+            let project = tempfile::tempdir().unwrap();
+            let mut slack = serde_json::json!({"botKey":"cfo", "botUserId":"UTESTCFO"});
+            if let Some(reference) = reference {
+                slack["credentialRef"] = serde_json::json!(reference);
+            }
+            let definition = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!({
+                "name":"slack-admission-probe", "description":"Selected bot admission",
+                "identity":{"slack":slack}, "promptFiles":["missing-sentinel-must-not-be-read.md"]
+            })).unwrap();
+            let mut ctx = ctx_with_toggle(HashMap::new());
+            ctx.parent_cwd = project.path().to_owned();
+            ctx.workspace_ops = xai_grok_workspace::WorkspaceOps::for_test_in(project.path());
+            let workspace = ctx.workspace_ops.clone();
+            let mut config = crate::agent::config::Config::default();
+            config.cli_agents = vec![definition];
+            ctx.agent_config = Some(config);
+            let (gateway, mut gateway_rx) = test_gateway_with_receiver();
+            let (command_tx, command_rx) = SubagentCoordinator::<RunShellChildTestRunner>::channel();
+            let coordinator = tokio::task::spawn_local(SubagentCoordinator::from_channel(
+                command_rx, RunShellChildTestRunner::new([ctx], false, gateway), CoordinatorConfig::default()
+            ).run());
+            let backend = ChannelBackend::for_coordinator_session(command_tx, "test-parent");
+            let mut request = auto_wake_test_request(&uuid::Uuid::now_v7().to_string());
+            request.subagent_type = "slack-admission-probe".into();
+            request.parent_session_id = "test-parent".into();
+            request.run_in_background = false;
+            request.await_to_completion = true;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(15), backend.spawn(request, None)).await.expect("admission stays bounded").expect("Task result");
+            assert!(!result.success);
+            let error = result.error.as_deref().unwrap_or_default();
+            assert!(error.contains("use credentialRef seat-bot:cfo"), "Task must refuse the selected Slack binding before prompt/model/workspace setup: {error}");
+            assert!(error.contains("No child was started"));
+            assert!(!error.contains("Private/CFO"));
+            assert!(result.execution.is_none());
+            assert_eq!((result.turns, result.tool_calls), (0, 0));
+            assert_eq!(workspace.workspace_handle().unwrap().session_count(), 0);
+            assert_eq!(std::fs::read_dir(project.path()).unwrap().count(), 0);
+            while let Ok(message) = gateway_rx.try_recv() {
+                assert!(!matches!(message, xai_acp_lib::AcpClientMessage::ExtNotification(args) if args.request.params.get().contains("subagent_spawned")), "refused admission cannot announce a child");
+            }
+            drop(backend);
+            coordinator.await.unwrap();
+        }
+    }).await;
+}
+
 fn prior_wake_meta(id: &str, model_id: &str) -> SubagentMeta {
     SubagentMeta {
         provider_route_fingerprint: None,
