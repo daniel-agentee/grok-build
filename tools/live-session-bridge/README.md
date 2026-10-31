@@ -661,6 +661,21 @@ forwarded to the native leader. Their replies never reach iOS. At most 128 clien
 requests can remain outstanding on a connection. Prompt submissions are forwarded
 to the native leader's queue; the bridge never retries a prompt automatically.
 
+Initialize advertises `_meta["x.ai/promptCorrelation"]: true` only for a compatible
+resident leader. Such clients may send `session/prompt` with optional
+`_meta: {"promptId": "<canonical hyphenated UUID>"}`. UUID hex may use either
+case; the bridge forwards the exact value together with its own verified
+`x.ai/residentActorId`. All other prompt metadata, malformed IDs and correlation
+metadata on cancel/model methods are rejected. This is correlation, not a retry
+or idempotency token. Clients must allocate a fresh ID for every intentional send.
+An older bridge omits the capability, so upgraded clients omit prompt metadata
+and retain conservative recovery for an interrupted unacknowledged RPC.
+
+Native queue snapshots are republished on resident attachment and ordered with
+its canonical replay. Exact queue/running/completion prompt IDs can confirm an
+uncertain send only after the load verifies the same actor. Text equality never
+proves delivery, including two identical instructions from different devices.
+
 The transport deliberately exposes a small method set: initialize/authenticate,
 session discovery/info, workspace/model discovery, billing reads, and live `session/load`, `session/prompt`, `session/cancel`,
 and `session/set_model`. Prompt, cancel and model changes require a successful

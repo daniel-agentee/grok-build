@@ -1135,6 +1135,7 @@ class Bridge:
                                              "x.ai/idleSessionPreview": True,
                                              "x.ai/workspaceCommands": True,
                                              "x.ai/newSessionModelSettings": resident_only_supported,
+                                             "x.ai/promptCorrelation": resident_only_supported,
                                              "x.ai/agentProfiles": profiles_supported,
                                              "x.ai/bridgeLeaderId": selected_token})
                             payload = json.dumps(value)

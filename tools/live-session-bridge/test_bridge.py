@@ -216,7 +216,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await ws.send_json(
             {"jsonrpc": "2.0", "id": "bridge-test-init", "method": "initialize", "params": {}}
         )
-        await ws.receive_json()
+        initialization = await ws.receive_json()
+        self.mobile_metadata = initialization.get("result", {}).get("_meta", {})
         await self.seen.get()
         return ws
 
@@ -642,6 +643,15 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("error", await ws.receive_json())
         self.assertTrue(self.seen.empty())
+        await ws.close()
+
+    async def test_prompt_correlation_capability_requires_live_identity_guards(self):
+        ws = await self.connect()
+        self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), True)
+        await ws.close()
+        self.actor_identity_supported = False
+        ws = await self.connect()
+        self.assertIs(self.mobile_metadata.get("x.ai/promptCorrelation"), False)
         await ws.close()
 
     async def test_prompt_correlation_id_passes_through_with_resident_actor_guard(self):
